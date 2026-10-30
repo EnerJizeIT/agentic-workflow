@@ -720,8 +720,9 @@ class TestCli:
         reports = list((home / "Desktop").glob("awf-metrics-*.md"))
         assert len(reports) == 1
 
-    def test_cli_rc1_when_nothing_measurable(self, env, monkeypatch):
-        # Пустая база (только схемы) + репо без verify-коммитов → rc 1.
+    def test_cli_rc0_with_na_when_nothing_measurable(self, env, monkeypatch):
+        # Пустая база (только схемы) + репо без verify-коммитов → n/a, rc 0
+        # (R4/AC21: пустая база — ответ «n/a», не сбой измерения).
         empty_db = env["tmp"] / "empty.db"
         con = sqlite3.connect(empty_db)
         con.executescript(
@@ -742,7 +743,8 @@ class TestCli:
         (proj / ".agentic" / "context").mkdir(parents=True)
         monkeypatch.setattr(Path, "home", staticmethod(lambda: self._fake_home(env["tmp"], empty_db, env["models"])))
         rc = cli.main(["metrics", "--project-dir", str(proj), "--out", str(env["tmp"] / "r.md")])
-        assert rc == 1
+        assert rc == 0
+        assert "n/a" in (env["tmp"] / "r.md").read_text()
 
 
 class TestU8cMirror:

@@ -127,12 +127,14 @@ class TestBrokenInputs:
         assert "ПРЕДУПРЕЖДЕНИЕ" in text
 
     def test_empty_db_no_sessions(self, tmp_path):
+        """R4/AC21: an empty database is "n/a with a reason", rc 0."""
         proj = tmp_path / "proj"
         proj.mkdir()
         res = _run(tmp_path, proj)
         assert res.units == []
-        assert res.exit_code == 1
-        assert any("не удалось сопоставить сессии" in w for w in res.warnings)
+        assert res.exit_code == 0
+        assert res.sessions_na
+        assert "n/a" in res.report
 
     def test_broken_db_warns_and_degrades(self, tmp_path):
         proj = tmp_path / "proj"
@@ -147,7 +149,7 @@ class TestBrokenInputs:
         )
         assert res.units == []
         assert res.exit_code == 1
-        assert any("упал" in w for w in res.warnings)
+        assert any("не открывается" in w for w in res.warnings)
 
     def test_db_path_is_directory_warns(self, tmp_path):
         proj = tmp_path / "proj"
@@ -186,7 +188,8 @@ class TestReportScope:
         sessions = [("s1", "awf-developer-TODO-0001", 100, ["no project path here"])]
         res = _run(tmp_path, proj, sessions)
         assert res.units == []
-        assert res.exit_code == 1
+        assert res.exit_code == 0
+        assert "не найдены" in res.sessions_na
         assert any("не удалось сопоставить сессии" in w for w in res.warnings)
 
     def test_same_todo_id_two_projects_scope_isolated(self, tmp_path):

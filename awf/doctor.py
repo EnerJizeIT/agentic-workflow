@@ -251,6 +251,43 @@ def _check_models(project_dir: Path, config_problem: str, out: _Lines) -> None:
     out.ok("models", f"{roles} role(s) checked, {len(providers)} provider(s)")
 
 
+def _check_opencode(config: dict[str, Any], config_problem: str, out: _Lines) -> None:
+    """K3/K4: the effective opencode mode and the managed warning.
+
+    Read-only: one ``opencode --version`` probe (5s cap), no launch. The
+    doctor never refuses (INV7) — a fail-closed condition is a WARN line.
+    """
+    if config_problem:
+        return
+    from . import opencode_db, opencode_version
+
+    probe = opencode_version.probe_version()
+    managed = opencode_version.is_managed(config)
+    plan = opencode_version.resolve_standalone(config, probe, managed)
+    if plan.refusal:
+        out.warn("opencode.standalone", plan.refusal)
+        return
+    if probe.status == "missing":
+        out.warn("opencode", "не найден в PATH — запуск невозможен")
+    elif probe.status != "ok":
+        out.warn("opencode", "версия не определена — запуск запрещён (fail-closed)")
+    else:
+        flag = " · --standalone" if plan.add_flag else ""
+        out.ok("opencode", f"{probe.text} · режим {plan.mode}{flag}")
+        if probe.version is not None and probe.version[0] >= 2:
+            supported = opencode_db.MODELS_STANDALONE_SUPPORTED
+            out.ok(
+                "models",
+                "opencode models --standalone поддерживается"
+                if supported
+                else "opencode models --standalone не поддерживается — без флага",
+            )
+    if managed:
+        out.warn("managed", opencode_version.MANAGED_WARNING)
+    elif plan.warning:
+        out.warn("opencode.standalone", plan.warning)
+
+
 def _check_config_keys(config: dict[str, Any], out: _Lines) -> None:
     """Config keys row: every key of the live config has a reader."""
     dead = config_keys.dead_keys(config)
@@ -305,6 +342,7 @@ def run_doctor(project_dir: str | Path = ".") -> DoctorReport:
     config, config_problem = _load_config(root)
     out = _Lines()
     _check_versions(root, config, config_problem, out)
+    _check_opencode(config, config_problem, out)
     _check_models(root, config_problem, out)
     if config_problem:
         out.warn("config keys", f"{config_problem} — nothing to check")

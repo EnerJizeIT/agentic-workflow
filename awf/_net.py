@@ -39,6 +39,12 @@ NETWORK_MARKERS: tuple[str, ...] = (
     "fetch failed",
     "Connection reset",
     "ETIMEDOUT",
+    # IMP1 probe (opencode 2.2.3, 2026-10-30) on a dead endpoint and a
+    # blackholed host: "ECONNRESET: The socket connection was closed
+    # unexpectedly" and "ECONNREFUSED: Unable to connect. Is the computer
+    # able to access the url?" — the v2 wording the v1 list did not name.
+    "Unable to connect",
+    "ECONNRESET",
 )
 
 # CARRY IMP1 (R12/K12): connect/reset/timeout are network even without the
@@ -182,16 +188,26 @@ def model_endpoint_url(model_spec: str, opencode_path: Path) -> str | None:
 
     # Lazy import: keeps this module light and avoids loading the whole
     # awf.api package for callers that only need the classifier.
-    from .api.model_check import _load_opencode_config
+    from .api.model_check import _load_opencode_root
 
-    providers, _agents = _load_opencode_config(Path(opencode_path))
-    provider_cfg = providers.get(provider_name)
+    root = _load_opencode_root(Path(opencode_path))
+    # K7: v1 form first — when both exist, v1 wins (AC29).
+    provider_cfg = (root.get("provider") or {}).get(provider_name)
+    base_url = _base_url(provider_cfg)
+    if base_url:
+        return base_url
+    # v2-native form: providers.<p>.settings.baseURL.
+    provider_cfg = (root.get("providers") or {}).get(provider_name)
+    return _base_url(provider_cfg, settings=True)
+
+
+def _base_url(provider_cfg: object, *, settings: bool = False) -> str | None:
     if not isinstance(provider_cfg, dict):
         return None
-    options = provider_cfg.get("options")
-    if not isinstance(options, dict):
+    section = provider_cfg.get("settings" if settings else "options")
+    if not isinstance(section, dict):
         return None
-    base_url = options.get("baseURL")
+    base_url = section.get("baseURL")
     if not isinstance(base_url, str) or not base_url:
         return None
     return base_url

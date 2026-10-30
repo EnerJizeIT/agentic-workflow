@@ -72,6 +72,29 @@ if hasattr(os, "killpg"):
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AWF_BIN = REPO_ROOT / "bin" / "awf"
 STUBS_DIR = REPO_ROOT / "tests" / "stubs"
+_VERSION_STUB_DIR = REPO_ROOT / "tests" / "infra" / "opencode_version_stub"
+
+# K1/K3: every launch probes ``opencode --version`` BEFORE any side effect
+# (fail-closed). CI has no opencode installed, so without this double every
+# launch would be refused and dozens of unrelated tests would see "noop".
+# The double answers the probe as 1.x (the rollback version) and fails any
+# real invocation: a test that spawns a stage puts its own shim/stub first.
+os.environ["PATH"] = f"{_VERSION_STUB_DIR}{os.pathsep}{os.environ.get('PATH', '')}"
+
+@pytest.fixture(autouse=True)
+def _prime_opencode_probe():
+    """K1/K3: keep the in-process version answer stable for every test.
+
+    The autouse ``_isolate_xdg_env`` fakes ``subprocess.Popen/run``, so a
+    REAL probe would collide with those fakes and turn launches into
+    refusals. Prime the same 1.x the stub reports. Priming per test (not
+    once) also undoes a ``reset_version_cache()`` done by a probe test that
+    ran earlier in the same xdist worker. A test that exercises the probe
+    resets the cache inside its body — after this fixture.
+    """
+    from awf import opencode_version as _ocv
+
+    _ocv.prime_probe(_ocv.Probe("ok", (1, 19, 4)))
 
 
 @pytest.fixture(autouse=True)

@@ -84,6 +84,9 @@ READ_KEYS: frozenset[str] = frozenset({
     "spec.budget.package",
     # ── worker ───────────────────────────────────────────────────────────
     "worker.mcp_servers",
+    # ── opencode 2.x (K1–K4: launch mode, managed opt-in) ────────────────
+    "opencode.standalone",
+    "opencode.managed",
     # ── metrics (awf metrics) ────────────────────────────────────────────
     "metrics.directory",
     "metrics.mirror_dir",

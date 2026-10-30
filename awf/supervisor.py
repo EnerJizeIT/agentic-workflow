@@ -1175,6 +1175,18 @@ def run_supervisor_via_subprocess(
         cmd += ["--file", f]
     cmd += ["--", prompt]
 
+    # K2: the supervisor spawn reads the SAME helper as the worker, so the
+    # two argv builders can never drift (T1).
+    from . import opencode_version
+
+    plan = opencode_version.resolve_standalone(
+        config, opencode_version.probe_version()
+    )
+    if plan.warning:
+        print(f"opencode: {plan.warning}")
+        _log(logs_dir, f"opencode: {plan.warning}")
+    cmd = opencode_version.apply_standalone(cmd, plan)
+
     print(f"[auto mode] Spawning supervisor subprocess: agent={agent_name}")
     print(f"  role: {role_file}")
     for f in extra_files:
