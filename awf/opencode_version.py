@@ -80,6 +80,18 @@ def reset_version_cache() -> None:
     _CACHE.clear()
 
 
+def prime_probe(probe: Probe, binary: str = BINARY) -> None:
+    """Test seam: record the answer for this process without spawning.
+
+    The suite patches ``subprocess.Popen``/``run`` globally; a real probe
+    would collide with those fakes in every unrelated test. Priming keeps
+    the production path identical — a test that exercises the probe calls
+    :func:`reset_version_cache` first.
+    """
+    _resolved, key = _resolve(binary)
+    _CACHE[(binary, key)] = probe
+
+
 def _resolve(binary: str) -> tuple[str | None, str]:
     """(resolved path, cache key). A path-like binary is not searched."""
     if os.sep in binary or (os.altsep and os.altsep in binary) or binary.startswith("~"):
@@ -102,7 +114,8 @@ def _probe(resolved: str | None, timeout: float) -> Probe:
         )
     except FileNotFoundError:
         return Probe("missing")
-    except (OSError, subprocess.SubprocessError, ValueError):
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+        # TypeError: a patched Popen in tests; never let the probe crash.
         return Probe("unknown")
     if result.returncode != 0:
         return Probe("unknown")
@@ -294,6 +307,7 @@ __all__ = [
     "is_managed",
     "launch_plan",
     "preflight",
+    "prime_probe",
     "probe_version",
     "reset_version_cache",
     "resolve_standalone",

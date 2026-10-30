@@ -81,6 +81,17 @@ _VERSION_STUB_DIR = REPO_ROOT / "tests" / "infra" / "opencode_version_stub"
 # real invocation: a test that spawns a stage puts its own shim/stub first.
 os.environ["PATH"] = f"{_VERSION_STUB_DIR}{os.pathsep}{os.environ.get('PATH', '')}"
 
+# The autouse fixture below fakes subprocess.Popen/run for every test; a real
+# version probe would fight those fakes. Prime the in-process answer with the
+# same version the stub reports (1.x). Tests that exercise the probe itself
+# call ``reset_version_cache()`` first.
+try:
+    from awf import opencode_version as _ocv
+
+    _ocv.prime_probe(_ocv.Probe("ok", (1, 19, 4)))
+except Exception:  # pragma: no cover — the suite must import without awf
+    pass
+
 
 @pytest.fixture(autouse=True)
 def _isolate_xdg_env(monkeypatch):
