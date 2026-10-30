@@ -36,8 +36,8 @@ healthy config (AUD-0296-4).
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
