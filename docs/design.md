@@ -101,6 +101,8 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `api/dashboard.py` | Dashboard HTML generation + `generate_state_dict()` JSON API |
 | `api/dashboard_server.py` | HTTP server (ThreadingHTTPServer, live polling) |
 | `api/model_check.py` | Валидация моделей config.yaml против opencode.json |
+| `opencode_version.py` | K1–K4: проба `opencode --version` (кэш на процесс), домен `opencode.standalone`, managed opt-in, эффективный argv обоих спавнов, fail-closed preflight |
+| `opencode_db.py` | K5/K6/D8: проба схемы `opencode.db` (v1/v2/both/none), общий ридер recent models и `opencode models` для CLI и плагина |
 | `versions.py` | R5/R6: единственный дом версий — модуль `awf`, закреплённый `automation.runner_dir` (разбор `__init__.py` без импорта чужого кода), модуль плагина, метаданные установки |
 | `config_keys.py` | R5: реестр ключей `.agentic/config.yaml`, которые читает код; `dead_keys` называет листья без читателя (OPS7, храповик в тестах) |
 | `doctor.py` | R5: `run_doctor` — отчёт ok/WARN (версии с коммитами, модели, мёртвые ключи), rc 0/1/2, запуск не блокирует; `cmd_doctor.py` его печатает |

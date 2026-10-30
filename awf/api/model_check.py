@@ -17,15 +17,16 @@ from ._helpers import require_agentic
 from .roles import parse_role_model_line
 
 
-def _load_opencode_config(
-    oc_path: Path,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Parse opencode.json → (providers, agents).
+def _load_opencode_root(oc_path: Path) -> dict[str, Any]:
+    """Parse opencode.json → the whole root dict (v1 AND v2 keys).
 
-    Returns ({}, {}) if file missing or unreadable. Logs errors to stderr.
+    Returns {} if the file is missing or unreadable. Logs errors to stderr.
+    ``_net.model_endpoint_url`` needs both ``provider`` (v1) and
+    ``providers`` (v2) forms (K7); ``_load_opencode_config`` is the narrow
+    view kept for the existing callers.
     """
     if not oc_path.exists():
-        return {}, {}
+        return {}
     try:
         import json
 
@@ -38,86 +39,48 @@ def _load_opencode_config(
                 "expected an object — treating as empty",
                 file=sys.stderr,
             )
-            return {}, {}
-        return (
-            oc_data.get("provider", {}) or {},
-            oc_data.get("agent", {}) or {},
-        )
+            return {}
+        return oc_data
     except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
         print(
             f"model_check: cannot read opencode.json: {e}",
             file=sys.stderr,
         )
-        return {}, {}
+        return {}
+
+
+def _load_opencode_config(
+    oc_path: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Parse opencode.json → (providers, agents); ({}, {}) when unreadable."""
+    oc_data = _load_opencode_root(oc_path)
+    return (
+        oc_data.get("provider", {}) or {},
+        oc_data.get("agent", {}) or {},
+    )
 
 
 def _load_cli_models() -> set[str]:
-    """Get ALL available models from 'opencode models' CLI.
+    """All available models via the shared ``awf.opencode_db`` reader (K6).
 
     Covers internal providers (zai-coding-plan, openai) not in opencode.json.
-    Returns empty set on any error (including CLI not installed).
+    Returns an empty set on any error (including CLI not installed); the
+    reader prints the reason and never raises (AC25, AC26).
     """
-    try:
-        import subprocess
+    from .. import opencode_db
 
-        result = subprocess.run(
-            ["opencode", "models"],
-            capture_output=True, text=True, timeout=10, check=False,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            return set()
-        models: set[str] = set()
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if line and "/" in line and not line.startswith("["):
-                models.add(line)
-        return models
-    except (FileNotFoundError, OSError) as e:
-        print(f"model_check: 'opencode models' CLI unavailable: {e}", file=sys.stderr)
-        return set()
-    except Exception as e:
-        print(f"model_check: 'opencode models' failed: {e}", file=sys.stderr)
-        return set()
+    return set(opencode_db.available_models())
 
 
-def _load_recent_models(db_path: Path) -> set[str]:
-    """Read model IDs from opencode.db session history.
+def _load_recent_models(db_path: Path, limit: int | None = None) -> set[str]:
+    """Model IDs from opencode.db history — same reader as the plugin (D8).
 
-    Returns empty set if db missing, unreadable, or no sessions.
+    One SQL copy for both consumers (AC24); v1 and v2 schemas are handled
+    inside ``awf.opencode_db.recent_models``.
     """
-    if not db_path.is_file():
-        return set()
-    try:
-        import json
-        import sqlite3
+    from .. import opencode_db
 
-        conn = sqlite3.connect(str(db_path), timeout=3)
-        try:
-            rows = conn.execute(
-                "SELECT DISTINCT model FROM session WHERE model IS NOT NULL"
-            ).fetchall()
-        finally:
-            conn.close()
-
-        models: set[str] = set()
-        for r in rows:
-            raw = r[0]
-            if not raw:
-                continue
-            # opencode.db stores model as JSON: {"id":"x","providerID":"y"}
-            try:
-                m = json.loads(raw)
-                pid = m.get("providerID", "")
-                mid = m.get("id", "")
-                if pid and mid:
-                    models.add(f"{pid}/{mid}")
-            except (json.JSONDecodeError, TypeError):
-                if isinstance(raw, str):
-                    models.add(raw)
-        return models
-    except Exception as e:
-        print(f"model_check: cannot read opencode.db: {e}", file=sys.stderr)
-        return set()
+    return set(opencode_db.recent_models(db_path, limit=limit))
 
 
 def check_model_config(project_dir: Path) -> dict[str, Any]:

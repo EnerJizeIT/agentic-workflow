@@ -398,6 +398,20 @@ def _active_run_error(state: dict) -> AwfApiError:
     )
 
 
+def _opencode_gate(project_dir: Path) -> tuple[str, int]:
+    """K3/R2: the same fail-closed launch gate as ``start_pipeline``.
+
+    Returns ``(message, rc)``; an empty message means the launch proceeds.
+    Called before the run reservation, the TODO dispatch and the first file.
+    """
+    from .. import opencode_version
+
+    message, rc, warning = opencode_version.gate(project_dir)
+    if warning:
+        print(f"opencode: {warning}")
+    return message, rc
+
+
 def run_start(
     project_dir: Path,
     *,
@@ -433,6 +447,18 @@ def run_start(
     a fresh run always resets them (``decisions`` included).
     """
     project_dir = _require_run_project(project_dir)
+    # K3/R2: before the active-run check allocation and the state write.
+    message, rc = _opencode_gate(project_dir)
+    if message:
+        return RunStartResult(
+            active=False,
+            queue=[],
+            position="",
+            budget_minutes=0,
+            stop_flags={},
+            message=message,
+            next_action="Fix opencode.standalone / install opencode, then retry.",
+        )
     items = _validate_queue(queue)
     ids = [i["todo_id"] for i in items]
     goal_clean, criteria_clean = _normalize_plan(goal, criteria)
@@ -1490,6 +1516,15 @@ def _run_next(
 ) -> RunNextResult:
     """The launch itself; :func:`run_next` adds the handshake fields."""
     project_dir = _require_run_project(project_dir)
+    # K3/R2: refusal before the reservation of ``current``, baseline, .ready.
+    message, rc = _opencode_gate(project_dir)
+    if message:
+        return RunNextResult(
+            action="refused",
+            todo_id="",
+            message=message,
+            next_action="Fix opencode.standalone / install opencode, then retry.",
+        )
     # OPS IMP1 (R1/INV8): validate the cap BEFORE the reservation and the
     # first file — caller by raise, project key as a refusal.
     timeout = stage_timeout.validate_caller(timeout)
@@ -3746,6 +3781,17 @@ def run_service_start(
     """
     project_dir = _require_run_project(project_dir)
     from .roles import _validate_draft_slug
+
+    # K3/R2: before the service pipeline file, the unit TODO and the dispatch.
+    message, rc = _opencode_gate(project_dir)
+    if message:
+        return ServiceRunResult(
+            action="refused",
+            message=message,
+            slug=str(slug or ""),
+            main_active=False,
+            next_action="Fix opencode.standalone / install opencode, then retry.",
+        )
 
     slug_clean = _validate_draft_slug(slug)
     description_clean = str(description or "").strip()

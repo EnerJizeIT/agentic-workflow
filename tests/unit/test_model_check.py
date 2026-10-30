@@ -35,7 +35,14 @@ def mock_model_env(monkeypatch, tmp_path):
     - opencode.db path points to nonexistent file (no recent sessions)
     """
     # Mock subprocess.run for 'opencode models' CLI
+    real_run = subprocess.run
+
     def fake_run(cmd, **kwargs):
+        if isinstance(cmd, list) and "--version" in cmd:
+            # The version probe runs before ``models`` in the shared reader.
+            return type("R", (), {
+                "returncode": 0, "stdout": "1.19.4\n", "stderr": "",
+            })()
         if isinstance(cmd, list) and cmd[:1] == ["opencode"] and "models" in cmd:
             return type("R", (), {
                 "returncode": 0,
@@ -43,7 +50,7 @@ def mock_model_env(monkeypatch, tmp_path):
                 "stderr": "",
             })()
         # Default: real subprocess for other commands (git, etc.)
-        return subprocess.run(cmd, **kwargs)
+        return real_run(cmd, **kwargs)
 
     monkeypatch.setattr("subprocess.run", fake_run)
 
@@ -285,16 +292,25 @@ class TestCheckModelConfigEdgeCases:
         """No opencode.json at all — models still valid via CLI."""
         import awf.xdg as xdg_mod
 
-        # Mock CLI to return models
-        monkeypatch.setattr(
-            "subprocess.run",
-            lambda *a, **kw: type("R", (), {
-                "returncode": 0,
-                "stdout": "\n".join(FAKE_CLI_MODELS) + "\n",
-                "stderr": "",
-            })() if "models" in (a[0] if a and isinstance(a[0], list) else [])
-            else subprocess.run(*a, **kw),
-        )
+        # Mock CLI to return models; the version probe (``--version``) is
+        # answered too — it runs BEFORE ``models`` in the shared reader.
+        real_run = subprocess.run
+
+        def _fake_run(*a, **kw):
+            cmd = a[0] if a and isinstance(a[0], list) else []
+            if "--version" in cmd:
+                return type("R", (), {
+                    "returncode": 0, "stdout": "1.19.4\n", "stderr": "",
+                })()
+            if "models" in cmd:
+                return type("R", (), {
+                    "returncode": 0,
+                    "stdout": "\n".join(FAKE_CLI_MODELS) + "\n",
+                    "stderr": "",
+                })()
+            return real_run(*a, **kw)
+
+        monkeypatch.setattr("subprocess.run", _fake_run)
         monkeypatch.setattr(
             xdg_mod,
             "opencode_config_file",

@@ -5,8 +5,6 @@ import json
 import logging
 import os
 import re
-import sqlite3
-import subprocess
 import time
 from pathlib import Path
 
@@ -43,10 +41,10 @@ def read_opencode_models() -> list[str]:
 def read_recent_models(limit: int = 8) -> list[str]:
     """Get recently used models from opencode session history (SQLite).
 
-    Reads ~/.local/share/opencode/opencode.db, extracts distinct model IDs
-    from session table, ordered by most recent usage.
-
-    Returns list of 'provider/model' strings, deduplicated.
+    Reads ~/.local/share/opencode/opencode.db through the SHARED reader
+    ``awf.opencode_db.recent_models`` — the CLI uses the same function, so a
+    schema change (v1 ``session`` / v2 ``session_v2``) lands in one place
+    (K6, D8, AC24).
     """
     # AUD-5: respect XDG_DATA_HOME (was hardcoded ~/.local/share)
     data_home = os.environ.get("XDG_DATA_HOME", "").strip()
@@ -57,47 +55,13 @@ def read_recent_models(limit: int = 8) -> list[str]:
     if not db_path.exists():
         return []
 
+    from awf.opencode_db import recent_models as _recent_models
+
     try:
-        conn = sqlite3.connect(str(db_path), timeout=3)
-        try:
-            rows = conn.execute(
-                """
-                SELECT model, MAX(time_created) as last_used
-                FROM session
-                WHERE model IS NOT NULL
-                GROUP BY model
-                ORDER BY last_used DESC
-                LIMIT ?
-                """,
-                (limit * 2,),  # fetch extra, dedup after parsing
-            ).fetchall()
-        finally:
-            conn.close()
-    except Exception as e:
+        return _recent_models(db_path, limit=limit)
+    except Exception as e:  # noqa: BLE001 — a form must never crash on the DB
         log.warning("Failed to read recent models from DB: %s", e)
         return []
-
-    seen: set[str] = set()
-    recent: list[str] = []
-    for row in rows:
-        model_json = row[0]
-        if not model_json:
-            continue
-        try:
-            m = json.loads(model_json)
-            provider = m.get("providerID", "")
-            model_id = m.get("id", "")
-            if provider and model_id:
-                full_id = f"{provider}/{model_id}"
-                if full_id not in seen:
-                    seen.add(full_id)
-                    recent.append(full_id)
-                    if len(recent) >= limit:
-                        break
-        except (json.JSONDecodeError, TypeError):
-            continue
-
-    return recent
 
 
 def _invalidate_models_cache() -> None:
@@ -161,28 +125,13 @@ def _compute_models() -> list[str]:
     """
     # Try 'opencode models' CLI first — returns ALL available models
     # (internal providers like zai-coding-plan, opencode/*, plus configured).
-    try:
-        result = subprocess.run(
-            ["opencode", "models"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            models: set[str] = set()
-            for line in result.stdout.splitlines():
-                line = line.strip()
-                # Skip non-model lines (page-assist notices, empty lines)
-                if not line or line.startswith("[") or line.startswith("page-assist"):
-                    continue
-                # Lines like "opencode/glm-5.2", "vllm/llm", "zai-coding-plan/glm-5.2"
-                if "/" in line:
-                    models.add(line)
-            if models:
-                return sorted(models)
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        pass
+    # K6: the shared reader owns the argv, the 2.x ``--standalone`` flag and
+    # every failure path (AC25, AC26).
+    from awf.opencode_db import available_models as _available_models
+
+    models = _available_models()
+    if models:
+        return sorted(models)
 
     # Fallback: parse opencode.json directly (fewer models, no internal providers)
     cfg_path = xdg_config_home() / "opencode" / "opencode.json"

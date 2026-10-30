@@ -261,6 +261,34 @@ class TestModelEndpointUrl:
         oc.write_text("{not json", encoding="utf-8")
         assert _net.model_endpoint_url("prov/m", oc) is None
 
+    def test_v2_native_form(self, tmp_path):
+        """K7/AC28: providers.<p>.settings.baseURL is read too."""
+        oc = tmp_path / "opencode.json"
+        oc.write_text(json.dumps({
+            "providers": {"prov": {"settings": {"baseURL": "http://v2/v1"}}},
+        }), encoding="utf-8")
+        assert _net.model_endpoint_url("prov/m", oc) == "http://v2/v1"
+
+    def test_v1_wins_when_both_forms_exist(self, tmp_path):
+        """AC29: the v1 path is tried first."""
+        oc = tmp_path / "opencode.json"
+        oc.write_text(json.dumps({
+            "provider": {"prov": {"options": {"baseURL": "http://v1/v1"}}},
+            "providers": {"prov": {"settings": {"baseURL": "http://v2/v1"}}},
+        }), encoding="utf-8")
+        assert _net.model_endpoint_url("prov/m", oc) == "http://v1/v1"
+
+    def test_no_form_in_either_place_is_none(self, tmp_path):
+        """AC30: preflight stays off, the config is not rewritten."""
+        oc = tmp_path / "opencode.json"
+        oc.write_text(json.dumps({
+            "provider": {"prov": {"options": {}}},
+            "providers": {"prov": {"settings": {}}},
+        }), encoding="utf-8")
+        before = oc.read_bytes()
+        assert _net.model_endpoint_url("prov/m", oc) is None
+        assert oc.read_bytes() == before
+
 
 class TestParseModelFromCmd:
 
@@ -502,6 +530,19 @@ class TestNetworkClassifier:
     def test_marker_inside_long_tail(self):
         tail = "x" * 100000 + "fetch failed"
         assert _net.is_network_failure(tail) is True
+
+    @pytest.mark.parametrize("text", [
+        # IMP1 probe of 2.2.3 on a dead endpoint (verbatim tail lines).
+        "Error: ECONNREFUSED: Unable to connect. Is the computer able to "
+        "access the url?",
+        "Error: Transport: ECONNRESET: The socket connection was closed "
+        "unexpectedly. For more information, pass `verbose: true`",
+    ])
+    def test_v2_error_sample_is_network(self, text):
+        assert _net.is_network_failure(text) is True
+
+    def test_unrelated_no_output_line_is_not_network(self):
+        assert _net.is_network_failure("no output for 60s") is False
 
 
 class TestPreflightTimeoutClassifier:

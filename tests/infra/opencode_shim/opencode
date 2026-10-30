@@ -57,6 +57,14 @@
 # The engine spawns us with cwd = project dir, so .agentic/ is relative.
 set -euo pipefail
 
+# K1 (AC7): the engine probes `opencode --version` before a launch. Answer
+# with the version the test asked for; touch no signals and no invocation
+# trace (a probe is not a stage call).
+if [[ "${1:-}" == "--version" ]]; then
+    echo "${AWF_SHIM_VERSION:-${AWF_TEST_OPENCODE_VERSION:-1.19.4}}"
+    exit 0
+fi
+
 TITLE=""
 PROMPT=""
 prev=""

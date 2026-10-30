@@ -1871,6 +1871,29 @@ def start_pipeline(
     )
 
 
+def _opencode_gate(project_dir: Path) -> StartResult | None:
+    """K3/R2: fail-closed launch gate — typed refusal, never an exception.
+
+    Called before the first side effect of every entry (TODO, baseline,
+    ``.ready``, ``current``, dispatch, ``_reconcile``, lease, PID).
+    """
+    from .. import opencode_version
+
+    message, rc, warning = opencode_version.gate(project_dir)
+    if warning:
+        print(f"opencode: {warning}")
+    if not message:
+        return None
+    return StartResult(
+        run_mode="noop",
+        run_id=None,
+        log_file=None,
+        exit_code=rc,
+        message=message,
+        warning=warning,
+    )
+
+
 def _start_pipeline(
     project_dir: Path,
     *,
@@ -1885,6 +1908,10 @@ def _start_pipeline(
     """The launch itself; :func:`start_pipeline` adds the handshake fields."""
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
+    # K3/R2: no isolation → no launch, before the readiness gate and the lease.
+    opencode_refusal = _opencode_gate(project_dir)
+    if opencode_refusal is not None:
+        return opencode_refusal
     # OPS IMP1 (R1/INV8): validate the cap BEFORE the readiness gate, the
     # lease and the first file — caller by raise, project key as a refusal.
     timeout = stage_timeout.validate_caller(timeout)
@@ -2224,6 +2251,10 @@ def _continue_pipeline(
     """The resume itself; :func:`continue_pipeline` adds the handshake fields."""
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
+    # K3/R2: the same gate BEFORE the ACK is armed and the lease is taken.
+    opencode_refusal = _opencode_gate(project_dir)
+    if opencode_refusal is not None:
+        return opencode_refusal
     # OPS IMP1 (R1/INV8): same early cap validation as start_pipeline —
     # before the ACK is written, the lease is taken and a stage starts.
     timeout = stage_timeout.validate_caller(timeout)

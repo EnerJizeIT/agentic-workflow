@@ -25,6 +25,13 @@
 #                --file .agentic/inbox/TODO-0001.md -- <prompt containing "TODO-0001">
 set -euo pipefail
 
+# K1 (AC7): answer the version probe without writing a signal — a probe used
+# to look like a silent worker exit and produced a false DONE path (CTX2).
+if [[ "${1:-}" == "--version" ]]; then
+    echo "${AWF_SHIM_VERSION:-${AWF_TEST_OPENCODE_VERSION:-1.19.4}}"
+    exit 0
+fi
+
 BEHAVIOR="${AWF_TEST_OPENCODE_BEHAVIOR:-done}"
 
 # Extract TODO-NNNN from prompt (positional args after `--`)

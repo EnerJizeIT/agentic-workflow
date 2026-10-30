@@ -238,8 +238,19 @@ def run_agent_stage(
             watch_paths.append(outbox / f"{prefix}-{todo_id}.md.ready")
 
     from . import config as cfg_mod
+    from . import opencode_version
     from ._env import awf_subprocess_env
     from .signal_watch import run_subprocess_until_signal
+
+    # K2: the same helper builds the effective argv for both spawns. 1.x and
+    # ``off`` give a byte-identical argv (INV1); 2.x + auto/on adds the flag.
+    plan = opencode_version.resolve_standalone(
+        config, opencode_version.probe_version()
+    )
+    if plan.warning:
+        print(f"opencode: {plan.warning}")
+        _log(logs_dir, f"opencode: {plan.warning}")
+    cmd = opencode_version.apply_standalone(cmd, plan)
 
     if log_holder is None:
         log_holder = {}
