@@ -5,9 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-10-30
+
+### Added
+
+- opencode 2.x adapter: version, mode, preflight, metrics, rollback.
+
+- Version probe and launch mode (`opencode.standalone`: `auto`/`on`/`off`, `--standalone` at major >= 2), fail-closed preflight on all start entries, managed opt-in (`opencode.managed`).
+- metrics read both schemas: `session`/`part`/`message` (v1) and `session_v2`/`session_message` (v2), union by session id, `n/a` instead of zeros; v2 `title` from `session_v2`, tokens and cost from `session_message.data`.
+- shared DB reader `awf/opencode_db.py` for CLI and UI plugin: schema probe, recent models, `opencode models --standalone` only when supported.
+- baseURL in both config forms (`providers.<p>.settings.baseURL`), v2 network error markers, kill-group e2e for the private server.
+- rollback to 1.19.4 without config or DB migration; hashes unchanged in the mode/refusal window.
+
+### Changed
+
+- `awf doctor` prints the opencode version, mode and `--standalone` support.
+- version probe cached per process; test doubles answer `--version` without signals.
+
 ## [2.2.0] - 2026-10-29
 
-### Added.
+### Added
 
 - ops reliability (R1–R6): per-stage timeout from config, full-suite warning before spawn, hard timeout -> BLOCKED with log tail, xfail/skip gate, `awf doctor` (versions, code identity, config-key registry, dead keys, plugin drift, no secrets), start handshake (rc/version/code identity).
 - context efficiency IMP5: fix rounds resume the same implementer/QA opencode session (`engine.reuse_session`, `on`/`always`/`fix-only`/`off`), live capture diagnostics.
