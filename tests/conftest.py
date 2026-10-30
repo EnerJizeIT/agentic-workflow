@@ -72,6 +72,14 @@ if hasattr(os, "killpg"):
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AWF_BIN = REPO_ROOT / "bin" / "awf"
 STUBS_DIR = REPO_ROOT / "tests" / "stubs"
+_VERSION_STUB_DIR = REPO_ROOT / "tests" / "infra" / "opencode_version_stub"
+
+# K1/K3: every launch probes ``opencode --version`` BEFORE any side effect
+# (fail-closed). CI has no opencode installed, so without this double every
+# launch would be refused and dozens of unrelated tests would see "noop".
+# The double answers the probe as 1.x (the rollback version) and fails any
+# real invocation: a test that spawns a stage puts its own shim/stub first.
+os.environ["PATH"] = f"{_VERSION_STUB_DIR}{os.pathsep}{os.environ.get('PATH', '')}"
 
 
 @pytest.fixture(autouse=True)

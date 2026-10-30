@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# K1/K3 test double: the launch preflight probes `opencode --version` before
+# any side effect. CI has no opencode installed — this answers the probe as
+# 1.x (the rollback version) so an unrelated test is not refused by the
+# fail-closed gate. A REAL invocation is not expected here and fails loudly:
+# a test that spawns a stage puts its own shim or stub in front of PATH.
+if [[ "${1:-}" == "--version" ]]; then
+    echo "${AWF_TEST_OPENCODE_VERSION:-1.19.4}"
+    exit 0
+fi
+echo "opencode_version_stub: a real opencode invocation is not expected in this test" >&2
+exit 1
