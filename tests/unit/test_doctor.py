@@ -62,7 +62,7 @@ def env(monkeypatch, tmp_path):
     return opencode
 
 
-def _versions(monkeypatch, *, process="2.2.0", plugin="2.2.0", metadata="2.2.0"):
+def _versions(monkeypatch, *, process="2.3.0", plugin="2.3.0", metadata="2.3.0"):
     monkeypatch.setattr("awf.versions.process_version", lambda: process)
     monkeypatch.setattr("awf.versions.plugin_version", lambda: plugin)
     monkeypatch.setattr("awf.versions.install_metadata", lambda name: metadata)
@@ -97,7 +97,7 @@ def test_runner_version_drift_is_a_warn(project, env, monkeypatch):
     runner_warns = [line for line in report.warnings if line.startswith("WARN  runner:")]
     assert len(runner_warns) == 1, _lines(report)
     assert "2.0.0" in runner_warns[0]
-    assert "2.2.0" in runner_warns[0]
+    assert "2.3.0" in runner_warns[0]
     assert str(runner) in runner_warns[0]
 
 
@@ -105,7 +105,7 @@ def test_same_version_different_code_is_a_warn(project, env, monkeypatch):
     """AUD-0293-2: equal versions do not identify code — commits do."""
     runner = project.parent / "runner"
     (runner / "awf").mkdir(parents=True)
-    (runner / "awf" / "__init__.py").write_text('__version__ = "2.2.0"\n')
+    (runner / "awf" / "__init__.py").write_text('__version__ = "2.3.0"\n')
     config = dict(CLEAN_CONFIG)
     config["automation"] = {"runner_dir": str(runner)}
     _write_config(project, config)
@@ -169,11 +169,11 @@ def test_config_without_dead_keys_has_no_key_warn(project, env, monkeypatch):
 
 def test_plugin_and_metadata_warnings_are_separate(project, env, monkeypatch):
     """AC23: plugin vs awf is one WARN, metadata vs module is another."""
-    monkeypatch.setattr("awf.versions.process_version", lambda: "2.2.0")
+    monkeypatch.setattr("awf.versions.process_version", lambda: "2.3.0")
     monkeypatch.setattr("awf.versions.plugin_version", lambda: "2.0.0")
     monkeypatch.setattr(
         "awf.versions.install_metadata",
-        lambda name: "1.6.0" if name == "agent-workflow-ui" else "2.2.0",
+        lambda name: "1.6.0" if name == "agent-workflow-ui" else "2.3.0",
     )
 
     report = run_doctor(project)
@@ -185,7 +185,7 @@ def test_plugin_and_metadata_warnings_are_separate(project, env, monkeypatch):
         if line.startswith("WARN  agent-workflow-ui metadata:")
     ]
     assert len(plugin_warn) == 1, _lines(report)
-    assert "2.0.0" in plugin_warn[0] and "2.2.0" in plugin_warn[0]
+    assert "2.0.0" in plugin_warn[0] and "2.3.0" in plugin_warn[0]
     assert len(meta_warn) == 1, _lines(report)
     assert "1.6.0" in meta_warn[0] and "2.0.0" in meta_warn[0]
     assert "stale, reinstall the package" in meta_warn[0]
@@ -349,7 +349,7 @@ def test_unreadable_pinned_runner_does_not_blame_the_plugin(project, env, monkey
         line for line in report.lines if line.startswith("WARN  plugin:")
     ]
     assert not plugin_warns, _lines(report)
-    assert any("plugin: 2.2.0" in line for line in report.lines), _lines(report)
+    assert any("plugin: 2.3.0" in line for line in report.lines), _lines(report)
 
 
 def test_plugin_drift_ignores_an_unknown_runner():
