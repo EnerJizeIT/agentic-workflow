@@ -357,3 +357,17 @@ def plugin_setup(tmp_path, monkeypatch):
     monkeypatch.setattr(browser_mod, "open_path", _fake_open_path, raising=True)
 
     return config
+
+
+@pytest.fixture(autouse=True)
+def _no_socks_proxy_env(monkeypatch):
+    """A11: doctor warns when a socks proxy sits in the worker env.
+
+    The developer's shell may carry ``socks5h://...``; tests must not depend
+    on the host environment. Tests that need a proxy set it themselves.
+    """
+    for name in (
+        "http_proxy", "https_proxy", "all_proxy",
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+    ):
+        monkeypatch.delenv(name, raising=False)
