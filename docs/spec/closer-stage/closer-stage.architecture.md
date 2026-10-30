@@ -15,7 +15,7 @@
 | Схема стадии | ключ `skip_if`, enum, ошибка загрузки и записи | `awf/pipeline.py` (`ALLOWED_STAGE_KEYS`, `Stage`, `validate_pipeline_stages`, `load_stages`) | R1 |
 | Сериализатор | общий словарь стадии для per-TODO и service-run снапшотов | `awf/pipeline.py::stage_to_document`; вызовы в `pipeline_snapshot_text`, `awf/api/run.py::_write_service_pipeline` | R1, R3 |
 | Точка решения | вердикт, пропуск, `dod:`, статический дефект | `awf/closer_stage.py::decide`; вызов в `awf/pipeline_engine.py::execute_agent_stage` | R2 |
-| Стадия | промпт, позиция, `write_check: "off"` | `.agentic/pipelines/default.yaml`; `awf/templates/pipelines/*` | R3, R7 |
+| Стадия | пара `checklist-close` + `checklist-check`: промпт, `session_key`, позиции, `write_check: "off"` | `.agentic/pipelines/default.yaml`; `awf/templates/pipelines/*` | R3, R7 |
 | Бюджет и неизменяемость | счётчик завершённых прогонов, снимок «до», BLOCKED | `awf/closer_stage.py` (образец — `awf/budget.py`, не меняем) | R4, R5 |
 | Статистика | `stats`, `--wave`, `--json` | `awf/cmd_checklist.py` | R6 |
 | Поставка | генератор формы и шаблоны | `awf/api/setup.py::build_pipeline_stages` | R7 |
@@ -23,7 +23,7 @@
 
 ## 2. K1 — `skip_if` и общий сериализатор
 
-`Stage.skip_if: str = ""`. Допустимое значение одно — `checklist_green`. Нет ключа или значение `null` — стадия идёт всегда. Любое другое значение (пустая строка, число, `bool`) — `AwfApiError` из `validate_pipeline_stages`: имя стадии, значение и список допустимых. Тот же валидатор вызывают загрузка YAML, `awf pipeline-write` и форма, поэтому вторая проверка не нужна.
+`Stage.skip_if: str = ""`; допустимы `checklist_green` и `checklist_close_skipped`. Нет ключа или `null` — стадия идёт всегда. Любое другое значение (пустая строка, число, `bool`) — `AwfApiError` из `validate_pipeline_stages`: имя стадии, значение и список допустимых. Тот же валидатор вызывают загрузка YAML, `awf pipeline-write` и форма, поэтому вторая проверка не нужна.
 
 Один `stage_to_document(stage) -> dict` отдаёт поля стадии. Он пишет `skip_if` при непустом значении, `write_allow` при непустом списке и `write_check` при значении, отличном от `"on"`; остальные поля — как сейчас. Пустой `write_allow` не пишется. Per-TODO снапшот и service-run собирают базовый словарь этим одним сериализатором, service-run затем меняет свои дельты (`on_blocked: stop`, объявленный выход кандидата, `write_check: "off"`). Заменяя output первого воркера на кандидата, service-run снимает `write_allow` этой стадии: старый allowlist относится к другому output, и загрузчик его отвергнет. Снапшот читается тем же `load_stages`; тест загружает оба файла и сравнивает объявленные поля.
 
@@ -31,7 +31,7 @@
 
 ## 3. K2 — одна точка решения
 
-Точка решения — вход стадии в `execute_agent_stage`, после того как `current_todo` известен, но до baseline, манифеста записи и спавна. Хук срабатывает только при непустом `stage.skip_if`; стадия без ключа идёт прежним путём и гейт на границе не вызывает. Сюда же приходит повторный вход после красного closer: это тот же вход стадии, не вторая точка.
+Точка решения — вход стадии в `execute_agent_stage`, после `current_todo` и до baseline, манифеста и спавна. Хук работает только при непустом `stage.skip_if`; стадия без ключа гейт не вызывает. Повторный вход после красного closer — тот же вход, не вторая точка.
 
 ```
 decide(project, todo, stage, config) -> Decision
@@ -40,15 +40,15 @@ Decision: kind = run | skip | blocked, verdict: dict, log_line: str, note: str
 
 Порядок в `decide`:
 
-1. Статический дефект стадии: `skip_if` задан, а `write_check` не `"off"` — `blocked` с именем стадии и ключа (AC27). Конфиг `checklist.closer_attempts` проверяется здесь же; неверное значение — `blocked` с именем ключа, без подмены дефолтом.
+1. Статический дефект стадии: `skip_if` без `write_check: "off"` (AC27) или неверный `checklist.closer_attempts` — `blocked` с именем ключа, без подмены дефолтом.
 2. `checklist_gate.run(project, todo)` с кэшем INV1. Ошибка гейта (нет TODO) — `blocked`, без спавна; нечитаемый контракт TODO — тот же отказ на шаге 3.
 3. Первый вердикт юнита пишется в K3, если его ещё нет; `wave` копируется из контракта TODO. Нечитаемый контракт — `blocked` (fail closed). Ручной `awf checklist check` и verify-pack файл K3 не создают (AC25).
 4. Строка лога, ровно одна на вход: `dod: N/M`, где N — пункты `ok`, M — все пункты; при непустых списках добавляются ` (missing: id,…)` и ` (manual: id,…)`; `dod: none` без блока; `dod: 0/0 (missing: (empty block))` для пустого блока (AC4).
 5. Статический дефект блока — `missing` содержит `(empty block)` или `(unreadable block)` — `blocked` с маршрутом «починить блок», без closer и без траты бюджета (AC26). Строка `dod:` к этому моменту уже написана.
-6. `status=none` или `ok=true` — `skip`: воркер не спавнится, PID нет, в лог `SKIPPED (checklist_green)`, в state `stage_skipped=true` и причина; следующий старт стадии сбрасывает оба поля. Ручные `manual`-пункты не запускают closer и ему не передаются (AC5).
+6. `status=none` или `ok=true` — `skip`: воркер не спавнится, в лог `SKIPPED (checklist_green)`, в state `stage_skipped` и причина; следующий старт сбрасывает оба поля. `manual`-пункты closer не запускают и не передаются (AC5).
 7. Красный гейт: если `attempts >= limit` — `blocked` с BLOCKED-заметкой K4; иначе `run`.
 
-Повторный пересчёт после closer — проверка результата, а не второе решение: он не пишет новый `first_verdict` и не меняет `dod:`, только решает «зелёно / ещё красный / блок» (AC10). Кэш другого дерева не применяется: `checklist_gate.run` в точке решения всегда считает текущее дерево.
+Повторный пересчёт после closer — проверка результата, а не второе решение: без нового `first_verdict` и `dod:`, только «зелёно / ещё красный / блок» (AC10). Кэш другого дерева не применяется — гейт считает текущее дерево.
 
 ## 4. K3 — состояние юнита
 
@@ -64,7 +64,7 @@ Decision: kind = run | skip | blocked, verdict: dict, log_line: str, note: str
 }
 ```
 
-`first_verdict` и `wave` заполняются один раз на первом входе, включая зелёный пропуск; повторный вход и рестарт читают исходные. `before` появляется на первом красном решении, до первого спавна. `attempts` меняет только K4. Файл переживает `kill`/`continue`; история первого прохода не зависит от перезаписи `CHECKLIST-<todo>.json` (CTX3). Битый или нечитаемый CLOSER — BLOCKED без спавна; файл не перезаписывается молча, счётчик не обнуляется.
+`first_verdict` и `wave` пишутся один раз на первом входе, включая зелёный пропуск; повторный вход и рестарт читают исходные. `before` появляется на первом красном решении, до спавна. `attempts` меняет только K4. Файл переживает `kill`/`continue`; история не зависит от перезаписи `CHECKLIST-<todo>.json` (CTX3). Битый CLOSER — BLOCKED без спавна; файл не перезаписывается молча, счётчик не обнуляется.
 
 ## 5. K4 — бюджет попыток
 
@@ -72,38 +72,47 @@ Decision: kind = run | skip | blocked, verdict: dict, log_line: str, note: str
 
 Бюджет тратит **завершённый прогон closer с вердиктом**, а не спавн:
 
-- спавн, падение без сигнала, salvage, ретрай после падения (сам факт ретрая) и `skip_if`-пропуск — не тратят;
-- прогон, закончившийся сигналом (`DONE`, `APPROVED` или `BLOCKED`), после которого пересчитан гейт, — тратит один раз; вердикт гейта решает исход, а не тип сигнала;
+- спавн, падение без сигнала, salvage, ретрай и `skip_if`-пропуск — не тратят;
+- прогон с сигналом (`DONE`, `APPROVED`, `BLOCKED`), после которого пересчитан гейт, — тратит один раз; исход решает гейт, не тип сигнала;
 - сигнал, полученный через salvage (closer упал, сигнал дал супервизор), бюджет не тратит.
 
 После завершённого прогона: пересчёт гейта на текущем дереве, `attempts += 1`, затем сверка отпечатков K5. Зелёный гейт — обычный переход к следующей стадии; красный и `attempts < limit` — возврат того же `stage_idx` (повторный вход в K2); красный и `attempts == limit` — `blocked` и остановка; правка нормы — BLOCKED до решения о цвете. Salvaged-красный — `blocked` без нового спавна; цикл падений держат стадийный `max_retries` и salvage-счётчик.
 
-BLOCKED-заметка пишется `managed_fs.managed_write_text` по стандартной схеме `docs/unit-contract.md` (`ВЕРДИКТ`, `НАХОДКИ`, `НАПРАВЛЕНИЯ-ФИКСА`, `ПЕРЕНОСЫ`): в `НАХОДКИ` — `missing`, в `НАПРАВЛЕНИЯ-ФИКСА` — строка «решение супервизора». `last_signal=BLOCKED-<id>`, коммита нет. Повторный запуск и `awf continue` счётчик не сбрасывают: при пределе 2 ровно второй прогон, после него BLOCKED; третьего нет (AC11, AC24).
+BLOCKED-заметка пишется `managed_fs.managed_write_text` по стандартной схеме `docs/unit-contract.md` (`ВЕРДИКТ`, `НАХОДКИ`, `НАПРАВЛЕНИЯ-ФИКСА`, `ПЕРЕНОСЫ`): в `НАХОДКИ` — `missing`, в `НАПРАВЛЕНИЯ-ФИКСА` — строка «решение супервизора». `last_signal=BLOCKED-<id>`, коммита нет. `awf continue` счётчик не сбрасывает: при пределе 2 второй прогон, затем BLOCKED (AC11, AC24).
 
 ## 6. K5 — неизменяемость блока и контракта
 
 `before` снимается перед первым спавном:
 
 - `block_sha` — `block_hash(todo_text)`, покрывает блок `## Чек-лист завершения`;
-- `contract_sha` — sha256 канонического JSON (`sort_keys`, компактные разделители) из `parse_todo_contract` по ключам `verify`, `gates`, `prove_red`; `files` и остальные ключи не входят. Нет контракта — хэш пустого набора.
+- `contract_sha` — sha256 канонического JSON (`sort_keys`, компактные разделители) из `parse_todo_contract` по ключам `verify`, `gates`, `prove_red`, `prove_red_kind`, `prove_red_note`, `prove_red_cmd`, `prove_red_pin`, `flake`, `xfail_allow`, `skip_allow`; `files` и остальные ключи не входят. Допуск, равный умолчанию (0), отбрасывается: явный ноль хэшируется как отсутствие ключа. Нет контракта — хэш пустого набора.
 
 После каждого завершённого прогона, до решения о цвете и до следующего спавна, оба хэша пересчитываются. Расхождение — BLOCKED «closer edited the checklist/contract» с именем блока; закрытые пункты отказ не отменяют, файл не откатывается (доктрина 02), коммита нет. Сверка идёт с исходным снимком, не с предыдущей попыткой, поэтому переживает рестарт (AC12–AC14). Нечитаемый после правки контракт — тот же BLOCKED.
 
 ## 7. K6 — стадия и позиции
 
 ```yaml
-- name: implementer-close
-  id: implementer-close
+- name: checklist-close
+  id: checklist-close
   role: agent-implementer
+  session_key: agent-implementer
   task: >-
     Закрой ТОЛЬКО пункты `## Чек-лист завершения` с пробами (`missing`);
     `manual` вне scope, блок не править; не меняй скоуп и контракт; запусти
     `awf checklist check <todo>`; отчитайся пунктами.
   skip_if: checklist_green
   write_check: "off"
+- name: checklist-check
+  id: checklist-check
+  role: agent-qa-review
+  session_key: agent-qa-review
+  task: >-
+    Проверь ТОЛЬКО дифф checklist-close: изменённые им файлы и целевые тесты,
+    без полного круга; находки — обычным `## REVIEW-фикс`.
+  skip_if: checklist_close_skipped
 ```
 
-Стадия объявляет `task` и `write_check: "off"`, не объявляет `output` и `write_allow`; коммита не делает (его делает движок на verify). Позиция — не первая и не последняя, `kind=execute`: в `default`, `full` и локальном `default.yaml` сразу после `qa-review` и до `agent-project-auditor`; в `code-health` после `refactoring`, до verify. `qa-review` не «пишет тесты»; `agent-architect-review` — писатель и стоит раньше `qa-review`, поэтому «после qa-review» действительно позже последнего писателя (RR25). Позиция шаблонов та же (AC7, AC9).
+Обе стадии объявляют `task` и `session_key`; `checklist-close` — ещё `write_check: "off"`, `checklist-check` — `skip_if: checklist_close_skipped` (факт: close этой пары не выполнялся). `output`/`write_allow` не объявляют, коммита нет (его делает движок на verify). Позиция — не первая и не последняя, `kind=execute`: в `default`, `full` и локальном `default.yaml` — `qa-review → checklist-close → checklist-check → agent-project-auditor`; в `code-health` — `refactoring → checklist-close → checklist-check → verify`. `qa-review` не «пишет тесты»; `agent-architect-review` — писатель и стоит раньше `qa-review`, поэтому «после qa-review» действительно позже последнего писателя (RR25). Замороженный набор K5 — `verify`, `gates`, `prove_red` с `prove_red_kind`/`prove_red_note`/`prove_red_cmd`, `prove_red_pin`, `flake`, `xfail_allow`/`skip_allow`; `files` вне нормы: это канонический контракт пары (AC13).
 
 Совместимость: старые пайплайны без `skip_if` грузятся и идут прежним путём; юнит без блока — `none`; `awf init` пайплайны не пишет; локальный `default.yaml` правится в юните, он gitignored, тест читает файл. Новый проект из формы получает closer в `default`; `full.yaml` и `code-health.yaml` несут стадию на своих местах (AC18, AC19).
 
@@ -120,17 +129,17 @@ BLOCKED-заметка пишется `managed_fs.managed_write_text` по ст�
 | пустой или нечитаемый блок | BLOCKED «починить блок», спавна и траты нет |
 | падение без сигнала | salvage; бюджет не тратится; цикл держат `max_retries` и salvage-счётчик |
 | salvage дал сигнал при красном гейте | BLOCKED без нового спавна |
-| правка блока или `verify/gates/prove_red` | BLOCKED, файл остаётся в дереве, коммита нет |
+| правка блока или замороженного набора K5 | BLOCKED, файл остаётся в дереве, коммита нет |
 | бюджет исчерпан при красном | BLOCKED со списком `missing` и «решение супервизора» |
 | старый пайплайн без ключа | стадия идёт всегда, поведение прежнее |
 | service-run | снапшот несёт `skip_if`; юнит без блока пропускает closer |
 
 ## 10. Решения
 
-- **D1 (Q2).** Точка решения — вход `execute_agent_stage`, до baseline и манифеста: там уже известен TODO и есть управление возвратом на тот же `stage_idx`. Альтернатива «в цикле оркестратора» потребовала бы дублировать разрешение TODO и запись состояния.
+- **D1 (Q2).** Точка решения — вход `execute_agent_stage`, до baseline и манифеста: там уже известен TODO и есть возврат на тот же `stage_idx`.
 - **D2 (Q3).** История и счётчик — один `context/CLOSER-<todo>.json`; `CHECKLIST-<todo>.json` перезаписывается и для истории не годится (CTX3).
-- **D3 (Q4).** Замораживаются блок и семантика контракта `verify/gates/prove_red`; `files` — отчёт. Одна пара хэшей, один снимок «до».
-- **D4 (RR2/RR11).** Одно решение на юнит — вход стадии с `skip_if`; пересчёт после closer — проверка результата. Closer стоит после последней пишущей стадии, поэтому вердикт свежий.
+- **D3 (Q4).** Замораживаются блок и семантика контракта по K5 (`prove_red_pin`/`flake` включены); `files` — отчёт. Одна пара хэшей, один снимок «до».
+- **D4 (RR2/RR11).** Одно решение на юнит — вход стадии с `skip_if`; пересчёт после closer — проверка результата; closer стоит после последней пишущей стадии.
 - **D5 (RR3).** `write_check: "off"` — явный именованный отказ от allowlist; защиту нормы дают хэши K5, а не список путей.
 - **D6 (RR7/AC26/AC27).** Статические дефекты стадии и блока дают BLOCKED до спавна; бюджет не тратится.
 - **D7 (RR18).** Бюджет считает завершённые прогоны с вердиктом, а не спавны; падение, salvage, ретрай после падения и пропуск бесплатны.
@@ -144,13 +153,13 @@ BLOCKED-заметка пишется `managed_fs.managed_write_text` по ст�
 |---|---|---|---|
 | IMP1 | R1 | `skip_if` в схеме, загрузчике, записи; `stage_to_document`; раздел в `docs/unit-contract.md` | снапшоты несут ключ; чужое значение — отказ загрузки и записи; пустой `write_allow` не пишется; service-run не тащит чужой allowlist |
 | IMP2 | R2 | `closer_stage.decide`, хук на входе стадии, `dod:`, пропуск, статические дефекты блока | зелёный — 0 спавнов; красный — запуск; формат `dod:`; пустой блок — BLOCKED |
-| IMP3 | R3 | стадия `implementer-close` в локальном `default.yaml`, `task`, `write_check: "off"`, позиция | промпт исполнительский, стадия не первая; снапшот сохраняет объявленные поля |
+| IMP3 | R3 | пара `checklist-close` + `checklist-check` в локальном `default.yaml`, `task`, `session_key`, `write_check: "off"`, позиции | промпт исполнительский, стадии не первые; снапшот сохраняет объявленные поля |
 | IMP4 | R4 | `checklist.closer_attempts`, валидация, счётчик завершённых прогонов, BLOCKED | 1/2 прогона; падение и salvage не тратят; третий невозможен; неверный ключ — отказ |
-| IMP5 | R5 | `before`, хэши блока и контракта, BLOCKED при правке | правка блока и `verify/gates/prove_red` ловится; снимок переживает рестарт; `files` не ловится |
+| IMP5 | R5 | `before`, хэши блока и контракта, BLOCKED при правке | правка блока и любого ключа из K5 ловится; снимок переживает рестарт; `files` не ловится |
 | IMP6 | R6 | `awf checklist stats`, `--wave`, `--json` | `caught/runs` по двум юнитам; пустой набор — rc 0; `manual` вне статистики |
 | IMP7 | R7, R8 | генератор формы, `full.yaml`, `code-health.yaml`, полный набор тестов | новый проект получает closer; старый файл не тронут; `bash scripts/run-all.sh` зелёный |
 
-Порядок — по зависимостям: схема → вердикт → стадия → бюджет → неизменяемость → статистика → поставка и тесты. R9 покрыт таблицей: каждый IMP называет не больше двух R# и имеет свой verify/prove-red (AC22, AC23). Перечень R8 покрывает AC4, AC6, AC8, AC9, AC16, AC17, AC18, AC19, AC24, AC27 и остальные ветки AC20; отдельного IMP под R9 не нужно.
+Порядок — по зависимостям: схема → вердикт → стадия → бюджет → неизменяемость → статистика → поставка. R9 покрыт таблицей (AC22, AC23). R8 покрывает AC4, AC6, AC8, AC9, AC16-AC19, AC24, AC27 и остальные ветки AC20; отдельного IMP под R9 нет.
 
 ## 12. Покрытие и открытые пункты
 

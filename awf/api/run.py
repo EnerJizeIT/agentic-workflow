@@ -704,7 +704,11 @@ def run_status(project_dir: Path) -> RunStatusResult:
             f"Run active: {position}, current {current or '—'}"
             + _current_pipeline_hint(state.get("queue"), current)
             + (f", budget left ~{left} min (productive)" if budget else "")
-            + (f" Stage stall: {stall}." if stall else "")
+            # Architect review (TODO-0307): the same rule as the brief card
+            # (PA-0306-5) — a quiet stage line next to a dead engine says
+            # "quiet" about something that is gone. The field keeps the
+            # detector's line; only the rendered message drops it.
+            + (f" Stage stall: {stall}." if stall and not engine_dead else "")
             + (f" Engine dead: {engine_dead}." if engine_dead else "")
         )
     else:

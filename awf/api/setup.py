@@ -73,14 +73,22 @@ _slugify_role = slugify_role
 # canonical contract is docs/spec/closer-stage K6; the local
 # .agentic/pipelines/default.yaml and the shipped templates hold the same
 # block, so the generator is the third surface of one composition.
-_CLOSER_STAGE_NAME = "implementer-close"
+_CLOSER_STAGE_NAME = "checklist-close"
 _CLOSER_STAGE_TASK = (
     "Закрой ТОЛЬКО пункты `## Чек-лист завершения` с пробами (`missing`); "
     "`manual` вне scope, блок не править; не меняй скоуп и контракт; "
     "запусти `awf checklist check <todo>`; отчитайся пунктами."
 )
+# TODO-0304: the follow-up check right after the close stage. It reviews
+# ONLY the closer's diff and is skipped when the closer did not run.
+_CHECK_STAGE_NAME = "checklist-check"
+_CHECK_STAGE_TASK = (
+    "Проверь ТОЛЬКО дифф checklist-close: изменённые им файлы и целевые "
+    "тесты, без полного круга; находки — обычным `## REVIEW-фикс`."
+)
 # R7: the closer runs after the last stage that may write the unit. Roles
 # below only report findings (no code edits), so they stay after it.
+# TODO-0304: the follow-up check runs right after the closer, before it.
 _POST_CLOSER_ROLES = frozenset({"agent-project-auditor"})
 
 
@@ -91,8 +99,23 @@ def _closer_stage() -> dict[str, Any]:
         "agent-implementer",
         id=_CLOSER_STAGE_NAME,
         task=_CLOSER_STAGE_TASK,
+        # IMP5 (TODO-0304): the close continues the implementer's session.
+        session_key="agent-implementer",
         skip_if="checklist_green",
         write_check="off",
+    )
+
+
+def _check_stage() -> dict[str, Any]:
+    """TODO-0304: the follow-up check of the closer's diff."""
+    return _stage_yaml(
+        _CHECK_STAGE_NAME,
+        "agent-qa-review",
+        id=_CHECK_STAGE_NAME,
+        task=_CHECK_STAGE_TASK,
+        # IMP5 (TODO-0304): the check continues the QA session.
+        session_key="agent-qa-review",
+        skip_if="checklist_close_skipped",
     )
 
 
@@ -359,10 +382,11 @@ def build_pipeline_stages(
       first team role) plus, when ``include_qa`` is set and the team has
       a QA role that is not the primary, that QA role. A primary that is
       already the QA role adds no duplicate stage. This is NOT "one agent
-      only": the closer gate (``implementer-close``) and ``verify`` still
+      only": the checklist-close/check pair and ``verify`` still
       run, so a single unit keeps its definition-of-done check.
     - ``include_closer`` (IMP7, TODO-0290): ``True`` (default) inserts
-      the ``implementer-close`` gate; the quick tier passes ``False`` —
+      the ``checklist-close``/``checklist-check`` pair; the quick tier passes
+      ``False`` —
       quick stays the short S-class set.
 
     Args:
@@ -381,7 +405,7 @@ def build_pipeline_stages(
 
     Returns:
         List of stage dicts: ``[plan(supervisor)] + [working stages] +
-        [implementer-close] + [verify(supervisor)]`` (the closer is
+        [checklist-close] + [checklist-check] + [verify(supervisor)]`` (both are
         omitted when ``include_closer=False``). CLOSER IMP7 (R7): the
         closer stands after the last writing stage — before the
         findings-only tail (``_POST_CLOSER_ROLES``).
@@ -494,7 +518,10 @@ def build_pipeline_stages(
             )
         )
     if include_closer:
-        stages.insert(1 + closer_at, _closer_stage())
+        # TODO-0304: close, then the check of its diff — one insertion so
+        # the order cannot drift from the templates.
+        at = 1 + closer_at
+        stages[at:at] = [_closer_stage(), _check_stage()]
 
     stages.append(
         _stage_yaml(
@@ -848,8 +875,8 @@ def write_quick_pipeline(
     alternate pipeline selected per unit (``pipeline: quick`` in the
     TODO front-matter or a run-queue item).
 
-    IMP7 (TODO-0290): quick stays the short set — no ``implementer-close``
-    gate; the closer belongs to the full/default/single compositions.
+    IMP7 (TODO-0290): quick stays the short set — no ``checklist-close``/
+    ``checklist-check`` gate; the closer belongs to the full/default/single compositions.
 
     Skipped (``None`` + a warning naming the reason) when:
     - no worker stage survives the QA removal (QA-only team), or

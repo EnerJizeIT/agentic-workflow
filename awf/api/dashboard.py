@@ -316,16 +316,36 @@ def _read_handoffs(
     return handoffs
 
 
-def _determine_status(state: dict[str, Any] | None) -> tuple[str, str, str, str, str]:
+def _determine_status(
+    state: dict[str, Any] | None,
+    project_dir: Path | None = None,
+) -> tuple[str, str, str, str, str]:
     """Determine dashboard status fields from pipeline state.
 
     Returns (status, status_class, status_text, status_icon, status_label).
 
     DF6-6: checks pipeline PID liveness. If state has pipeline_pid but
     the process is dead, shows "Pipeline dead" instead of stale "running".
+
+    TODO-0306: a frozen stage (dead pid OR ``updated_at`` older than
+    ``automation.stale_stage_minutes``) is never painted green — the badge
+    carries the same ``STALE stage … — dead: …`` line as the card/status.
     """
     if not state:
         return ("idle", "done", "Idle", "○", "Status")
+
+    checkpoint_pending = bool(state.get("checkpoint_pending", False))
+    salvage_needed = bool(state.get("salvage_needed", False))
+
+    # TODO-0306: the shared stale detector owns the fact (dead pid or a
+    # quiet updated_at) and the deliberate-stop guard (salvage/checkpoint
+    # own their own badge); the dashboard only renders its line.
+    if project_dir is not None:
+        from .._engine_liveness import detect_stale_stage
+
+        stale = detect_stale_stage(project_dir, state)
+        if stale is not None:
+            return ("dead", "blocked", stale.line, "✕", "Stale")
 
     # DF6-6: PID liveness check
     pid = state.get("pipeline_pid")
@@ -340,8 +360,6 @@ def _determine_status(state: dict[str, Any] | None) -> tuple[str, str, str, str,
             # as dead rather than falling through to "running" (false green).
             return ("dead", "blocked", "⚠️ Pipeline process dead", "✕", "Dead")
 
-    checkpoint_pending = bool(state.get("checkpoint_pending", False))
-    salvage_needed = bool(state.get("salvage_needed", False))
     stage_kind = state.get("stage_kind", "")
     last_signal = state.get("last_signal", "")
 
@@ -1080,7 +1098,7 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
     # Status
     # AUD10-06: /api/state exposes only status + text — the icon/label
     # fields of the tuple had no template consumer.
-    _sf = _determine_status(state)
+    _sf = _determine_status(state, project_dir)
     status, status_text = _sf[0], _sf[2]
 
     # Elapsed — scoped to the CURRENT run (Day-4 live fix: the timer used to

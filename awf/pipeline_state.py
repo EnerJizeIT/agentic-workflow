@@ -84,6 +84,48 @@ def write_state(
     )
 
 
+def bump_stage_attempt(
+    project_dir: Path,
+    todo_id: str,
+    stage: str,
+    *,
+    logs_dir: Path | None = None,
+) -> int:
+    """R6/K6: reserve the next entry number of the (unit, stage) pair.
+
+    The counter lives under ``stage_attempts`` in ``state/current.yaml`` and
+    is bumped BEFORE the spawn, so a spawn killed before capture still moves
+    it. It is never rolled back and survives ``awf continue`` (AC21, AC40).
+    A failed write is non-fatal: the number 1 is returned and the failure is
+    logged, the stage still runs (K6).
+    """
+    key = f"{todo_id}:{stage}"
+    reserved = {"n": 1}
+
+    def _bump(current: dict[str, Any] | None) -> dict[str, Any]:
+        merged = dict(current or {})
+        attempts = merged.get("stage_attempts") or {}
+        if not isinstance(attempts, dict):
+            attempts = {}
+        try:
+            n = int(attempts.get(key, 0)) + 1
+        except (TypeError, ValueError):
+            n = 1
+        attempts[key] = n
+        merged["stage_attempts"] = attempts
+        merged["updated_at"] = datetime.now(timezone.utc).isoformat()
+        reserved["n"] = n
+        return merged
+
+    written = _mutate_state_locked(
+        project_dir,
+        _bump,
+        logs_dir=logs_dir,
+        failure_label="stage attempt bump",
+    )
+    return reserved["n"] if written else 1
+
+
 def drop_fields(
     project_dir: Path,
     *keys: str,
@@ -120,7 +162,7 @@ def _mutate_state_locked(
     *,
     logs_dir: Path | None,
     failure_label: str,
-) -> None:
+) -> bool:
     """Read-modify-write ``current.yaml`` under the advisory lock (single writer).
 
     ``mutator`` receives the current state (``None`` when the file is absent
@@ -144,12 +186,13 @@ def _mutate_state_locked(
         with locked(project_dir):
             new_state = mutator(read_state(project_dir))
             if new_state is None:
-                return
+                return True
             content = yaml.safe_dump(
                 new_state, default_flow_style=False, allow_unicode=True, sort_keys=True
             )
             # R1.5: single writer — the Store publishes the projection bytes.
             state_store.write_state_file(state_path, content)
+            return True
     except state_store.STATE_WRITE_FAILURES as e:
         # R2.5 REVIEW (iter 2 / L1): the whole failure family is non-fatal —
         # see ``state_store.STATE_WRITE_FAILURES``. R1.5 moved this writer onto the
@@ -161,6 +204,7 @@ def _mutate_state_locked(
         # transition.
         if logs_dir is not None:
             _log(logs_dir, f"T4.1: {failure_label} failed: {e}")
+        return False
 
 
 def read_state(project_dir: Path) -> dict[str, Any] | None:
@@ -218,25 +262,40 @@ def clear_state(project_dir: Path, *, logs_dir: Path | None = None) -> None:
         state_store.raise_state_removal_failure(e, "clear state")
 
 
+def parse_updated_at(raw: object) -> datetime | None:
+    """``current.yaml``'s ``updated_at`` → aware datetime, or ``None``.
+
+    The single parser for the field (PA-0306-6): this module writes the
+    timestamp as ``isoformat()`` with ``+00:00``, older states carry the
+    ``Z`` suffix, and a naive value means UTC. Absent, non-string or
+    unparseable input degrades to ``None`` ("unknown") — the caller decides
+    whether that is stale, never a traceback (M1).
+    """
+    if not raw:
+        return None
+    # Handle both 'Z' suffix (3.11+) and '+00:00' (3.9+)
+    try:
+        ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts
+
+
 def is_state_stale(state: dict[str, Any], max_age_seconds: int = 7200) -> bool:
     """Check if state file is older than ``max_age_seconds`` (default 2h).
 
     Readers use this to avoid trusting stale state from a crashed pipeline
-    whose orchestrator never wrote a clean exit.
+    whose orchestrator never wrote a clean exit. Reading the timestamp stays
+    with :func:`parse_updated_at`; this reader's policy is that an unknown
+    timestamp counts as stale (fail closed).
     """
-    updated_at = state.get("updated_at")
-    if not updated_at:
+    ts = parse_updated_at(state.get("updated_at"))
+    if ts is None:
         return True
-    try:
-        # Handle both 'Z' suffix (3.11+) and '+00:00' (3.9+)
-        ts_str = str(updated_at).replace("Z", "+00:00")
-        ts = datetime.fromisoformat(ts_str)
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        age = (datetime.now(timezone.utc) - ts).total_seconds()
-        return age > max_age_seconds
-    except (ValueError, TypeError):
-        return True
+    age = (datetime.now(timezone.utc) - ts).total_seconds()
+    return age > max_age_seconds
 
 
 def state_trusted(project_dir: Path, state: dict[str, Any] | None) -> bool:
@@ -267,6 +326,7 @@ def state_trusted(project_dir: Path, state: dict[str, Any] | None) -> bool:
 
 __all__ = [
     "write_state",
+    "bump_stage_attempt",
     "drop_fields",
     "read_state",
     "clear_state",

@@ -739,16 +739,23 @@ def test_closer_stage_position_and_prompt(tmp_path):
         "agent-implementer",
         "agent-architect-review",
         "agent-qa-review",
-        "implementer-close",
+        "checklist-close",
+        "checklist-check",
         "agent-project-auditor",
         "verify",
     ]
-    idx = names.index("implementer-close")
+    idx = names.index("checklist-close")
     assert 0 < idx < len(stages) - 1
+    check = stages[names.index("checklist-check")]
+    assert check.role == "agent-qa-review"
+    assert check.skip_if == "checklist_close_skipped"
+    assert check.session_key == "agent-qa-review"
+    assert names.index("checklist-check") == idx + 1
 
     closer = stages[idx]
-    assert closer.name == "implementer-close"
-    assert closer.id == "implementer-close"
+    assert closer.name == "checklist-close"
+    assert closer.id == "checklist-close"
+    assert closer.session_key == "agent-implementer"
     assert closer.role == "agent-implementer"
     assert closer.kind == "execute"
     assert closer.skip_if == "checklist_green"
@@ -773,11 +780,13 @@ def test_closer_stage_position_and_prompt(tmp_path):
     reloaded = {s.name: s for s in load_stages(
         _write_text(tmp_path / "PIPELINE-TODO-0001.yaml", snapshot)
     )}
-    assert reloaded["implementer-close"].skip_if == "checklist_green"
-    assert reloaded["implementer-close"].write_check == "off"
-    assert reloaded["implementer-close"].output == ""
-    assert reloaded["implementer-close"].write_allow == ()
-    assert reloaded["implementer-close"].task == closer.task
+    assert reloaded["checklist-close"].skip_if == "checklist_green"
+    assert reloaded["checklist-close"].write_check == "off"
+    assert reloaded["checklist-close"].output == ""
+    assert reloaded["checklist-close"].write_allow == ()
+    assert reloaded["checklist-close"].task == closer.task
+    assert reloaded["checklist-check"].skip_if == "checklist_close_skipped"
+    assert reloaded["checklist-check"].session_key == "agent-qa-review"
     assert "write_allow" not in yaml.safe_load(snapshot)["stages"][idx]
     assert "output" not in yaml.safe_load(snapshot)["stages"][idx]
 
@@ -789,10 +798,11 @@ def test_closer_stage_position_and_prompt(tmp_path):
     )
     service_file = api_run._write_service_pipeline(proj, "sla")
     service = {s.name: s for s in load_stages(service_file)}
-    assert service["implementer-close"].skip_if == "checklist_green"
-    assert service["implementer-close"].write_check == "off"
-    assert service["implementer-close"].output == ""
-    assert service["implementer-close"].write_allow == ()
+    assert service["checklist-close"].skip_if == "checklist_green"
+    assert service["checklist-close"].write_check == "off"
+    assert service["checklist-close"].output == ""
+    assert service["checklist-close"].write_allow == ()
+    assert service["checklist-check"].skip_if == "checklist_close_skipped"
     assert service["agent-implementer"].output == (
         ".agentic/roles/draft/sla.md"
     )
@@ -1826,30 +1836,35 @@ def test_generator_and_templates_carry_closer(tmp_git_repo):
         "agent-implementer",
         "agent-architect-review",
         "agent-qa-review",
-        "implementer-close",
+        "checklist-close",
+        "checklist-check",
         "agent-project-auditor",
         "verify",
     ]
 
-    for variant, before, after in (
-        ("full", "agent-qa-review", "agent-project-auditor"),
-        ("code-health", "agent-refactoring-specialist", "verify"),
+    for variant, before in (
+        ("full", "agent-qa-review"),
+        ("code-health", "agent-refactoring-specialist"),
     ):
         template = setup._builtin_pipeline_template(variant)
         assert template is not None, variant
         stages = load_stages(template)
         names = [s.name for s in stages]
-        assert "implementer-close" in names, variant
-        index = names.index("implementer-close")
+        assert "checklist-close" in names, variant
+        index = names.index("checklist-close")
         assert names[index - 1] == before, (variant, names)
-        assert names[index + 1] == after, (variant, names)
+        # TODO-0304: the follow-up check sits right after the close.
+        assert names[index + 1] == "checklist-check", (variant, names)
+        check = stages[index + 1]
+        assert check.role == "agent-qa-review"
+        assert check.skip_if == "checklist_close_skipped"
         closer = stages[index]
         assert closer.kind == "execute"
         assert closer.skip_if == "checklist_green"
         assert closer.write_check == "off"
         assert closer.output == "" and closer.write_allow == ()
         generated_closer = next(
-            stage for stage in generated if stage["name"] == "implementer-close"
+            stage for stage in generated if stage["name"] == "checklist-close"
         )
         assert closer.task == generated_closer["task"], (
             f"{variant}: the template task drifted from the generator"
@@ -1886,3 +1901,206 @@ def test_unit_contract_documents_the_closer_surface():
         "CLOSER-<todo>.json",
     ):
         assert phrase in contract, phrase
+
+
+# ─── TODO-0298: the allowances are part of the frozen norm ───────────────
+
+
+class TestFrozenAllowances:
+    BASE = {
+        "verify": ["python -m pytest -q"],
+        "gates": ["contracts"],
+        "prove_red": ["tests/x.py::test_y"],
+    }
+
+    def test_adding_an_allowance_moves_the_hash(self):
+        before = closer_stage.contract_fingerprint(dict(self.BASE))
+        for key in ("xfail_allow", "skip_allow"):
+            with_allow = dict(self.BASE)
+            with_allow[key] = 1
+            assert closer_stage.contract_fingerprint(with_allow) != before, key
+
+    def test_key_order_and_absent_or_zero_are_stable(self):
+        ordered = dict(self.BASE)
+        reordered = {k: ordered[k] for k in reversed(list(ordered))}
+        assert (
+            closer_stage.contract_fingerprint(ordered)
+            == closer_stage.contract_fingerprint(reordered)
+        )
+        assert closer_stage.contract_fingerprint(None) == (
+            closer_stage.contract_fingerprint({})
+        )
+        explicit_zero = dict(ordered, xfail_allow=0, skip_allow=0)
+        assert closer_stage.contract_fingerprint(explicit_zero) == (
+            closer_stage.contract_fingerprint(ordered)
+        )
+
+    def test_adding_an_allowance_after_the_snapshot_is_a_norm_edit(
+        self, tmp_git_repo
+    ):
+        proj = _closer_project(tmp_git_repo)
+        _write_todo(
+            proj,
+            "TODO-0001",
+            block_items=[_item("unit-01", "ok/a"), _item("unit-02", "ok/nope")],
+            contract=list(_NORM_CONTRACT),
+        )
+        stage = _closer_stage()
+        assert closer_stage.decide(proj, "TODO-0001", stage, {}).kind == "run"
+
+        _edit_todo(
+            proj,
+            "TODO-0001",
+            old='files: ["src/x.py"]',
+            new='files: ["src/x.py"]\nxfail_allow: 1',
+        )
+        blocked = closer_stage.decide(proj, "TODO-0001", stage, {})
+        assert blocked.kind == "blocked"
+
+    def test_raising_a_declared_zero_after_the_snapshot_is_a_norm_edit(
+        self, tmp_git_repo
+    ):
+        """A declared 0 is the norm; raising it to 1 is still an edit."""
+        proj = _closer_project(tmp_git_repo)
+        _write_todo(
+            proj,
+            "TODO-0001",
+            block_items=[_item("unit-01", "ok/a"), _item("unit-02", "ok/nope")],
+            contract=list(_NORM_CONTRACT) + ["xfail_allow: 0"],
+        )
+        stage = _closer_stage()
+        assert closer_stage.decide(proj, "TODO-0001", stage, {}).kind == "run"
+
+        _edit_todo(proj, "TODO-0001", old="xfail_allow: 0", new="xfail_allow: 1")
+        blocked = closer_stage.decide(proj, "TODO-0001", stage, {})
+        assert blocked.kind == "blocked"
+        assert "контракт TODO" in (blocked.log_line or "")
+
+    def test_the_two_allowances_do_not_collapse_into_one(self):
+        xfail = closer_stage.contract_fingerprint(dict(self.BASE, xfail_allow=1))
+        skip = closer_stage.contract_fingerprint(dict(self.BASE, skip_allow=1))
+        assert xfail != skip
+
+
+class TestFrozenProveRedDetails:
+    """AUD-0298-1: the prove-red mechanism is part of the frozen norm."""
+
+    BASE = {
+        "verify": ["python -m pytest -q"],
+        "gates": ["contracts"],
+        "prove_red": ["tests/x.py::test_y"],
+    }
+
+    def _with_details(self, **overrides):
+        contract = dict(
+            self.BASE,
+            prove_red_kind="coverage",
+            prove_red_note="the behavior predates this unit",
+        )
+        contract.update(overrides)
+        return contract
+
+    def test_switching_the_kind_moves_the_hash(self):
+        """The note is held equal, so only the kind can move the hash."""
+        coverage = self._with_details()
+        new_api = self._with_details(prove_red_kind="new-api")
+        assert closer_stage.contract_fingerprint(new_api) != (
+            closer_stage.contract_fingerprint(coverage)
+        )
+
+    def test_switching_the_note_moves_the_hash(self):
+        one = self._with_details(prove_red_note="one")
+        two = self._with_details(prove_red_note="two")
+        assert closer_stage.contract_fingerprint(two) != (
+            closer_stage.contract_fingerprint(one)
+        )
+
+    def test_switching_the_command_moves_the_hash(self):
+        """Two different commands must not collapse into one hash."""
+        pytest_cmd = dict(self.BASE, prove_red_cmd="pytest tests/x.py -q")
+        npm_cmd = dict(self.BASE, prove_red_cmd="npm test -- --run")
+        assert closer_stage.contract_fingerprint(npm_cmd) != (
+            closer_stage.contract_fingerprint(pytest_cmd)
+        )
+
+    def test_the_details_stay_out_of_the_absent_zero_normalisation(self):
+        """Only the allowance keys normalise: an empty detail string is a value."""
+        bare = closer_stage.contract_fingerprint(dict(self.BASE))
+        empty_kind = closer_stage.contract_fingerprint(
+            dict(self.BASE, prove_red_kind="")
+        )
+        assert empty_kind != bare
+
+    def test_switching_the_kind_after_the_snapshot_is_a_norm_edit(
+        self, tmp_git_repo
+    ):
+        """AUD-0298-1 at the guard: a closer round cannot declare `coverage`.
+
+        `prove_red_kind: coverage` turns a not-red baseline into a pass in
+        verify-pack, so the unit could hide "the tests prove nothing" by
+        editing the contract after the norm snapshot.
+        """
+        proj = _closer_project(tmp_git_repo)
+        _write_todo(
+            proj,
+            "TODO-0001",
+            block_items=[_item("unit-01", "ok/a"), _item("unit-02", "ok/nope")],
+            contract=list(_NORM_CONTRACT)
+            + [
+                "prove_red_kind: new-api",
+                'prove_red_note: "the symbol is new in this unit"',
+            ],
+        )
+        stage = _closer_stage()
+        assert closer_stage.decide(proj, "TODO-0001", stage, {}).kind == "run"
+
+        _edit_todo(
+            proj,
+            "TODO-0001",
+            old="prove_red_kind: new-api",
+            new="prove_red_kind: coverage",
+        )
+        blocked = closer_stage.decide(proj, "TODO-0001", stage, {})
+        assert blocked.kind == "blocked"
+        assert "контракт TODO" in (blocked.log_line or "")
+
+
+# ─── AUD-0299-1: flake and prove_red_pin are part of the frozen norm ──────
+
+
+class TestFrozenFlakeAndPin:
+    """AUD-0299-1: both keys decide what the unit is checked against."""
+
+    BASE = {
+        "verify": ["python -m pytest -q"],
+        "gates": ["contracts"],
+        "prove_red": ["tests/x.py::test_y"],
+    }
+
+    def test_switching_flake_moves_the_hash(self):
+        on = closer_stage.contract_fingerprint(dict(self.BASE, flake="on"))
+        off = closer_stage.contract_fingerprint(dict(self.BASE, flake="off"))
+        assert on != off
+
+    def test_switching_the_pin_list_moves_the_hash(self):
+        one = closer_stage.contract_fingerprint(
+            dict(self.BASE, prove_red_pin=["tests/x.py::test_y"])
+        )
+        two = closer_stage.contract_fingerprint(
+            dict(self.BASE, prove_red_pin=["tests/x.py::test_z"])
+        )
+        assert one != two
+
+    def test_key_order_and_an_empty_contract_stay_stable(self):
+        ordered = dict(
+            self.BASE,
+            flake="off",
+            prove_red_pin=["tests/x.py::test_y"],
+        )
+        reordered = {k: ordered[k] for k in reversed(list(ordered))}
+        assert closer_stage.contract_fingerprint(ordered) == (
+            closer_stage.contract_fingerprint(reordered)
+        )
+        assert closer_stage.contract_fingerprint(None) == (
+            closer_stage.contract_fingerprint({})
+        )

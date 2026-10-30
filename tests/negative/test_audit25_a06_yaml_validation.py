@@ -105,10 +105,10 @@ def test_repo_default_pipeline_loads_unchanged(tmp_path):
         # (owner decision 2026-10-15: architect-review after implementer,
         # project-auditor before verify) — not the minimal template.
         "plan", "agent-implementer", "agent-architect-review",
-        "agent-qa-review", "implementer-close", "agent-project-auditor",
-        "verify",
+        "agent-qa-review", "checklist-close", "checklist-check",
+        "agent-project-auditor", "verify",
     ]
-    closer = next(s for s in stages if s.name == "implementer-close")
+    closer = next(s for s in stages if s.name == "checklist-close")
     assert closer.skip_if == "checklist_green"
     assert closer.write_check == "off"
     assert stages[-1].on_approved == "commit_and_next"
@@ -320,7 +320,8 @@ def test_allowed_keys_set_pinned():
     from awf.pipeline import ALLOWED_STAGE_KEYS
 
     assert ALLOWED_STAGE_KEYS == {
-        "name", "role", "description", "id", "task", "input", "output",
+        "name", "role", "description", "id", "task", "session_key",
+        "input", "output",
         "write_allow", "write_check", "skip_if", "timeout",
         "tools",
         "on_blocked", "on_approved", "on_rejected", "on_failed",

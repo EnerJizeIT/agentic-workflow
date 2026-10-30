@@ -1640,13 +1640,15 @@ def blocked_draft(project_dir: Path, todo_id: str) -> BlockedDraftResult:
     """Build a ready ``## REVIEW-фикс`` draft from a BLOCKED note.
 
     TODO-0229 (M5): every blocked round used to cost the supervisor a manual
-    rewrite of the note into a REVIEW-fix section. This reads
+    rewrite of the note into a REVIEW-fix section. This reads the canonical
     ``outbox/BLOCKED-<id>.md`` (falling back to the legacy short name
     ``outbox/BLOCKED-<short>.md`` only when the canonical file is absent),
-    takes its ``## НАХОДКИ`` and ``## НАПРАВЛЕНИЯ-ФИКСА`` sections and
-    returns a paste-ready text with the supervisor's decision slots left
-    empty. It does NOT write the TODO — the supervisor stays the one who
-    decides scope and carries.
+    takes the bodies of its ``## НАХОДКИ`` and ``## НАПРАВЛЕНИЯ-ФИКСА``
+    sections (the headings of ``docs/unit-contract.md``; ``## ВЕРДИКТ`` and
+    ``## ПЕРЕНОСЫ`` are not carried) and returns a paste-ready text with the
+    supervisor's decision slots left empty. A note with neither section is
+    refused — its free-form text is invisible to this reader. Nothing is
+    written: the supervisor stays the one who decides scope and carries.
     """
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)

@@ -453,8 +453,8 @@ stages:
 
 **Unit levels: quick vs full.** The setup form writes a second pipeline
 next to the active one — `.agentic/pipelines/quick.yaml`, the same team
-minus the QA stage (`agent-qa-review`) and minus the closer gate
-(`implementer-close`). Pick the level per unit:
+minus the QA stage (`agent-qa-review`) and minus the closer gate with its
+follow-up check (`checklist-close` / `checklist-check`). Pick the level per unit:
 
 - **quick** — S-class units: docs, shield tests, counters, one-line fixes
   that change no behavior. No closer: the quick tier stays the short set,
@@ -462,8 +462,8 @@ minus the QA stage (`agent-qa-review`) and minus the closer gate
   as a failed check at verify; fix it by hand or run the unit on the full
   pipeline.
 - **full** (the active pipeline) — engine, security, behavior, data
-  schemas. Carries the closer gate. The shipped `full` and `code-health`
-  starters carry it too.
+  schemas. Carries the closer gate and its follow-up check. The shipped `full`
+  and `code-health` starters carry both too.
 - **single** (a `stage_mode` of the setup form) — one working role per
   unit, NOT one agent: the closer gate and `verify` still run.
 - When in doubt, full.

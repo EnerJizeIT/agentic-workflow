@@ -833,14 +833,22 @@ optional_data_keys: []
           '  description: Supervisor studies the plan and creates a TODO'
         ];
         var closerLines = [
-          '- name: implementer-close',
+          '- name: checklist-close',
           '  role: agent-implementer',
-          '  id: implementer-close',
+          '  id: checklist-close',
           '  task: Закрой ТОЛЬКО пункты `## Чек-лист завершения` с пробами (`missing`); `manual`',
           '    вне scope, блок не править; не меняй скоуп и контракт; запусти `awf checklist',
           '    check <todo>`; отчитайся пунктами.',
+          '  session_key: agent-implementer',
           '  skip_if: checklist_green',
-          "  write_check: 'off'"
+          "  write_check: 'off'",
+          '- name: checklist-check',
+          '  role: agent-qa-review',
+          '  id: checklist-check',
+          "  task: 'Проверь ТОЛЬКО дифф checklist-close: изменённые им файлы и целевые тесты,",
+          "    без полного круга; находки — обычным `## REVIEW-фикс`.'",
+          '  session_key: agent-qa-review',
+          '  skip_if: checklist_close_skipped'
         ];
         // The closer goes after the last writing stage: trailing
         // findings-only roles (``_POST_CLOSER_ROLES`` in awf.api.setup)

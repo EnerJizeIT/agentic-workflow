@@ -157,6 +157,20 @@ def surface_on_raw_basis(surface: Path, *, raw_root: Path) -> Path:
     nearest-``.agentic`` anchor is only for a surface spelled through
     another name of the same project (a resolved root vs a relative or
     symlinked one).
+
+    Relation to :func:`classify_project_surface` (AUD289-3): the module has
+    TWO re-anchoring rules because they answer different questions, and the
+    difference is spelling, not target. This function is a WALK PROJECTION:
+    it keeps the surface's own components and anchors them on the caller's
+    RAW root, so the no-follow ``lstat`` sees exactly what the caller named.
+    :func:`classify_project_surface` is the CONTAINMENT OWNER: it returns the
+    canonical (resolved) project root, so a leaf spelled through a second
+    alias of the project comes back on the real tree. On that input the two
+    return different strings — ``<raw-alias>/<chain>`` here,
+    ``<real-root>/<chain>`` there — that name the SAME file (their
+    ``realpath`` is equal). Do not use this function to decide "is this
+    inside the project" — that answer belongs to the classifier; this one
+    only feeds the walk in :func:`assert_managed_surfaces`.
     """
     absolute = surface if surface.is_absolute() else Path.cwd() / surface
     try:

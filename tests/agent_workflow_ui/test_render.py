@@ -243,3 +243,38 @@ def test_parse_frontmatter_non_dict_yaml():
     meta, body = parse_frontmatter(content)
     assert meta == {}
     assert "<body>" in body
+
+
+# ── TODO-0305: the setup preview's closer block mirrors the backend ──────
+
+
+def _js_string_array(rendered: str, name: str) -> list[str]:
+    """The string literals of `var <name> = [...]` from the form's script."""
+    script = rendered.split("<script>", 1)[1].split("</script>", 1)[0]
+    block = script.split(f"var {name} = [", 1)[1].split("];", 1)[0]
+    literals = re.findall(r"'((?:[^'\\]|\\.)*)'|\"((?:[^\"\\]|\\.)*)\"", block)
+    return [single if single else double for single, double in literals]
+
+
+def test_setup_preview_closer_matches_build_pipeline_stages():
+    """CTX1 0304: the preview shows the close/check pair the backend writes.
+
+    The names and fields come from ``build_pipeline_stages`` — a hand
+    mirror drifted once (``implementer-close`` without ``session_key``).
+    """
+    import yaml
+
+    from awf.api.setup import build_pipeline_stages
+
+    preview = _js_string_array(_render_project_setup(), "closerLines")
+    preview_stages = yaml.safe_load("\n".join(preview))
+    generated = build_pipeline_stages(
+        [{"agent": "agent-implementer"}, {"agent": "agent-qa-review"}],
+        stage_mode="chain",
+    )
+    expected = [
+        s
+        for s in generated
+        if s["name"] in ("checklist-close", "checklist-check")
+    ]
+    assert preview_stages == expected

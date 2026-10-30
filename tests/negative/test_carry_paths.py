@@ -1211,3 +1211,37 @@ class TestMetricsPath:
 
         assert root == repo.resolve()
         assert path == repo.resolve() / "sub" / ".agentic" / "x.md"
+
+
+class TestReanchoringRules:
+    """The two rules that re-anchor a surface on the project root answer
+    different questions (AUD289-3): the walk projection keeps the caller's
+    spelling, the classifier answers on the canonical root."""
+
+    def test_the_two_reanchoring_rules_agree_on_a_second_alias(
+        self, tmp_path: Path
+    ) -> None:
+        # AUD289-3: the module has TWO re-anchoring rules because they ask
+        # different questions. ``surface_on_raw_basis`` is the walk
+        # projection — it keeps the caller's spelling on the RAW root.
+        # ``classify_project_surface`` is the containment owner — it answers
+        # on the canonical root. On a leaf spelled through a SECOND alias of
+        # the project they differ in spelling only: both name the same file.
+        # The test pins that relation, so a future edit cannot silently make
+        # one answer the other's question (or produce a different target).
+        repo = _project(tmp_path)
+        alias_a = tmp_path / "proj-a"
+        alias_b = tmp_path / "proj-b"
+        alias_a.symlink_to(repo, target_is_directory=True)
+        alias_b.symlink_to(repo, target_is_directory=True)
+        leaf = alias_b / ".agentic" / "x.md"
+
+        walked = managed_fs.surface_on_raw_basis(leaf, raw_root=alias_a)
+        classified, root = managed_fs.classify_project_surface(
+            leaf, project_dir=alias_a
+        )
+
+        assert walked == alias_a / ".agentic" / "x.md"
+        assert root == repo.resolve()
+        assert classified == repo.resolve() / ".agentic" / "x.md"
+        assert walked.resolve() == classified.resolve()

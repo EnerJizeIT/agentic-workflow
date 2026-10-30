@@ -42,7 +42,8 @@ def _worker_roles(stages):
     # these cases assert the team composition, so it is filtered by name.
     return [
         s["role"] for s in stages
-        if s["role"] != "supervisor" and s.get("name") != "implementer-close"
+        if s["role"] != "supervisor"
+        and s.get("name") not in ("checklist-close", "checklist-check")
     ]
 
 
@@ -102,7 +103,9 @@ class TestQuickPipelineWritten:
         """IMP7 (TODO-0290): quick stays the short set — no closer gate."""
         api.apply_project_setup(awf_project, team=[{"agent": DEV}, {"agent": QA}])
         stages = _stages(_pipes(awf_project) / "quick.yaml")
-        assert "implementer-close" not in [s.get("name") for s in stages]
+        names = [s.get("name") for s in stages]
+        assert "checklist-close" not in names
+        assert "checklist-check" not in names
 
     def test_quick_name_is_quick(self, awf_project):
         api.apply_project_setup(awf_project, team=[{"agent": DEV}, {"agent": QA}])

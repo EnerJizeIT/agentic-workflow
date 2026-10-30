@@ -1255,7 +1255,12 @@ def get_status(project_dir: Path) -> StatusResult:
     # fields below carry the fact; the surfaces derive the sentence.
     engine_dead: str | None = None
     engine_dead_todo: str | None = None
-    from .._engine_liveness import status_engine_dead
+    stale_stage: str | None = None
+    from .._engine_liveness import (
+        detect_stale_stage,
+        stale_line_from_engine_dead,
+        status_engine_dead,
+    )
 
     # The salvage guard, the launch-window guard and the death verdict all
     # live in status_engine_dead — one owner, the same answer for run_status.
@@ -1265,6 +1270,27 @@ def get_status(project_dir: Path) -> StatusResult:
     if _dead is not None:
         engine_dead = _dead.line
         engine_dead_todo = _dead.todo_id or None
+        # TODO-0306: the same fact in the explicit display form the card,
+        # status and dashboard share ("STALE stage … — dead: …").
+        stale_stage = stale_line_from_engine_dead(_dead).line
+    else:
+        # TODO-0306 (PA-0306-3): the detector runs even when the resolver
+        # still calls the pipeline "running". A live pid with a stale
+        # heartbeat and a frozen ``updated_at`` is the frozen-engine case
+        # the incident hit; the dashboard already asks the detector
+        # directly, so this surface must give the SAME verdict, not a green
+        # one. ``live_pid`` lets the detector tell that live engine from a
+        # leftover state in the launch window (a different pid): a fresh
+        # heartbeat of the same pid is its own proof of life, and
+        # salvage/checkpoint are its deliberate-stop guard.
+        _stale = detect_stale_stage(
+            project_dir,
+            _state,
+            config_data,
+            live_pid=pipeline_pid if pipeline_running else None,
+        )
+        if _stale is not None:
+            stale_stage = _stale.line
 
     # TODO-0262 REVIEW (CTX1): an exhausted unit reads its BUDGET note, not
     # a resume hint — the advice owner (next_action_from_status) ranks this
@@ -1346,6 +1372,7 @@ def get_status(project_dir: Path) -> StatusResult:
         zombie_state=zombie_state,
         engine_dead=engine_dead,
         engine_dead_todo=engine_dead_todo,
+        stale_stage=stale_stage,
         budget_exhausted_todo=budget_exhausted_todo,
         active_pipeline=active_pipeline,
         pipeline_count=pipeline_count,

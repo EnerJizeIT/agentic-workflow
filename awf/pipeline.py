@@ -54,6 +54,11 @@ class Stage:
     # the id (one role may appear twice with different assignments), so
     # handoff files ``<name>-<todo>.md`` stay distinct. Empty by default.
     id: str = ""
+    # IMP5 (TODO-0304): the session-file key. Two stages that must continue
+    # the SAME opencode session (a role's work stage and its follow-up
+    # check) name it explicitly; empty means the stage address (``id`` or
+    # ``name``). The pair file stays ``SESSION-<todo>-<session_key>.json``.
+    session_key: str = ""
     # ORCH M3.1: short stage assignment. Carried on the Stage; the
     # execute prompt carries it (plus input/output) — ORCH M3.2.
     # Empty by default.
@@ -71,8 +76,8 @@ class Stage:
     write_allow: tuple[str, ...] = ()
     write_check: str = "on"
     # IMP1 (R1): the ONE conditional-run mechanism. Empty means "always
-    # run" — no gate is consulted at the stage boundary. The only allowed
-    # value is ``checklist_green`` (the gate verdict decides the skip).
+    # run" — no gate is consulted at the stage boundary. Allowed values:
+    # ``SKIP_IF_ALLOWED`` (the named verdict/fact decides the skip).
     skip_if: str = ""
     # OPS IMP1 (R1): this stage's time cap in seconds. ``None`` = "not
     # set" — the resolver falls through to the project key and 3600.
@@ -164,6 +169,8 @@ ALLOWED_STAGE_KEYS = frozenset(
         # ORCH M3.1: stage identity + assignment.
         "id",
         "task",
+        # IMP5 (TODO-0304): the session-file key (default: stage address).
+        "session_key",
         # ORCH M3.2: declared stage inputs/outputs (project-relative).
         "input",
         "output",
@@ -187,10 +194,15 @@ ALLOWED_STAGE_KEYS = frozenset(
 )
 
 
-# IMP1 (R1): the ONLY value ``skip_if`` accepts. The key names a gate
-# verdict, not a free-form condition — one value keeps the decision in ONE
-# place (the closer-stage point) instead of a second scripting language.
-SKIP_IF_ALLOWED = frozenset({"checklist_green"})
+# IMP1 (R1): the closed list of values ``skip_if`` accepts. The key names a
+# verdict/fact, not a free-form condition — a closed list keeps the decision
+# in ONE place (the closer-stage point) instead of a second scripting
+# language.
+# - ``checklist_green`` — the definition-of-done gate is green on entry.
+# - ``checklist_close_skipped`` — TODO-0304: the checklist-close stage of
+#   THIS unit did not run (the gate was green); the follow-up check has
+#   nothing to review. Read from the run state fact, not recomputed.
+SKIP_IF_ALLOWED = frozenset({"checklist_green", "checklist_close_skipped"})
 
 
 def _compute_kind(position: int, total: int) -> str:
@@ -317,6 +329,17 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
                 raise AwfApiError(
                     f"Pipeline {source}: stage '{label}' has an invalid "
                     f"'task' (must be a non-empty string), got {value!r}."
+                )
+        # IMP5 (TODO-0304): ``session_key`` becomes part of the pair file
+        # name — the same slug rule as ``id`` keeps it a safe path segment.
+        if "session_key" in stage and stage["session_key"] is not None:
+            value = stage["session_key"]
+            if not isinstance(value, str) or not re.fullmatch(r"[\w.-]+", value):
+                raise AwfApiError(
+                    f"Pipeline {source}: stage '{label}' has an invalid "
+                    f"'session_key' (must be a slug: letters, digits, '_', "
+                    f"'.' or '-', no spaces or path separators), "
+                    f"got {value!r}."
                 )
         # ORCH M3.2: declared stage input/output — non-empty
         # project-relative paths (the engine resolves them against the
@@ -594,6 +617,9 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
         kwargs["role"] = s.get("role", "")
         kwargs["description"] = s.get("description", "")
         kwargs["id"] = stage_id
+        # IMP5 (TODO-0304): the session-file key; empty falls back to the
+        # stage address at the spawn site.
+        kwargs["session_key"] = s.get("session_key") or ""
         kwargs["task"] = s.get("task") or ""
         # ORCH M3.2: declared inputs/outputs (project-relative).
         kwargs["input"] = s.get("input") or ""
@@ -689,6 +715,9 @@ def stage_to_document(stage: Stage) -> dict[str, Any]:
         entry["description"] = stage.description
     if stage.id:
         entry["id"] = stage.id
+    # IMP5 (TODO-0304): the session key round-trips with the snapshot.
+    if stage.session_key:
+        entry["session_key"] = stage.session_key
     if stage.task:
         entry["task"] = stage.task
     if stage.input:

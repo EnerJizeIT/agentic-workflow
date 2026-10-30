@@ -423,3 +423,52 @@ def test_structurally_invalid_snapshot_degrades_like_missing(tmp_path, awf_bin, 
         f"rc={run2.returncode}\n{out2}"
     )
     assert "Pipeline complete!" in out2, out2
+
+
+# ── TODO-0306: неизвестная стадия при continue — снимок назван ───────────
+
+
+@pytest.mark.timeout(300)
+def test_unknown_from_stage_names_snapshot_and_live_diff(tmp_path, awf_bin, awf_env):
+    """Инцидент 0304: юнит переименовал стадии, ран держал снимок старого
+    пайплайна, ``awf continue --from-stage checklist-close`` ответил только
+    "Stage not found". Теперь сообщение называет снимок, оба списка имён
+    (снимок vs живой default.yaml) и два выхода."""
+    proj = _make_project(tmp_path, PIPELINE_A)
+    snap = _snapshot(proj)
+
+    state1 = tmp_path / "state1"
+    env1 = _env(awf_env, "crash", state1)
+    run1 = run_awf(
+        awf_bin, ["start", "--auto", "--todo", "TODO-0001"],
+        cwd=proj, env=env1, input_data=b"", timeout=180,
+    )
+    assert run1.returncode != 0, "crashed worker must stop the run"
+    assert snap.is_file(), "launch must capture the snapshot"
+
+    # The live template is renamed; the snapshot keeps "implement".
+    (proj / ".agentic" / "pipelines" / "default.yaml").write_text(
+        PIPELINE_B, encoding="utf-8"
+    )
+
+    state2 = tmp_path / "state2"
+    env2 = _env(awf_env, "do-step", state2)
+    run2 = run_awf(
+        awf_bin, ["continue", "--auto", "--from-stage", "intruder"],
+        cwd=proj, env=env2, input_data=b"", timeout=180,
+    )
+    out2 = (run2.stdout + run2.stderr).decode(errors="replace")
+
+    assert run2.returncode != 0, f"unknown stage must refuse.\n{out2}"
+    assert "Stage 'intruder' not found" in out2, out2
+    # The snapshot is named as the definition the unit is pinned to.
+    assert "PIPELINE-TODO-0001.yaml" in out2, out2
+    assert "Snapshot stages:" in out2 and "implement" in out2, out2
+    # The live file and its different names are named too.
+    assert "Live default.yaml stages:" in out2 and "intruder" in out2, out2
+    # And the working exits: a snapshot name, or dropping the snapshot /
+    # issuing a new TODO id. PA-0306-1 — a bare "awf start --todo <same>"
+    # re-reads the SAME snapshot, so it is not a new definition.
+    assert "Use a stage name from the snapshot" in out2, out2
+    assert f"delete {snap}" in out2, out2
+    assert "new TODO id" in out2, out2

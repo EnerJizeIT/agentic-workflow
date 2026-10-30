@@ -64,6 +64,74 @@ def _write_pipeline_snapshot(
         _log(logs_dir, f"WARNING: pipeline snapshot capture failed: {e}")
 
 
+def _stage_names(stages: list) -> str:
+    return ", ".join(str(s.name) for s in stages) or "(none)"
+
+
+def _report_unknown_stage(
+    project_dir: Path,
+    todo_id: str,
+    wanted: str,
+    resolved: list,
+    live: list,
+    pipeline_file: Path,
+    logs_dir: Path,
+) -> None:
+    """TODO-0306: a resume asked for a stage the unit never had.
+
+    The incident (unit 0304): the published pipeline was renamed, the run
+    resumed the unit's SNAPSHOT, and ``awf continue --from-stage
+    checklist-close`` answered only "Stage not found" — no hint that the
+    snapshot is the older definition. Name the snapshot, both name lists
+    and the two ways out.
+    """
+    print(
+        f"  Available in the resolved pipeline: {_stage_names(resolved)}",
+        file=sys.stderr,
+    )
+    snap = _pipeline_snapshot_file(project_dir, todo_id) if todo_id else None
+    if snap is not None and snap.is_file():
+        print(
+            f"  The unit {todo_id} is pinned to snapshot {snap.name} "
+            f"({snap.parent}).",
+            file=sys.stderr,
+        )
+        resolved_names = [str(s.name) for s in resolved]
+        live_names = [str(s.name) for s in live]
+        if resolved_names != live_names:
+            print(
+                f"  Snapshot stages: {_stage_names(resolved)}",
+                file=sys.stderr,
+            )
+            print(
+                f"  Live {pipeline_file.name} stages: {_stage_names(live)}",
+                file=sys.stderr,
+            )
+        print(
+            f"  Use a stage name from the snapshot, or bypass the pinned "
+            f"snapshot: delete {snap} and run awf start --todo {todo_id} "
+            f"(awf_start), or issue a new TODO id (it gets its own snapshot).",
+            file=sys.stderr,
+        )
+        _log(
+            logs_dir,
+            f"Resume stage '{wanted}' not in snapshot {snap.name} "
+            f"({_stage_names(resolved)}); live {pipeline_file.name}: "
+            f"{_stage_names(live)}",
+        )
+    else:
+        print(
+            f"  No pipeline snapshot for {todo_id or '(no unit)'} — start a "
+            f"new run: awf start --todo {todo_id or 'TODO-NNNN'} (awf_start).",
+            file=sys.stderr,
+        )
+        _log(
+            logs_dir,
+            f"Resume stage '{wanted}' not found; no snapshot; available: "
+            f"{_stage_names(resolved)}",
+        )
+
+
 def _apply_pipeline_snapshot(
     project_dir: Path,
     stages: list,
@@ -226,6 +294,9 @@ def _run_pipeline_impl(args: Any, liveness: Any = None) -> int:
     if not stages:
         print(f"ERROR: No stages found in {pipeline_file}")
         return 1
+    # TODO-0306: keep the LIVE definition before the snapshot may replace
+    # it — the unknown-stage report compares the two name lists.
+    live_stages = list(stages)
 
     # TODO-0241: the engine is live from here — heartbeat + exit record.
     # Everything above is definition validation and must stay side-effect
@@ -275,6 +346,15 @@ def _run_pipeline_impl(args: Any, liveness: Any = None) -> int:
         stage_idx = _find_stage_index(stages, from_stage)
         if stage_idx == -1:
             print(f"ERROR: Stage '{from_stage}' not found in pipeline")
+            _report_unknown_stage(
+                project_dir,
+                str(getattr(args, "todo_id", "") or ""),
+                from_stage,
+                stages,
+                live_stages,
+                pipeline_file,
+                logs_dir,
+            )
             return 1
         _log(logs_dir, f"Starting from stage: {from_stage} (index {stage_idx})")
 

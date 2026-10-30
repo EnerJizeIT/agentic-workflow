@@ -98,7 +98,12 @@ def _check_versions(
     """Version rows: awf module, pinned runner, plugin module, metadata."""
     process = versions.process_version()
     process_commit = versions.process_commit()
-    process_fact = f"{process}, commit {process_commit}" if process_commit else process
+    if process_commit:
+        process_fact = f"{process}, commit {process_commit}"
+    else:
+        # AUD-0296 CTX1: say the same thing the launch handshake says when
+        # the running module has no commit to identify its code.
+        process_fact = f"{process} — process has no commit evidence"
     out.ok("awf", process_fact)
 
     _metadata_line(out, "awf metadata", "awf", process)

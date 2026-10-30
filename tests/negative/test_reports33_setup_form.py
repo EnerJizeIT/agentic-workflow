@@ -69,7 +69,8 @@ class TestSingleRoleMode:
         assert result.pipeline_file is not None
         # plan → implementer → closer → verify: ни аудитора, ни QA в цепочке
         assert _roles(awf_project) == [
-            "supervisor", "agent-implementer", "agent-implementer", "supervisor",
+            "supervisor", "agent-implementer", "agent-implementer",
+            "agent-qa-review", "supervisor",
         ]
         assert "agent-project-auditor" not in _roles(awf_project)
 
@@ -86,6 +87,7 @@ class TestSingleRoleMode:
             "agent-implementer",
             "agent-qa-review",
             "agent-implementer",
+            "agent-qa-review",
             "supervisor",
         ]
         assert "agent-project-auditor" not in _roles(awf_project)
@@ -93,7 +95,8 @@ class TestSingleRoleMode:
     def test_primary_defaults_to_first_team_role(self, awf_project):
         api.apply_project_setup(awf_project, team=TEAM, stage_mode="single")
         assert _roles(awf_project) == [
-            "supervisor", "agent-implementer", "agent-implementer", "supervisor",
+            "supervisor", "agent-implementer", "agent-implementer",
+            "agent-qa-review", "supervisor",
         ]
 
     def test_primary_not_in_team_falls_back_with_warning(self, awf_project):
@@ -105,7 +108,8 @@ class TestSingleRoleMode:
         )
         # деградация, не сбой: основная = первая роль команды
         assert _roles(awf_project) == [
-            "supervisor", "agent-implementer", "agent-implementer", "supervisor",
+            "supervisor", "agent-implementer", "agent-implementer",
+            "agent-qa-review", "supervisor",
         ]
         assert any("ghost-role" in w for w in result.warnings)
 
@@ -117,7 +121,8 @@ class TestSingleRoleMode:
             include_qa=True,
         )
         assert _roles(awf_project) == [
-            "supervisor", "agent-implementer", "agent-implementer", "supervisor",
+            "supervisor", "agent-implementer", "agent-implementer",
+            "agent-qa-review", "supervisor",
         ]
         assert any("QA" in w for w in result.warnings)
 
@@ -126,7 +131,10 @@ class TestSingleRoleMode:
         api.apply_project_setup(awf_project, team=TEAM, stage_mode="single")
         stages = yaml.safe_load(_pipeline_text(awf_project))["stages"]
         assert any(
-            s.get("id") == "implementer-close" for s in stages
+            s.get("id") == "checklist-close" for s in stages
+        ), stages
+        assert any(
+            s.get("id") == "checklist-check" for s in stages
         ), stages
         assert stages[-1]["name"] == "verify"
 
@@ -139,9 +147,11 @@ class TestSingleRoleMode:
             include_qa=True,
         )
         roles = _roles(awf_project)
-        assert roles.count("agent-qa-review") == 1
+        # The primary QA stage + the checklist-check stage (same role).
+        assert roles.count("agent-qa-review") == 2
         assert roles == [
-            "supervisor", "agent-qa-review", "agent-implementer", "supervisor",
+            "supervisor", "agent-qa-review", "agent-implementer",
+            "agent-qa-review", "supervisor",
         ]
 
 
@@ -156,6 +166,7 @@ class TestChainMode:
             "agent-implementer",
             "agent-qa-review",
             "agent-implementer",
+            "agent-qa-review",
             "agent-project-auditor",
             "supervisor",
         ]
@@ -168,6 +179,7 @@ class TestChainMode:
             "agent-implementer",
             "agent-qa-review",
             "agent-implementer",
+            "agent-qa-review",
             "agent-project-auditor",
             "supervisor",
         ]
@@ -176,7 +188,7 @@ class TestChainMode:
         result = api.apply_project_setup(
             awf_project, team=TEAM, stage_mode="diagonal"
         )
-        assert len(_roles(awf_project)) == 6
+        assert len(_roles(awf_project)) == 7
         assert any("diagonal" in w for w in result.warnings)
 
 
@@ -304,6 +316,7 @@ class TestIdempotentResubmit:
             "agent-implementer",
             "agent-qa-review",
             "agent-implementer",
+            "agent-qa-review",
             "supervisor",
         ]
 
@@ -318,7 +331,8 @@ class TestIdempotentResubmit:
             primary_role="agent-implementer",
         )
         assert _roles(awf_project) == [
-            "supervisor", "agent-implementer", "agent-implementer", "supervisor",
+            "supervisor", "agent-implementer", "agent-implementer",
+            "agent-qa-review", "supervisor",
         ]
 
 
@@ -365,6 +379,7 @@ class TestFormSubmitPlumbing:
             "agent-implementer",
             "agent-qa-review",
             "agent-implementer",
+            "agent-qa-review",
             "supervisor",
         ]
 
@@ -380,5 +395,5 @@ class TestFormSubmitPlumbing:
         )
         target = proj / ".agentic" / "pipelines" / "default.yaml"
         roles = [s["role"] for s in yaml.safe_load(target.read_text())["stages"]]
-        assert len(roles) == 6
+        assert len(roles) == 7
         assert roles[-1] == "supervisor"

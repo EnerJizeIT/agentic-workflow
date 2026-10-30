@@ -11,6 +11,25 @@ place where the answer becomes an action, the first verdict for the
 statistics (``context/CLOSER-<todo>.json``) and the stage-state fields the
 engine records for a skip.
 
+``skip_if`` names a verdict or a recorded fact, never a free-form
+condition (``pipeline.SKIP_IF_ALLOWED``). ``checklist_green`` runs the gate
+at entry; such a stage must also name ``write_check: "off"`` — a
+conditional run with an implicit write allowlist is a static defect and
+blocks without a spawn. ``checklist_close_skipped`` (TODO-0304) is the
+follow-up check: it reads the recorded fact that THIS unit's close stage
+did not run and needs no write opt-out. A missing or ``null`` key means
+"always run"; the loader refuses an empty string, a number or a bool (see
+:func:`decide`).
+
+The frozen norm (IMP5, R5) is the checklist block hash plus a sha256 over
+the contract keys that decide what the unit is checked against —
+``verify``, ``gates``, ``prove_red``, its mechanism keys
+``prove_red_kind``/``prove_red_note``/``prove_red_cmd``, the pin list
+``prove_red_pin``, the flake-probe switch ``flake`` and the allowances
+``xfail_allow``/``skip_allow`` (:data:`FROZEN_CONTRACT_KEYS`). An allowance
+equal to its default 0 hashes like an absent key; ``files`` is a report,
+not a norm, and stays outside.
+
 IMP4 adds the attempt budget around the same record: :func:`settle_run`
 recomputes the gate after a signal and answers green / retry / blocked. A
 completed run with a verdict charges one attempt; a salvaged signal is
@@ -25,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import checklist_gate, paths, todos
+from . import checklist_gate, paths, pipeline_state, todos
 from . import config as cfg_mod
 from ._log import log as _log
 from .checklists import CHECKLIST_HEADING, ChecklistError, block_hash
@@ -37,15 +56,47 @@ CLOSER_ATTEMPTS_KEY = "checklist.closer_attempts"
 DEFAULT_CLOSER_ATTEMPTS = 1
 MAX_CLOSER_ATTEMPTS = 2
 
-#: The contract keys frozen before the first closer (IMP5, R5): the closer
-#: may not rewrite the check semantics; ``files`` is a report, not a norm.
-FROZEN_CONTRACT_KEYS: tuple[str, ...] = ("verify", "gates", "prove_red")
+#: Allowance keys whose default is 0: an absent key and an explicit 0 mean
+#: the same check, so they hash the same (TODO-0298). The one place the pair
+#: is spelled — ``FROZEN_CONTRACT_KEYS`` is built from it, so a new allowance
+#: cannot land in the hash without also landing in the zero-normalisation.
+_ALLOWANCE_KEYS: tuple[str, ...] = ("xfail_allow", "skip_allow")
+
+#: The contract keys frozen before the first closer (IMP5, R5; IMP4,
+#: TODO-0298): the closer may not rewrite the check semantics; ``files`` is
+#: a report, not a norm. ``xfail_allow``/``skip_allow`` are part of the norm
+#: too: a unit that adds an allowance widens what counts as green, so the
+#: hash must move. ``prove_red_kind``/``prove_red_cmd`` (AUD-0298-1) say HOW
+#: the red proof is produced and ``prove_red_note`` justifies the kind —
+#: switching either swaps the check just as much as editing ``prove_red``.
+#: ``flake`` switches the flake probe and ``prove_red_pin`` replaces the
+#: red proof with a pin-ok list (AUD-0299-1): both decide the check, so both
+#: move the hash.
+FROZEN_CONTRACT_KEYS: tuple[str, ...] = (
+    "verify", "gates", "prove_red",
+    "prove_red_kind", "prove_red_note", "prove_red_cmd",
+    "prove_red_pin", "flake",
+) + _ALLOWANCE_KEYS
 
 #: The one wording AC12/AC13 require on a norm edit.
 NORM_EDIT_REASON = "closer edited the checklist/contract"
 
+#: IMP1 (R1): the gate-driven ``skip_if`` value — the value this module's
+#: own decision point (gate + closer + settle) serves.
+GATE_SKIP_IF = "checklist_green"
+
 #: The stage-state reason recorded on a green skip.
 SKIP_REASON = "checklist_green"
+
+#: IMP5 (TODO-0304): the follow-up check stage's key. It skips on the FACT
+#: that the close stage of this unit did not run — never on a re-run of the
+#: gate, which could answer differently from the run the close saw.
+FOLLOWUP_SKIP_IF = "checklist_close_skipped"
+FOLLOWUP_SKIP_REASON = "checklist_close_skipped"
+#: Run-state keys of that fact. The todo is stored next to the flag: a stale
+#: flag from a previous unit must never decide another unit's stage.
+CLOSE_SKIPPED_KEY = "checklist_close_skipped"
+CLOSE_SKIPPED_TODO_KEY = "checklist_close_skipped_todo"
 
 
 class CloserConfigError(ValueError):
@@ -60,10 +111,14 @@ class Decision:
     verdict: dict = field(default_factory=dict)
     log_line: str = ""
     note: str = ""
+    #: Stage-state skip reason; empty falls back to the gate value.
+    reason: str = ""
 
     @property
     def skip_reason(self) -> str:
-        return SKIP_REASON if self.kind == "skip" else ""
+        if self.kind != "skip":
+            return ""
+        return self.reason or SKIP_REASON
 
 
 @dataclass
@@ -170,16 +225,27 @@ def _verdict_facts(verdict: dict) -> dict:
 
 
 def contract_fingerprint(contract: dict | None) -> str:
-    """sha256 of the frozen contract keys (IMP5, R5).
+    """sha256 of the frozen contract keys (IMP5, R5; TODO-0298).
 
-    ``verify``, ``gates`` and ``prove_red`` decide what the unit is checked
-    against; ``files`` and the other keys are a report, not a norm, and are
-    deliberately outside the hash (AC13). No contract at all and an empty
-    contract hash the same — an absent norm is a fixed value, not a crash.
+    ``verify``, ``gates``, ``prove_red`` with the keys that set its mechanism
+    (``prove_red_kind``/``prove_red_cmd``) and the justification that goes
+    with the kind (``prove_red_note``), the pin list ``prove_red_pin``, the
+    flake-probe switch ``flake``, plus the allowances
+    ``xfail_allow``/``skip_allow``, decide what the unit is checked against;
+    ``files`` and the other keys are a report, not a norm, and are
+    deliberately outside the hash (AC13). An allowance equal to its default
+    (0) is dropped, so an explicit ``xfail_allow: 0`` hashes like an absent
+    key — the norm did not change. Key order never matters (``sort_keys``).
+    No contract at all and an empty contract hash the same — an absent norm
+    is a fixed value, not a crash.
     """
     frozen: dict[str, Any] = {}
     if isinstance(contract, dict):
         frozen = {k: contract[k] for k in FROZEN_CONTRACT_KEYS if k in contract}
+        for key in _ALLOWANCE_KEYS:
+            value = frozen.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value == 0:
+                del frozen[key]
     blob = json.dumps(
         frozen, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     )
@@ -428,6 +494,62 @@ def _is_green(verdict: dict) -> bool:
     return verdict.get("status") == "none" or bool(verdict.get("ok"))
 
 
+def record_close_skipped(
+    project_dir: str | Path,
+    todo_id: str,
+    *,
+    skipped: bool,
+    logs_dir: Path | None = None,
+) -> None:
+    """IMP5 (TODO-0304): record whether THIS unit's close stage ran.
+
+    Written by the engine at the close stage's decision point — before the
+    spawn, so a crashed run still leaves the fact for the follow-up check.
+    ``skipped=True`` means the gate was green and no closer ran; ``False``
+    means the closer enters (the check then has a diff to review).
+    """
+    pipeline_state.write_state(
+        Path(project_dir),
+        checklist_close_skipped=bool(skipped),
+        checklist_close_skipped_todo=todo_id,
+        logs_dir=logs_dir,
+    )
+
+
+def decide_followup(
+    project_dir: str | Path,
+    todo_id: str,
+) -> Decision:
+    """IMP5 (TODO-0304): skip the check when the close stage did not run.
+
+    The fact comes from the run state, scoped to this unit — the gate is
+    NOT recomputed: a green checklist now says nothing about whether the
+    closer produced a diff to review. No close stage at all is the same
+    fact ("did not run"), so the check skips too.
+    """
+    try:
+        state = pipeline_state.read_state(Path(project_dir)) or {}
+    except (OSError, ValueError):
+        state = {}
+    # The check runs ONLY on a positive fact of this unit's close run. An
+    # absent fact (no close stage, unreadable state) is "did not run" —
+    # the same skip as a green close.
+    ran = (
+        state.get(CLOSE_SKIPPED_TODO_KEY) == todo_id
+        and CLOSE_SKIPPED_KEY in state
+        and not bool(state.get(CLOSE_SKIPPED_KEY))
+    )
+    if ran:
+        return Decision(
+            kind="run", log_line="checklist-check: close ran — checking"
+        )
+    return Decision(
+        kind="skip",
+        log_line="checklist-check: skipped (checklist-close did not run)",
+        reason=FOLLOWUP_SKIP_REASON,
+    )
+
+
 def decide(
     project_dir: str | Path,
     todo_id: str,
@@ -436,11 +558,22 @@ def decide(
 ) -> Decision:
     """Decide one entry of a stage that declares ``skip_if``.
 
+    ``skip_if`` accepts the values in :data:`pipeline.SKIP_IF_ALLOWED`.
+    ``checklist_green`` runs the definition-of-done gate at entry; such a
+    stage must also declare ``write_check: "off"`` — a conditional run with
+    an implicit write allowlist is a static defect (blocked here, before a
+    gate run or a spawn). ``checklist_close_skipped`` (TODO-0304) reads the
+    recorded fact instead and needs no ``write_check`` opt-out: the check
+    stage has no output of its own.
+
     The order is fixed (architecture K2): stage/config defects first (no gate
     run, no spawn), then the gate on the current tree, then the first verdict
     and the one ``dod:`` line, then a static block defect, then green/red.
     """
     project = Path(project_dir).resolve()
+
+    if stage.skip_if == FOLLOWUP_SKIP_IF:
+        return decide_followup(project, todo_id)
 
     # 1. Static stage defect: the closer must NAME the opt-out from the write
     # check. A ``skip_if`` stage with an implicit allowlist is a config typo,

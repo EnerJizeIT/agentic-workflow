@@ -70,6 +70,12 @@ class StatusResult:
     # state is never mutated by a status call.
     engine_dead: str | None = None
     engine_dead_todo: str | None = None
+    # TODO-0306: the explicit "not green" line — ``STALE stage … — dead: …``.
+    # A dead engine always yields one (same fact, display form); a live but
+    # quiet stage yields one when ``updated_at`` is older than
+    # ``automation.stale_stage_minutes``. The resume advice still comes from
+    # ``engine_dead`` alone (one owner of the advice order).
+    stale_stage: str | None = None
     # TODO-0262 REVIEW (CTX1): the unit stopped for its review-pass budget
     # (a BUDGET note on disk). The owner's decision outranks ``awf_continue``
     # — an exhausted unit cannot be resumed into the same limit again.
@@ -512,6 +518,10 @@ class SupervisorContextResult:
     # calm phase hint. "" when the engine is alive (or no stage is on disk).
     engine_dead: str = ""
     engine_dead_todo: str = ""
+    # TODO-0307 (PA-0306-1): the explicit frozen-stage line, the same fact
+    # ``get_status`` carries. The advice ORDER stays with
+    # ``next_action_from_status`` — this field only makes the fact visible.
+    stale_stage: str = ""
     # the nearest permitted action (run-aware after a reject: awf_run_next)
     next_action: str = ""
 

@@ -10,9 +10,9 @@ Scope: closer-stage
 
 ## 1. Границы и среда
 
-Покрыты R1–R8, AC1–AC28, INV1–INV6, C1–C6. R9 и AC22–AC23 — статическая проверка готовности (T10), не поведение. T1–T7 — новый файл `tests/negative/test_dod_closer_stage.py`; T8 — он же плюс `tests/unit/test_api_setup.py`; T9 — новый файл и существующие тесты; T10 — readiness. Все запускаются как `pytest tests/negative/test_dod_closer_stage.py tests/unit/test_api_setup.py -q`, изоляция — `tmp_path`.
+Покрыты R1–R8, AC1–AC28, INV1–INV6, C1–C6; R9 и AC22–AC23 — статическая проверка готовности (T10), не поведение. T1–T7 — новый файл `tests/negative/test_dod_closer_stage.py`; T8 — он же плюс `tests/unit/test_api_setup.py`; T9 — новый файл и существующие тесты; T10 — readiness. Запуск: `pytest tests/negative/test_dod_closer_stage.py tests/unit/test_api_setup.py -q`.
 
-Живой пайплайн фикстурой не служит. Тесты строят проект в `tmp_path`: `.agentic/`, TODO с блоком `## Чек-лист завершения` и пробами `file_exists`, контракт с `wave`, `verify`, `gates`, `prove_red`. Гейт — настоящий `awf.checklist_gate.run`, движок — in-process; замены — воркер, лог и сигнал. Фикстуры: `tmp_git_repo`, `empty_project`, `api.init_project`; помощник `make_closer_project` создаёт TODO, конфиг и волну. Подменяются `_run_agent_stage`, `_log`, `wait_for_signal`; состояние читается из файлов, порядок тестов не влияет.
+Живой пайплайн фикстурой не служит. Тесты строят проект в `tmp_path`: `.agentic/`, TODO с блоком `## Чек-лист завершения` и пробами `file_exists`, контракт с `wave`, `verify`, `gates`, `prove_red`. Гейт — настоящий `awf.checklist_gate.run`, движок — in-process; замены — воркер, лог и сигнал. Фикстуры: `tmp_git_repo`, `empty_project`, `api.init_project`; помощник `make_closer_project` создаёт TODO, конфиг и волну. Подменяются `_run_agent_stage`, `_log`, `wait_for_signal`; состояние читается из файлов.
 
 Команды:
 - Проверены на базе: `pytest tests/negative/test_dod_checklist_core.py tests/unit/test_pipeline.py tests/unit/test_pipelines_api.py -q` — 177 passed, 26.78 с; `pytest tests/unit/test_pipeline_engine.py tests/unit/test_run.py -q` — 133 passed, 13.39 с; `bash scripts/instruction-gates.sh` — 948/950 и 250/250.
@@ -66,7 +66,7 @@ Scope: closer-stage
 
 ### T3 — вход стадии: пропуск без спавна и статические дефекты
 - Покрывает R2 AC5/AC6/AC26, R3 AC27; C1, C2 1a; K2. Уровень: integration `pipeline_engine.execute_agent_stage`.
-- Данные: `plan → implementer-close → verify`; зелёный и красный TODO; closer с `skip_if` и `write_check: on`; конфиг `closer_attempts: 3`; старый пайплайн без ключа.
+- Данные: `plan → checklist-close → verify`; зелёный и красный TODO; closer с `skip_if` и `write_check: on`; конфиг `closer_attempts: 3`; старый пайплайн без ключа.
 - Действие: вызов с подменёнными `_run_agent_stage` (счётчик), `_ensure_baseline_sha`, `wait_for_signal`, `_log`; чтение `pipeline_state`.
 - Ожидания: зелёный — 0 спавнов, PID нет, `stage_skipped=true` и причина в state, лог `SKIPPED (checklist_green)`, переход к verify; следующий вход сбрасывает поля. Дефект стадии — `checklist_gate.run` и спавн не вызываются, `BLOCKED-TODO-0001.md` называет стадию, `skip_if` и `write_check`, бюджет 0, rc 1. Неверный `closer_attempts` — тот же отказ с именем ключа. Старая стадия без ключа — один спавн, гейт не вызывается.
 - Ловит: пропуск со спавном; нет следа в state; closer запускается; регрессию старого пайплайна.
@@ -74,8 +74,8 @@ Scope: closer-stage
 ### T4 — стадия, промпт и позиции
 - Покрывает R3 AC7, AC8, AC9; R7 AC18 частично; C1, C2; K6. Уровень: unit шаблонов и локального файла.
 - Данные: `.agentic/pipelines/default.yaml`, `awf/templates/pipelines/full.yaml`, `code-health.yaml`; синтетическая стадия с `output`/`write_allow`/`write_check`.
-- Действие: `load_stages`; поиск `implementer-close`; `agent_stage._stage_assignment_block`; `pipeline_snapshot_text` → `load_stages`; service-run снапшот.
-- Ожидания: `default`/`full` — `plan`, `agent-implementer`, `agent-architect-review`, `agent-qa-review`, `implementer-close`, `agent-project-auditor`, `verify`; `code-health` — `plan`, `agent-architect-review`, `agent-refactoring-specialist`, `implementer-close`, `verify`; у стадии `id/name=implementer-close`, `role=agent-implementer`, `kind=execute`, не первая и не последняя, `task` содержит «Закрой ТОЛЬКО пункты», «`manual` вне scope», «блок не править», «`awf checklist check`», «отчитайся пунктами»; `skip_if=checklist_green`; `write_check="off"` строкой; `output` и `write_allow` пусты; промпт содержит задачу; per-TODO снапшот сохраняет объявленные поля и не пишет пустой `write_allow`.
+- Действие: `load_stages`; поиск `checklist-close` и `checklist-check`; `agent_stage._stage_assignment_block`; `pipeline_snapshot_text` → `load_stages`; service-run снапшот.
+- Ожидания: `default`/`full` — `plan`, `agent-implementer`, `agent-architect-review`, `agent-qa-review`, `checklist-close`, `checklist-check`, `agent-project-auditor`, `verify`; `code-health` — `plan`, `agent-architect-review`, `agent-refactoring-specialist`, `checklist-close`, `checklist-check`, `verify`; у `checklist-close` `role=agent-implementer`, `session_key=agent-implementer`, `skip_if=checklist_green`, `write_check="off"` строкой, `task` содержит «Закрой ТОЛЬКО пункты», «`manual` вне scope», «блок не править», «`awf checklist check`», «отчитайся пунктами»; у `checklist-check` `role=agent-qa-review`, `session_key=agent-qa-review`, `skip_if=checklist_close_skipped`, `task` содержит «Проверь ТОЛЬКО дифф checklist-close»; обе `kind=execute`, не первые и не последние, `output` и `write_allow` пусты; промпт содержит задачу; per-TODO снапшот сохраняет объявленные поля и не пишет пустой `write_allow`.
 - Ловит: closer первой/последней; супервизорский промпт; потерянный `write_check`; ложный allowlist.
 
 ### T5 — бюджет завершённых прогонов
@@ -87,9 +87,9 @@ Scope: closer-stage
 
 ### T6 — неизменяемость блока и контракта
 - Покрывает R5 AC12, AC13, AC14; C4; K5. Уровень: unit `decide` + integration движка.
-- Данные: TODO с блоком (один `missing`), контракт `verify`, `gates`, `prove_red`, `files`; снимок `before` после первого красного решения.
-- Действие: closer завершается и правит блок (отметка или текст), `verify`, `gates`, `prove_red` или только `files`; повторный вход после рестарта; нечитаемый контракт.
-- Ожидания: правка блока или `verify`/`gates`/`prove_red` — `blocked` с `closer edited the checklist/contract` и именем блока, даже если пункты закрыты; правка остаётся, коммита нет; только `files` — обычное завершение; нет контракта — сравнение контракта не падает, правка блока ловится; нечитаемый контракт — тот же BLOCKED; `before` после рестарта не меняется, сравнение с исходным снимком.
+- Данные: TODO с блоком (один `missing`); два снимка `before` после первого красного решения — контракт A `verify`, `gates`, `prove_red`, `flake`, `files` и контракт B `verify`, `gates`, `prove_red_pin`, `flake`, `files` (`prove_red` и `prove_red_pin` взаимоисключимы).
+- Действие: closer завершается и правит блок (отметка или текст), `verify`, `gates`, `prove_red` (в A), `prove_red_pin` (в B), `flake` или только `files`; повторный вход после рестарта; нечитаемый контракт.
+- Ожидания: правка блока или любого замороженного ключа (`verify`, `gates`, `prove_red`, `prove_red_kind`, `prove_red_note`, `prove_red_cmd`, `prove_red_pin` в B, `flake`, `xfail_allow`/`skip_allow`) — `blocked` с `closer edited the checklist/contract` и именем блока, даже если пункты закрыты; правка остаётся, коммита нет; только `files` — обычное завершение; нет контракта — сравнение контракта не падает, правка блока ловится; нечитаемый контракт — тот же BLOCKED; `before` после рестарта не меняется, сравнение с исходным снимком.
 - Ловит: закрытые пункты отменяют отказ; `files` заморожен; снимок перезаписан.
 
 ### T7 — статистика `awf checklist stats`
@@ -103,7 +103,7 @@ Scope: closer-stage
 - Покрывает R7 AC18, AC19; R1 AC3; INV6; C6; K1, K6. Уровень: unit генератора и шаблонов; новый файл и `tests/unit/test_api_setup.py`.
 - Данные: команда по умолчанию (implementer, architect-review, qa-review, project-auditor); `full.yaml`; `code-health.yaml`; локальный `.agentic/pipelines/default.yaml`; старый пайплайн; temp-проект `api.init_project`.
 - Действие: `build_pipeline_stages`, `pipeline_yaml_text`, `api.write_pipeline`; загрузка шаблонов; `init_project` и повторный; `git diff` старого файла.
-- Ожидания: новый default содержит `implementer-close` после `qa-review` и до `agent-project-auditor`, загружается как `kind=execute`; `full` и `code-health` несут её на местах; `init` не пишет `.agentic/pipelines/*` и не меняет байты файла; старый пайплайн не переписывается, грузится с `skip_if == ""` и идёт без гейта; `docs/unit-contract.md` описывает `skip_if`, `checklist.closer_attempts`, `awf checklist stats` и `CLOSER-<todo>.json`; бюджет пакета 2200/11000 не превышен (`check_budgets`), итоговый `awf spec check` на READY — rc 0.
+- Ожидания: новый default содержит пару `checklist-close` + `checklist-check` после `qa-review` и до `agent-project-auditor`, обе загружаются как `kind=execute`; `full` и `code-health` несут пару на местах; `init` не пишет `.agentic/pipelines/*` и не меняет байты файла; старый пайплайн не переписывается, грузится с `skip_if == ""` и идёт без гейта; `docs/unit-contract.md` описывает `skip_if`, `checklist.closer_attempts`, `awf checklist stats` и `CLOSER-<todo>.json`; бюджет пакета 2200/11000 не превышен (`check_budgets`), итоговый `awf spec check` на READY — rc 0.
 - Ловит: генератор без closer; init пишет пайплайны; старый файл переписан; документ без ключа.
 
 ### T9 — регрессия, `prove_red`, ворота и инварианты

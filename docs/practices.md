@@ -37,10 +37,18 @@ coverage, mutation smoke, произвольный shell) и timeout прого�
 - `awf/verify_pack.py` (`FLAKE_RUNS`, секция `contract_tests`) — двойной
   прогон и метка `flake`.
 - `.agentic/roles/agent-{implementer,architect-review,qa-review,project-auditor}.md`
-  — правило «один канонический прогон на attempt»; materialization
-  (`awf/api/roles.py`) добавляет его блоком `awf-suite-canon` каждой
-  skill-sourced роли. Источник шаблонов один — пакет `awf/templates/`;
-  корневой `templates/` удалён (TODO-0230), dogfood-запуск читает пакет.
+  — политика тестов по роли, один канон на tree-sha: QA делает один
+  канонический прогон, исполнитель гоняет целевые (полный — только по
+  контракту), дизайн-ревью тесты не запускает, аудит опирается на артефакт
+  QA. Materialization (`awf/api/roles.py`, функция `role_test_policy` выбирает
+  текст) добавляет её блоком `awf-suite-canon` каждой материализованной роли —
+  и через `awf add-role`, и через вариант setup. Тело роли правило не
+  пересказывает: у политики один владелец — этот блок. Источник шаблонов
+  один — пакет `awf/templates/`; корневой `templates/` удалён (TODO-0230),
+  dogfood-запуск читает пакет.
+- `tests/negative/test_miniwave_m6_roles.py` — шаблон роли только указывает на
+  блок «Политика тестов»; материализованная роль несёт ровно одно тело
+  политики своего типа (инвариант, не точная фраза).
 - `tests/unit/test_template_sync.py` — источник шаблонов и живой
   `scripts/suite-canonical.sh` не расходятся с тем, что получает новый проект.
 
@@ -217,4 +225,4 @@ exit-код verify-pack: супервизор оправдывался вруч�
 
 ## Closer-гейт: quick без него, single с ним
 
-**Практика.** Closer (`implementer-close`) входит в default, full и code-health и в режиме single; quick остаётся коротким набором без него, а существующий `quick.yaml` пользователя не перезаписывается.
+**Практика.** Closer (`checklist-close`) и проверка его диффа (`checklist-check`) входят в default, full и code-health и в режиме single; quick остаётся коротким набором без них, а существующий `quick.yaml` пользователя не перезаписывается.

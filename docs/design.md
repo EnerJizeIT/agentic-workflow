@@ -124,11 +124,12 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `unit_history.py` | Неключевая история юнита (CTX2): `forget_unit_history` снимает `CLOSER-<id>.json` и `CHECKLIST-<id>.json` на service-rollback, main-rollback и `restore_todo`; все перечисленные пути идут через один помощник |
 | `supervisor.py` | Supervisor prompts (`build_prompt`), signal wait, run-гейты |
 | `agent_stage.py` | Worker spawn (`opencode run`), `collect_handoff()` |
+| `session_store.py` | R6/R7 (CTX8–CTX9): файл пары `SESSION-<todo>-<stage>.json`, захват id из sqlite opencode по точному `title` и окну `time_created` (`directory` — тай-брейк) под бюджетом 1 с, решение reused/fresh по `engine.reuse_session` |
 | `phase.py` | SMO: `detect_phase`, `get_phase_prompt`, `advance_phase` |
 | `brief.py` | Данные brief-карточки (`data/*.yaml`: tool_map, scenarios, recovery) |
 | `signal_watch.py` | File-based signal detection (`run_subprocess_until_signal`) |
 | `_worker_exit.py` | Единый диагностический билдер `worker-exit:` для тихих смертей (нормальный выход и kill-пути) |
-| `_engine_liveness.py` | Живучесть движка (TODO-0241/0242): `engine.heartbeat` (старт/смена стадии/тик, клэмп `engine.heartbeat_seconds` ≤30, порог `max(3×interval, 120)`), `ENGINE-EXIT-<ts>-<pid>.md` (rc/сигнал/стадия/трейсбек + ретеншн), parent-death ПО УМОЛЧАНИЮ ВЫКЛЮЧЕН (`engine.kill_with_parent: true` — опция), детектор `engine_dead` для статуса |
+| `_engine_liveness.py` | Живучесть движка (TODO-0241/0242): `engine.heartbeat` (старт/смена стадии/тик, клэмп `engine.heartbeat_seconds` ≤30, порог `max(3×interval, 120)`), `ENGINE-EXIT-<ts>-<pid>.md` (rc/сигнал/стадия/трейсбек + ретеншн), parent-death ПО УМОЛЧАНИЮ ВЫКЛЮЧЕН (`engine.kill_with_parent: true` — опция), детектор `engine_dead` для статуса и `stale_stage` (`StaleStage`: мёртвый pid или `updated_at` старше `automation.stale_stage_minutes`, по умолчанию 15 мин) |
 | `_libc.py` | Один libc-хелпер `CDLL(None)` для prctl-вызовов (`_env.py`, `_engine_liveness.py`); кэш грузится в родителе, musl-совместим (TODO-0242 A.5) |
 | `api/supervise.py` | `awf supervise` (TODO-0242 P0-2): сторож активного забега — `engine_dead` → `awf continue` с бюджетом рестартов, лог `supervise: restart #k`, стоп с отчётом при исчерпании |
 | `signals.py` | Signal classification, file detection, expected prefixes |

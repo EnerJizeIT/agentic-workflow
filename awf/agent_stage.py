@@ -9,14 +9,14 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import _net, paths, suite_guard
+from . import _net, paths, session_store, suite_guard
 from ._atomic import atomic_write_text
 from ._log import log as _log
 from ._worker_exit import signal_present_line, worker_exit_line, worker_log_tail
 from .doctrine import materialize_doctrine
 from .infra import managed_fs
 from .pipeline import Stage
-from .pipeline_state import write_state
+from .pipeline_state import bump_stage_attempt, write_state
 from .signals import (
     clean_stage_signals,
     expected_signal_prefixes,
@@ -168,11 +168,39 @@ def run_agent_stage(
 
     _log(logs_dir, f"Agent stage started: {role} ({kind}) for {todo_id}")
 
+    # R6/R7 (K5–K7): the pair's entry number and the session decision go
+    # BEFORE the spawn — the title carries the number, the counter survives
+    # a kill. Off keeps the previous title and never reads the base (AC39).
+    stage_key = stage.id or stage.name
+    # IMP5 (TODO-0304): a stage may continue ANOTHER stage's session — the
+    # close stage continues the implementer, the follow-up check continues
+    # QA. The key names the pair file, the title and the shared attempt
+    # counter; empty keeps the stage address (old behavior).
+    session_key = stage.session_key or stage_key
+    role_model = get_role_model(config, role)
+    reuse_mode = session_store.mode(config)
+    if reuse_mode != "off":
+        attempt_entry = bump_stage_attempt(
+            project_dir, todo_id, session_key, logs_dir=logs_dir
+        )
+        session_decision = session_store.decide(
+            project_dir, todo_id=todo_id, stage=session_key, role=role,
+            agent=agent_name, model=role_model or "", attempt=attempt_entry,
+            config=config, logs_dir=logs_dir,
+        )
+        title = session_store.session_title(
+            role, session_key, todo_id, attempt_entry
+        )
+    else:
+        title = f"awf-{role}-{todo_id}"
+        session_decision = session_store.Decision(False, "", "reuse_session off")
+    _log(logs_dir, session_store.decision_line(session_decision))
+
     cmd = [
         "opencode", "run", "--auto",
         "--print-logs",
         "--agent", agent_name,
-        "--title", f"awf-{role}-{todo_id}",
+        "--title", title,
         "--file", str(role_file),
     ]
     # U9: doctrine section between the role's instructions and the task —
@@ -183,9 +211,11 @@ def run_agent_stage(
         print(f"Doctrine in:  {doctrine_file}")
         _log(logs_dir, f"U9: doctrine section injected: {doctrine_file}")
     cmd += ["--file", str(todo_file)]
-    role_model = get_role_model(config, role)
     if role_model:
         cmd += ["--model", role_model]
+    # R7/K5: --session after --model; every earlier --file is kept (AC28).
+    if session_decision.reused:
+        cmd += ["--session", session_decision.session_id]
 
     if prev_handoffs:
         for hf in prev_handoffs:
@@ -239,6 +269,9 @@ def run_agent_stage(
             pass
 
     agent_start = time.monotonic()
+    # K6: the window anchor is taken BEFORE Popen (2s of slack covers the
+    # row landing late, 120s forward guards non-monotonic clocks).
+    spawn_started_ms = int(time.time() * 1000)
     result = run_subprocess_until_signal(
         cmd, cwd=project_dir, watch_paths=watch_paths, logs_dir=logs_dir,
         # W7: role-aware env — a role listed in automation.readonly_roles
@@ -271,6 +304,23 @@ def run_agent_stage(
                                       _net.NO_OUTPUT_TIMEOUT_DEFAULT),
     )
     agent_elapsed = time.monotonic() - agent_start
+    # R6 (K6): capture happens after the spawn, on both outcomes — a killed
+    # entry leaves no row, the next entry still gets -a2 (AC40). A dead base
+    # only writes the reason to the stage log; the stage never falls (AC22).
+    if reuse_mode != "off":
+        if session_decision.reused:
+            session_store.confirm_and_update(
+                project_dir, todo_id=todo_id, stage=session_key,
+                session_id=session_decision.session_id, title=title,
+                agent=agent_name, model=role_model or "", attempt=attempt_entry,
+                logs_dir=logs_dir,
+            )
+        else:
+            session_store.capture_after_spawn(
+                project_dir, todo_id=todo_id, stage=session_key, title=title,
+                agent=agent_name, model=role_model or "", attempt=attempt_entry,
+                spawn_started_ms=spawn_started_ms, logs_dir=logs_dir,
+            )
     # CARRY IMP1: the real return code of THIS attempt — the engine reads it
     # from the holder (the crash branch cannot see the local variable).
     log_holder["exit_code"] = str(result.returncode)

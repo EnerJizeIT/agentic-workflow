@@ -897,7 +897,7 @@ def _build_parser():
         "--role",
         action="append",
         help="Worker role for a stage (repeatable; supervisor plan/verify "
-             "stages and the implementer-close gate are added "
+             "stages and the checklist-close/check pair are added "
              "automatically, as in the setup form)",
     )
     role_or_variant.add_argument(
@@ -1179,3 +1179,6 @@ def _run_command(args) -> int:
         print(f"ERROR: {type(e).__name__}: {e}", file=sys.stderr)
         return 1
 
+
+if __name__ == "__main__":
+    raise SystemExit(main())

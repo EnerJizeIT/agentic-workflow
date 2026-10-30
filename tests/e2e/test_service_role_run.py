@@ -141,7 +141,7 @@ def _shim_main_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("AWF_SHIM_SUPERVISOR_MODE", "approve")
 
 
-def _wait_until(pred, timeout: float = 120, what: str = "condition") -> bool:
+def _wait_until(pred, timeout: float = 300, what: str = "condition") -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if pred():

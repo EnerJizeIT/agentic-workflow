@@ -57,11 +57,14 @@ READ_KEYS: frozenset[str] = frozenset({
     "automation.readonly_roles",
     "automation.runner_dir",
     "automation.stage_timeout_seconds",
+    "automation.stale_stage_minutes",
     "automation.verify_pack",
     # ── engine ───────────────────────────────────────────────────────────
     "engine.heartbeat_seconds",
     "engine.heartbeat_stale_seconds",
     "engine.kill_with_parent",
+    "engine.reuse_session",
+    "engine.session_max_age_minutes",
     # ── limits / checklist ───────────────────────────────────────────────
     "limits.max_review_passes",
     "checklist.closer_attempts",
