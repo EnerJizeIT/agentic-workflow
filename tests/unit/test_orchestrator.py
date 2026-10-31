@@ -848,7 +848,8 @@ class TestSupervisorViaSubprocess:
         cmd = _FakePopen._last_cmds[0]
         assert cmd[0] == "opencode"
         assert "--auto" in cmd
-        assert "--agent" in cmd
+        # A13: this config names no agent for the supervisor — no flag.
+        assert "--agent" not in cmd
         assert any("supervisor.md" in c for c in cmd)
         assert any("plan.md" in c for c in cmd)
         out = capsys.readouterr().out

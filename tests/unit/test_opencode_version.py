@@ -263,7 +263,7 @@ def test_worker_argv_v2_has_flag_in_place(tmp_path, monkeypatch, cfg):
     cmd = captured["cmd"]
     assert cmd[:3] == ["opencode", "run", "--standalone"]
     assert cmd[3:] == [
-        "--auto", "--print-logs", "--agent", "developer",
+        "--auto", "--print-logs",
         "--title", "awf-developer-TODO-0001",
         "--file", str(proj / ".agentic" / "roles" / "developer.md"),
         "--file", str(proj / ".agentic" / "inbox" / "TODO-0001.md"),

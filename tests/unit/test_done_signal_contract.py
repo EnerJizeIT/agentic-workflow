@@ -232,3 +232,16 @@ def test_tests_run_strings_are_named_as_entries(tmp_path):
         "'tests_run' entries must be objects {cmd, result}, got string"
         in log_text
     )
+
+
+def test_deeply_nested_json_is_invalid_not_a_crash():
+    """QA-3: ``json.loads`` бросает RecursionError, не ValueError.
+
+    Патологическая вложенность не должна ронять стадию: контракт — причина
+    в лог, файл пропущен, исключения нет.
+    """
+    text = "[" * 100000 + "]" * 100000
+
+    assert _reason(text) is not None
+    assert _reason(text).startswith("not valid JSON")
+    assert parse_done_json(text) is None

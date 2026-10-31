@@ -44,7 +44,7 @@ These are the 7 rules most commonly violated. Follow them without exception.
    your mistakes. One precise question is always cheaper than 3 iterations of guessing.
 
 7. **Salvage or unexpected failure? Test infrastructure FIRST.**
-   Before reading awf source code, run a trivial test: `opencode run --auto --agent <role> -- 'say hello'`.
+   Before reading awf source code, run a trivial test: `opencode run --auto -- 'say hello'`.
    If that fails → infrastructure problem (vllm, model config). If it works → dig into logs.
 
 ---

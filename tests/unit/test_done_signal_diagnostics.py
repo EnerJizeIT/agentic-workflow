@@ -387,3 +387,22 @@ class TestQaBoundaries:
         assert pipeline_engine._rejected_ready_note(
             outbox, "TODO-0001", ["DONE"]
         ) == ""
+
+
+def test_unit_file_names_requires_a_prefix_boundary(tmp_path):
+    """QA-4: ``DONEFOO-...`` — не префикс ``DONE``, чужое имя.
+
+    Префикс обязан кончаться на ``-``/``.``: иначе диагностика выдаёт
+    посторонний файл за артефакт юнита.
+    """
+    outbox = tmp_path / "outbox"
+    outbox.mkdir()
+    for name in ("DONEFOO-TODO-0001.md", "PROGRESSIVE-TODO-0001.md"):
+        (outbox / name).write_text("x", encoding="utf-8")
+    (outbox / "DONE-TODO-0001.md").write_text("# done\n", encoding="utf-8")
+    (outbox / "TEST-RESULTS-TODO-0001.log").write_text("ok\n", encoding="utf-8")
+
+    assert pipeline_engine._unit_file_names(outbox, "TODO-0001") == [
+        "DONE-TODO-0001.md",
+        "TEST-RESULTS-TODO-0001.log",
+    ]

@@ -893,7 +893,9 @@ def _load_done_json(text: str) -> tuple[dict | None, str | None]:
     """
     try:
         data = json.loads(text)
-    except ValueError as e:
+    except (ValueError, RecursionError) as e:
+        # QA-3: pathological nesting raises RecursionError, not ValueError —
+        # still a reason, never an exception out of the handoff.
         return None, f"not valid JSON ({e})"
     error = _done_json_data_error(data)
     if error is not None:

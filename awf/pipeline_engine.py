@@ -75,6 +75,9 @@ _UNIT_FILE_PREFIXES = (
     # moves in todos.py before adding.
     "BUDGET",
 )
+# QA-4: без границы "DONEFOO-…" читается как префикс "DONE" — сверяем имя
+# префикса и отдельный разделитель после него.
+_UNIT_FILE_STEMS = tuple(prefix.rstrip("-") for prefix in _UNIT_FILE_PREFIXES)
 
 
 def _unit_file_names(outbox: Path, todo_id: str) -> list[str]:
@@ -94,7 +97,10 @@ def _unit_file_names(outbox: Path, todo_id: str) -> list[str]:
         return []
     unit: list[str] = []
     for name in names:
-        if not name.startswith(_UNIT_FILE_PREFIXES):
+        if not any(
+            name.startswith(stem) and name[len(stem):len(stem) + 1] in ("-", ".")
+            for stem in _UNIT_FILE_STEMS
+        ):
             continue
         # QA1: match on a dash/dot boundary, never on a bare substring —
         # TODO-00011 and TODO-00010 must not answer as TODO-0001.

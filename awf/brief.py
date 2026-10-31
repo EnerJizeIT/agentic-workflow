@@ -92,7 +92,7 @@ RITUALS: list[str] = [
     "`done` → `awf_run_next` (no `git log` needed)",
     "run close: `awf_run_finish` — RUN-REPORT to the outbox",
     "incident: infrastructure first "
-    "(`opencode run --auto --agent <role> -- hi`) → "
+    "(`opencode run --auto -- hi`) → "
     "`awf_retry_stage` / `awf_continue --from-stage <stage>`",
     "hygiene: `awf_unblock` (stale closure), `awf_todo_remove` (never "
     "started), `awf_restore` (archived without work), `awf_todo_retire`",

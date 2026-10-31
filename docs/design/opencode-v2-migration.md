@@ -14,8 +14,8 @@ opencode выпустил ветку 2.x (последняя проверенн�
 
 | Место | Контракт | Статус в 2.x |
 |---|---|---|
-| `awf/agent_stage.py:171` | spawn `opencode run --auto --print-logs --agent … --title … --file … [--model p/m] -- <prompt>`; успех = rc 0 + сигнал, иначе авария | флаги сохранились; сессия по умолчанию живёт на фоновом сервере |
-| `awf/supervisor.py:1122` | тот же spawn без `--print-logs` | то же |
+| `awf/agent_stage.py:171` | spawn `opencode run --auto --print-logs [--agent <name>] --title … --file … [--model p/m] -- <prompt>`; успех = rc 0 + сигнал, иначе авария | флаги сохранились; сессия по умолчанию живёт на фоновом сервере |
+| `awf/supervisor.py:1122` | тот же spawn без `--print-logs`; `--agent` только при `models.<role>.agent_name` | то же |
 | `awf/signal_watch.py:269` + `awf/_net.py:46` | preflight `provider.<p>.options.baseURL` из opencode.json → GET `{base}/models`; kill группы процессов | kill группы ломается в default-режиме 2.x (сессия на detached-сервере) |
 | `awf/_env.py:249` | `OPENCODE_CONFIG_CONTENT` (v1-формат: permission-мапа, agent-deny, mcp-disable), merge с opencode.json | env читается, v1-мапа нормализуется; в managed-режиме сервер использует свою конфигурацию → env воркера игнорируется |
 | `awf/opencode_agents.py:87` | читает/пишет v1-формат `agent.*`, `mcp.*` | v1-формат принимается, файл не переписывается |

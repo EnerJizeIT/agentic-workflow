@@ -394,3 +394,79 @@ def test_invalid_runner_dir_is_a_warn_not_not_pinned(project, env, monkeypatch, 
     assert "automation.runner_dir" in runner_warns[0]
     assert "launch will refuse" in runner_warns[0]
     assert "not pinned" not in _lines(report)
+
+
+def test_roles_without_agent_name_are_one_ok_line(project, env, monkeypatch):
+    """A13: the default-agent roles are named once, as information."""
+    _versions(monkeypatch)
+    config = json.loads(json.dumps(CLEAN_CONFIG))
+    config["models"]["supervisor"] = {"model": "p/two"}
+    _write_config(project, config)
+
+    report = run_doctor(project)
+    lines = [line for line in report.lines if line.startswith("ok  agents:")]
+    assert len(lines) == 1, _lines(report)
+    assert "supervisor" in lines[0]
+    assert "worker" not in lines[0]
+    assert report.warnings == []
+
+
+def test_all_roles_named_no_agents_line(project, env, monkeypatch):
+    """A13: no noise when every role names its agent."""
+    _versions(monkeypatch)
+    report = run_doctor(project)
+    assert not [line for line in report.lines if "agents:" in line], _lines(report)
+
+
+def test_models_wrong_shape_does_not_crash_agents_line(project, env, monkeypatch):
+    """A13 review: ``models: []`` is wrong shape, not a traceback (INV7)."""
+    _versions(monkeypatch)
+    config = json.loads(json.dumps(CLEAN_CONFIG))
+    config["models"] = []
+    _write_config(project, config)
+
+    report = run_doctor(project)
+    assert "agents:" not in _lines(report)
+
+
+def test_unusable_agent_name_is_named_not_silent(project, env, monkeypatch):
+    """A13: doctor and argv share one predicate.
+
+    ``agent_name: 123`` cannot become an argv flag (``argv_agent_flag``
+    requires a string), so the role really runs on the default agent — the
+    doctor must name it instead of staying silent.
+    """
+    _versions(monkeypatch)
+    config = json.loads(json.dumps(CLEAN_CONFIG))
+    config["models"]["supervisor"] = {"agent_name": 123}
+    _write_config(project, config)
+
+    report = run_doctor(project)
+    lines = [line for line in report.lines if line.startswith("ok  agents:")]
+    assert len(lines) == 1, _lines(report)
+    assert "supervisor" in lines[0]
+    assert "worker" not in lines[0]
+
+
+def test_non_string_role_key_does_not_crash_the_agents_line(project, env, monkeypatch):
+    """INV7: a numeric YAML role key is malformed, never a traceback."""
+    _versions(monkeypatch)
+    config = json.loads(json.dumps(CLEAN_CONFIG))
+    config["models"][123] = {}
+    _write_config(project, config)
+
+    report = run_doctor(project)
+    lines = [line for line in report.lines if line.startswith("ok  agents:")]
+    assert len(lines) == 1, _lines(report)
+    assert "123" in lines[0]
+
+def test_missing_models_block_names_the_default_agent(project, env, monkeypatch):
+    """A13/CTX3: no ``models`` block still tells the operator what runs."""
+    _versions(monkeypatch)
+    _write_config(project, {"project": {"name": "NoModels"}})
+
+    report = run_doctor(project)
+    assert any(
+        line.startswith("ok  agents:") and "default agent" in line
+        for line in report.lines
+    ), _lines(report)

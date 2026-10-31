@@ -460,7 +460,8 @@ def test_reused_argv_keeps_flags_and_files(tmp_path, monkeypatch):
     _run(proj, monkeypatch, db, cfg, attempt=1)
     second = seen[1]
 
-    assert "--agent" in second and second[second.index("--agent") + 1] == ROLE
+    # A13: the config names no agent for this role — no --agent, default agent.
+    assert "--agent" not in second
     assert second[second.index("--model") + 1] == "test/model"
     first_files = [second[i + 1] for i, tok in enumerate(second) if tok == "--file"]
     for value in (first[i + 1] for i, tok in enumerate(first) if tok == "--file"):

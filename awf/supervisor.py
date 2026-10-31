@@ -30,6 +30,19 @@ def get_agent_name(config: dict, role: str) -> str:
     return cfg_mod.get(config, f"models.{role}.agent_name", role) or role
 
 
+def argv_agent_flag(config: dict, role: str) -> list[str]:
+    """A13: the ``--agent`` argv fragment — only when a name is configured.
+
+    opencode 1.x silently ignored an unknown agent name, 2.x rejects it
+    (``Error: Agent not found``). A role without ``models.<role>.agent_name``
+    therefore runs on the default agent: no flag at all, as in 1.x.
+    """
+    name = cfg_mod.get(config, f"models.{role}.agent_name", "")
+    if not isinstance(name, str) or not name.strip():
+        return []
+    return ["--agent", name.strip()]
+
+
 def get_role_model(config: dict, role: str) -> str | None:
     """BD-24: get the model override for a role from config.yaml.
 
@@ -1127,8 +1140,11 @@ def run_supervisor_via_subprocess(
     logs_dir: Path,
     pipeline_name: str | None = None,
 ) -> str:
-    """BD-14/29: spawn ``opencode run --auto --agent ... --file supervisor.md``.
+    """BD-14/29: spawn ``opencode run --auto [--agent <name>] --file supervisor.md``.
 
+    A13: ``--agent`` is present only when ``models.supervisor.agent_name``
+    names one — an unnamed role runs on the default agent (2.x rejects a
+    made-up name).
     kind is one of: plan / verify / replan / salvage.
     salvage is NOT automatable — needs human judgement.
 
@@ -1157,7 +1173,11 @@ def run_supervisor_via_subprocess(
     agent_name = get_agent_name(config, "supervisor")
     cmd = [
         "opencode", "run", "--auto",
-        "--agent", agent_name,
+    ]
+    # A13: an unnamed role runs on the default agent (2.x rejects a
+    # made-up name), a named one gets exactly one flag.
+    cmd += argv_agent_flag(config, "supervisor")
+    cmd += [
         "--title", f"awf-supervisor-{kind}",
     ]
     role_model = get_role_model(config, "supervisor")

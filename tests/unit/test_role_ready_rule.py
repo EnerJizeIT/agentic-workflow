@@ -26,10 +26,12 @@ QA_SIGNAL_RULE = (
 # CTX1 витка 3: у роли-ревьюера требований стадия уходит в откат по
 # REVIEW-REJECTED, поэтому её правило тоже условное — но по своей развилке.
 REQ_SIGNAL_RULE = (
-    "Сигнал стадии зависит от вердикта: `PASS` — пустой `DONE-{todo}.ready` "
-    "(создай его ПОСЛЕ `DONE-{todo}.md` и `DONE-{todo}.json`); `FAIL` — "
-    "`REVIEW-REJECTED-{todo}.ready`, стадия уходит в откат на автора, "
-    "`DONE` не пишется; без сигнала движок ждёт 30 с и запускает лишний виток."
+    "Сигнал стадии зависит от вердикта: `PASS` и `READY` — пустой "
+    "`DONE-{todo}.ready` (создай его ПОСЛЕ `DONE-{todo}.md` и "
+    "`DONE-{todo}.json`); `FAIL` и `BLOCKED` готовности — "
+    "`REVIEW-REJECTED-{todo}.ready`, пакет уходит автору, `DONE` не пишется; "
+    "сомнение в контракте — `BLOCKED-{todo}.ready`, эскалация супервизору; "
+    "без сигнала движок ждёт 30 с и запускает лишний виток."
 )
 QA_ROLE = "agent-qa-review.md"
 REQ_ROLE = "agent-requirements-reviewer.md"
@@ -95,3 +97,44 @@ def test_requirements_reviewer_rule_names_the_rollback_signal():
         assert REQ_SIGNAL_RULE in text, path
         assert "REVIEW-REJECTED-{todo}.ready" in text, path
         assert SIGNAL_RULE not in text, path
+
+
+def test_requirements_reviewer_rule_covers_the_readiness_verdict():
+    """QA-0312-01: у роли ДВА набора вердиктов, и второй тоже двигает стадию.
+
+    Строка правила, знающая только `PASS`/`FAIL`, оставляла `BLOCKED`
+    готовности без сигнала. Воркер писал бы `DONE-{todo}.ready` (пакет с
+    блокером уходил дальше как готовый) или `BLOCKED-{todo}.ready` (эскалация
+    супервизору), тогда как пайплайн ждёт `REVIEW-REJECTED`, чтобы вернуть
+    пакет автору. Тест ловит ровно эту дыру: в правиле есть `READY` и есть
+    связка «`BLOCKED` готовности → `REVIEW-REJECTED`».
+    """
+    for base in (ROOT / "awf" / "templates" / "roles", ROOT / ".agentic" / "roles"):
+        path = base / REQ_ROLE
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        assert "`READY`" in text, path
+        assert "`BLOCKED` готовности — `REVIEW-REJECTED-{todo}.ready`" in text, path
+
+
+def test_shipped_pipelines_roll_back_a_rejected_requirements_review():
+    """Правило роли «BLOCKED готовности → REVIEW-REJECTED» верно только пока
+    пайплайн объявляет `on_rejected: rollback_to:...` для этой роли.
+
+    Сверка стороны роли со стороной пайплайна: если шаблон станет
+    `escalate`, текст роли начнёт врать, и тест это назовёт.
+    """
+    from awf.pipeline import load_stages
+
+    checked = 0
+    for path in sorted((ROOT / "awf" / "templates" / "pipelines").glob("*.yaml")):
+        for stage in load_stages(path):
+            if stage.role != "agent-requirements-reviewer":
+                continue
+            checked += 1
+            assert stage.on_rejected.startswith("rollback_to:"), (
+                f"{path.name}:{stage.name} on_rejected={stage.on_rejected!r} — "
+                "the role's REVIEW-REJECTED rule points at a rollback"
+            )
+    assert checked, "no packaged pipeline uses agent-requirements-reviewer"

@@ -44,6 +44,7 @@ from typing import Any
 import yaml
 
 from . import config_keys, paths, versions, xdg
+from .supervisor import argv_agent_flag
 
 OK = "ok"
 WARN = "WARN"
@@ -269,6 +270,26 @@ def _check_models(project_dir: Path, config_problem: str, out: _Lines) -> None:
     out.ok("models", f"{roles} role(s) checked, {len(providers)} provider(s)")
 
 
+def _check_agent_names(config: dict[str, Any], config_problem: str, out: _Lines) -> None:
+    """A13: roles without ``agent_name`` run on the default agent — one ok line."""
+    if config_problem:
+        return
+    models = config.get("models")
+    if models is None:
+        # CTX3: no ``models`` block at all — every stage runs unnamed, and the
+        # missing line read as "nothing to check".
+        out.ok("agents", "no roles named in models — every stage runs on the default agent")
+        return
+    # Same predicate as argv: `models: []` (wrong shape) is silence — the
+    # config-shape check owns that report; a role whose value cannot become a
+    # flag (`agent_name: 123`) is named here.
+    roles = models if isinstance(models, dict) else {}
+    # str(): a non-string YAML key must not make the doctor traceback.
+    unnamed = sorted(str(role) for role in roles if not argv_agent_flag(config, role))
+    if unnamed:
+        out.ok("agents", "default agent (no usable agent_name): " + ", ".join(unnamed))
+
+
 def _check_opencode(config: dict[str, Any], config_problem: str, out: _Lines) -> None:
     """K3/K4: the effective opencode mode and the managed warning.
 
@@ -369,6 +390,7 @@ def run_doctor(project_dir: str | Path = ".") -> DoctorReport:
     _check_versions(root, config, config_problem, out)
     _check_opencode(config, config_problem, out)
     _check_models(root, config_problem, out)
+    _check_agent_names(config, config_problem, out)
     if config_problem:
         out.warn("config keys", f"{config_problem} — nothing to check")
     else:

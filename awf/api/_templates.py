@@ -94,7 +94,7 @@ default_pipeline: "default"
 _ROLE_TEMPLATE = """# ROLE: {role_name}
 
 **Role:** {description}
-**Runs as:** `opencode run --agent {role_name}`
+**Runs as:** `opencode run` with the agent from `models.{role_name}.agent_name` (default agent when the key is unset)
 **Модель:** {model}
 
 ## 1. Who you are

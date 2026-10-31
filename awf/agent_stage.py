@@ -24,6 +24,7 @@ from .signals import (
     stage_signal_paths,
 )
 from .supervisor import (
+    argv_agent_flag,
     build_prompt,
     get_agent_name,
     get_role_model,
@@ -199,7 +200,11 @@ def run_agent_stage(
     cmd = [
         "opencode", "run", "--auto",
         "--print-logs",
-        "--agent", agent_name,
+    ]
+    # A13: an unnamed role runs on the default agent (2.x rejects a
+    # made-up name), a named one gets exactly one flag.
+    cmd += argv_agent_flag(config, role)
+    cmd += [
         "--title", title,
         "--file", str(role_file),
     ]
