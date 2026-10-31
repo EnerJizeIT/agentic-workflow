@@ -605,12 +605,44 @@ class TestDoneJsonInHandoff:
         out = collect_handoff("worker", "TODO-0002", proj, proj / ".agentic" / "logs")
         body = out.read_text(encoding="utf-8")
         assert "## Machine facts (DONE.json)" not in body
-        assert "DONE-json=absent" in body
+        assert "DONE-json=invalid" in body
 
         log = (proj / ".agentic" / "logs" / "orchestrator.log").read_text(encoding="utf-8")
         assert "DONE-TODO-0002.json" in log
 
-    def test_schema_violation_no_section(self, tmp_path, monkeypatch):
+    def test_empty_json_from_a_killed_write_is_invalid_in_the_handoff(
+        self, tmp_path, monkeypatch
+    ):
+        """CTX4: a worker killed mid-write leaves a 0-byte file.
+
+        The next role must be told "the file is there and unusable" — not
+        "no file", which sends it looking for something that exists.
+        """
+        proj = _project(tmp_path)
+        _stub_git(monkeypatch, [])
+        (proj / ".agentic" / "outbox" / "DONE-TODO-0002.json").write_text(
+            "  \n", encoding="utf-8"
+        )
+
+        out = collect_handoff("worker", "TODO-0002", proj, proj / ".agentic" / "logs")
+        body = out.read_text(encoding="utf-8")
+        assert "## Machine facts (DONE.json)" not in body
+        assert "DONE-json=invalid" in body
+
+        log = (proj / ".agentic" / "logs" / "orchestrator.log").read_text(encoding="utf-8")
+        assert "DONE-TODO-0002.json is empty" in log
+
+    def test_schema_violation_names_the_reason_in_the_handoff_log(
+        self, tmp_path, monkeypatch
+    ):
+        """A12: the next role reads the handoff first — it must see ``invalid``.
+
+        The old assertion stopped at "no Machine facts section", which is also
+        true when the file is simply absent. Both the fact (``invalid``, not
+        ``absent``) and the reason in the stage log are the contract of this
+        unit: the operator learns the key, the expectation and the actual type
+        without opening the worker log.
+        """
         proj = _project(tmp_path)
         _stub_git(monkeypatch, [])
         (proj / ".agentic" / "outbox" / "DONE-TODO-0002.json").write_text(
@@ -618,7 +650,14 @@ class TestDoneJsonInHandoff:
         )
 
         out = collect_handoff("worker", "TODO-0002", proj, proj / ".agentic" / "logs")
-        assert "## Machine facts (DONE.json)" not in out.read_text(encoding="utf-8")
+        body = out.read_text(encoding="utf-8")
+        assert "## Machine facts (DONE.json)" not in body
+        assert "DONE-json=invalid" in body
+
+        log = (proj / ".agentic" / "logs" / "orchestrator.log").read_text(encoding="utf-8")
+        assert (
+            "'files_changed' must be a list of strings, got string" in log
+        )
 
     def test_json_absent_handoff_as_before(self, tmp_path, monkeypatch):
         proj = _project(tmp_path)

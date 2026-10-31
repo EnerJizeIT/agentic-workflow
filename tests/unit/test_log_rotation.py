@@ -252,3 +252,23 @@ class TestReaderReadsAllArchives:
             "→ Transition: old two",
             "→ Transition: new",
         ]
+
+
+class TestUnencodableMessage:
+    """A12/QA7: "the logger never breaks a run" also covers the message text."""
+
+    def test_surrogate_message_is_replaced_not_raised(self, tmp_git_repo):
+        """A name decoded from non-UTF-8 bytes carries a lone surrogate.
+
+        ``fdopen(..., encoding="utf-8")`` raises ``UnicodeEncodeError`` (a
+        ValueError, so the ``except OSError`` never sees it) and the stage
+        ends instead of salvaging. The logger replaces the byte.
+        """
+        from awf._log import log
+
+        logs = _logs(tmp_git_repo)
+        log(logs, "outbox name DONE-TODO-0001-\udcff.md")
+
+        text = (logs / "orchestrator.log").read_text(encoding="utf-8")
+        assert "\\udcff" in text, "the byte is named, not lost"
+        assert "DONE-TODO-0001-" in text

@@ -26,6 +26,8 @@
 `DONE-{id}.md` — список находок с вердиктами и что реально поправлено;
 `DONE-{id}.json` — факты (`files_changed`, `tests_run`, `gates`, `notes`).
 
+Сигнал стадии — пустой `DONE-{todo}.ready`: создай его ПОСЛЕ `DONE-{todo}.md` и `DONE-{todo}.json`; без него движок ждёт 30 с и запускает лишний виток.
+
 ## Запреты
 
 - НЕ `git commit`, НЕ `git stash`, НЕ `git add`, НЕ `git reset`.

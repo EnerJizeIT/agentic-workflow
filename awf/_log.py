@@ -174,7 +174,13 @@ def log(logs_dir: Path, message: str) -> None:
         if not root.exists():
             root.mkdir(parents=True, exist_ok=True)
         fd, _ = managed_fs.open_append_log(log_file, root=root, create=True)
-        with os.fdopen(fd, "a", encoding="utf-8") as f:
+        # A12/QA7: a name decoded from non-UTF-8 bytes reaches the message
+        # as a lone surrogate; the encode would raise UnicodeEncodeError
+        # (a ValueError, not an OSError) and end the stage. "The logger
+        # must never break a run" holds for every caller, not just the one
+        # that already sanitizes its names: an unencodable code point is
+        # written as its backslash escape (``\udcff``), never raised.
+        with os.fdopen(fd, "a", encoding="utf-8", errors="backslashreplace") as f:
             f.write(f"[{ts}] {message}\n")
     except (OSError, managed_fs.ManagedPathError):
         pass

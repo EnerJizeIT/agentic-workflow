@@ -797,6 +797,110 @@ def parse_todo_contract(
     return data, unknown
 
 
+def _json_type_name(value: object) -> str:
+    """Name the actual JSON type of a value for a schema-violation message."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__
+
+
+def _done_json_data_error(data: object) -> str | None:
+    """Return the schema-violation reason for parsed data, or None when valid."""
+    if not isinstance(data, dict):
+        return (
+            "top-level value must be a JSON object, got "
+            f"{_json_type_name(data)}"
+        )
+    for key in ("files_changed", "gates"):
+        v = data.get(key)
+        if v is None:
+            continue
+        if not isinstance(v, list):
+            return (
+                f"'{key}' must be a list of strings, got {_json_type_name(v)}"
+            )
+        for item in v:
+            if not isinstance(item, str):
+                return (
+                    f"'{key}' must be a list of strings, got an entry of type "
+                    f"{_json_type_name(item)}"
+                )
+    tests_run = data.get("tests_run")
+    if tests_run is not None:
+        if not isinstance(tests_run, list):
+            return (
+                "'tests_run' must be a list of objects {cmd, result}, got "
+                f"{_json_type_name(tests_run)}"
+            )
+        for item in tests_run:
+            if not isinstance(item, dict):
+                return (
+                    "'tests_run' entries must be objects {cmd, result}, got "
+                    f"{_json_type_name(item)}"
+                )
+            for key in ("cmd", "result"):
+                if not isinstance(item.get(key), str):
+                    return (
+                        f"'tests_run[{key}]' must be a string, got "
+                        f"{_json_type_name(item.get(key))}"
+                    )
+    notes = data.get("notes")
+    if notes is not None and not isinstance(notes, str):
+        return f"'notes' must be a string, got {_json_type_name(notes)}"
+    # ORCH M4.3: the stage identity block — a violation skips the file.
+    stage = data.get("stage")
+    if stage is not None:
+        if not isinstance(stage, dict):
+            return f"'stage' must be an object, got {_json_type_name(stage)}"
+        for key in ("stage_id", "role", "model"):
+            v = stage.get(key)
+            if v is None:
+                continue
+            if not isinstance(v, str):
+                return (
+                    f"'stage.{key}' must be a non-empty string, got "
+                    f"{_json_type_name(v)}"
+                )
+            if not v.strip():
+                # QA2: the type is right, the value is blank — say so.
+                return f"'stage.{key}' must be a non-empty string, got empty string"
+        attempt = stage.get("attempt")
+        if attempt is not None and (
+            not isinstance(attempt, int) or isinstance(attempt, bool)
+        ):
+            return (
+                "'stage.attempt' must be an integer, got "
+                f"{_json_type_name(attempt)}"
+            )
+    return None
+
+
+def _load_done_json(text: str) -> tuple[dict | None, str | None]:
+    """Parse + validate DONE.json once: ``(data, None)`` or ``(None, reason)``.
+
+    One parse per call: the reason and the data are two views of the same
+    result, so no surface has to run the JSON through the schema twice.
+    """
+    try:
+        data = json.loads(text)
+    except ValueError as e:
+        return None, f"not valid JSON ({e})"
+    error = _done_json_data_error(data)
+    if error is not None:
+        return None, error
+    return data, None
+
+
 def parse_done_json(text: str) -> dict | None:
     """Parse + validate DONE.json. Returns a dict, or None when broken.
 
@@ -805,47 +909,7 @@ def parse_done_json(text: str) -> dict | None:
     ``notes: str``, ``stage: {stage_id: str, attempt: int, role: str,
     model: str}`` (ORCH M4.3, block and keys optional).
     """
-    try:
-        data = json.loads(text)
-    except ValueError:
-        return None
-    if not isinstance(data, dict):
-        return None
-    for key in ("files_changed", "gates"):
-        v = data.get(key)
-        if v is not None and (
-            not isinstance(v, list) or not all(isinstance(x, str) for x in v)
-        ):
-            return None
-    tests_run = data.get("tests_run")
-    if tests_run is not None:
-        if not isinstance(tests_run, list):
-            return None
-        for item in tests_run:
-            if (
-                not isinstance(item, dict)
-                or not isinstance(item.get("cmd"), str)
-                or not isinstance(item.get("result"), str)
-            ):
-                return None
-    notes = data.get("notes")
-    if notes is not None and not isinstance(notes, str):
-        return None
-    # ORCH M4.3: the stage identity block — a violation skips the file.
-    stage = data.get("stage")
-    if stage is not None:
-        if not isinstance(stage, dict):
-            return None
-        for key in ("stage_id", "role", "model"):
-            v = stage.get(key)
-            if v is not None and (not isinstance(v, str) or not v.strip()):
-                return None
-        attempt = stage.get("attempt")
-        if attempt is not None and (
-            not isinstance(attempt, int) or isinstance(attempt, bool)
-        ):
-            return None
-    return data
+    return _load_done_json(text)[0]
 
 
 def render_done_json(data: dict) -> list[str]:
@@ -925,35 +989,48 @@ def collect_done_facts(
     """Read + validate DONE-{todo_id}.json for the handoff.
 
     Returns ``(fact_suffix, machine_facts_lines, declared_stage)``: the
-    Run-facts suffix (``", DONE-json=present"``/``", DONE-json=absent"``),
-    the rendered machine-facts lines (empty when absent, empty, or broken)
-    and the DONE.json ``stage`` block (ORCH M4.3) or None — the handoff's
-    Stage facts cross-checks it. A broken or schema-violating file logs a
-    warning and never raises.
+    Run-facts suffix (``", DONE-json=present"``, ``", DONE-json=absent"`` or
+    ``", DONE-json=invalid"``), the rendered machine-facts lines (empty when
+    absent, empty, or broken) and the DONE.json ``stage`` block (ORCH M4.3)
+    or None — the handoff's Stage facts cross-checks it. A broken or
+    schema-violating file logs a warning and never raises.
     """
     fact = ", DONE-json=absent"
     path = find_signal_file(outbox, "DONE", todo_id, ".json")
     if path is None:
         return fact, [], None
+    # CTX4: the file exists but cannot be used — that is a different action
+    # for the next role than "the worker wrote no json at all".
+    invalid = ", DONE-json=invalid"
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as e:
-        # NEG-3: binary garbage in the DONE json degrades to absent facts,
-        # the same as an unreadable file.
+        # NEG-3: binary garbage in the DONE json degrades to no facts,
+        # the same as an unreadable file — but the fact says it was written.
         _log(logs_dir, f"U3: {path.name} unreadable ({e}) — handoff skips machine facts")
-        return fact, [], None
+        return invalid, [], None
     if not text.strip():
-        return fact, [], None
-    data = parse_done_json(text)
+        # A12/QA6: the file exists and cannot be used — ``invalid``, not
+        # ``absent``. The next role fixes a file, it does not go looking
+        # for one that was already written (a kill mid-write leaves this).
+        _log(
+            logs_dir,
+            f"U3: {path.name} is empty — "
+            "handoff continues without the machine-facts section",
+        )
+        return invalid, [], None
+    data, reason = _load_done_json(text)
     if data is None:
         _log(
             logs_dir,
-            f"U3: {path.name} is broken or violates the DONE.json schema — "
+            f"U3: {path.name} — {reason}; "
             "handoff continues without the machine-facts section",
         )
-        return fact, [], None
+        return invalid, [], None
     lines = render_done_json(data)
-    return (fact if not lines else ", DONE-json=present"), lines, data.get("stage")
+    # CTX2: a valid but empty object has no facts to render — the file is
+    # still there, so the fact says ``present``, not ``absent``.
+    return ", DONE-json=present", lines, data.get("stage")
 
 
 __all__ = [

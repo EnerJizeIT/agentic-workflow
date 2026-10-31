@@ -354,13 +354,13 @@ def test_f_broken_done_json_handoff_facts_degrade(tmp_git_repo: Path):
     fact, lines, declared = collect_done_facts(outbox, "TODO-0001", logs)
     assert lines == []
     assert declared is None
-    assert "DONE-json=absent" in fact
+    assert "DONE-json=invalid" in fact
 
     done_json.write_bytes(b"\xff\xfe\x00binary")
     fact, lines, declared = collect_done_facts(outbox, "TODO-0001", logs)
     assert lines == []
     assert declared is None
-    assert "DONE-json=absent" in fact
+    assert "DONE-json=invalid" in fact
 
 
 # ── (g) binary BASELINE-<id>.include ─────────────────────────────────────
