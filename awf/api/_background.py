@@ -25,7 +25,7 @@ from .. import paths
 from .._log import log as _log
 from ..infra import managed_fs
 from ._errors import AwfApiError
-from ._helpers import read_log_tail
+from ._helpers import RUN_BANNERS, read_log_tail
 
 # How long the launcher waits before probing a fresh background child
 # (_verify_child_alive in api/pipeline.py). The reaper must not collect the
@@ -295,7 +295,9 @@ def check_pipeline_running(
 
     log_file = paths.agentic_dir(project_dir) / "logs" / "awf-start.out"
     running, pid, _source = resolve(project_dir)
-    return running, pid, read_log_tail(log_file, log_tail_lines)
+    return running, pid, read_log_tail(
+        log_file, log_tail_lines, markers=RUN_BANNERS
+    )
 
 
 __all__ = [

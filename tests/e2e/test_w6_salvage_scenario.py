@@ -202,11 +202,15 @@ def test_salvage_silent_exit_then_retry_drives_to_verify(
     assert "salvage" in _log_text(proj), _log_text(proj)[-2000:]
 
     # The worker was run 3 times (initial + 2 silent-retry continue-pushes),
-    # each in silent-exit mode; the plan stage saw one supervisor call.
+    # each in silent-exit mode. A12c (incident 31.10): a pinned unit is NOT
+    # re-authored — the plan stage skips the supervisor subprocess, which
+    # used to renumber the unit and move the original file.
     calls1 = _invocations(state1)
     workers1 = [c for c in calls1 if c[1] == "worker" and c[2] == "silent-exit"]
     assert len(workers1) == 3, f"expected 3 silent-exit worker calls, got {calls1}"
-    assert any(c[1] == "supervisor" for c in calls1), f"no supervisor call in {calls1}"
+    assert not any(c[1] == "supervisor" for c in calls1), (
+        f"a pinned unit must not be re-authored by the plan stage: {calls1}"
+    )
 
     # Retry: switch the shim to the success mode and continue from the
     # salvaged stage (the pinned unit comes from the state file).

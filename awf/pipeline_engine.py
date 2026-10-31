@@ -1326,15 +1326,41 @@ def execute_supervisor_stage(
     if s_kind == "verify" and current_todo:
         _maybe_run_verify_pack(current_todo, project_dir, config, logs_dir)
 
-    try:
-        sup_signal = _run_supervisor_stage(
-            stage, current_todo, auto, project_dir, logs_dir, pipeline_name
+    # A12c (incident 31.10): a pinned, already-dispatched unit needs no
+    # supervisor authoring. The plan stage used to spawn the supervisor
+    # subprocess anyway; on the default agent it renumbered the unit
+    # (TODO-0314 → TODO-0315) and moved the original file, leaving the
+    # engine with "File not found" mid-run. The contract IS the TODO, so
+    # the stage only has to keep the unit and pass the checkpoint.
+    pinned_plan = (
+        s_kind == "plan"
+        and auto
+        and bool(current_todo)
+        and (paths.inbox(project_dir) / f"{current_todo}.md").is_file()
+    )
+    if pinned_plan:
+        print(
+            f"Plan stage: {current_todo} is already dispatched — "
+            "supervisor subprocess skipped (the contract is the TODO)."
         )
-    except (RuntimeError, TimeoutError) as e:
-        print(f"ERROR: supervisor stage '{s_name}' crashed. Pipeline stopped.", file=sys.stderr)
-        print(f"  Details: {e}", file=sys.stderr)
-        _log(logs_dir, f"Pipeline stopped at stage {s_name}: {e}")
-        return current_todo, 0, 1
+        _log(
+            logs_dir,
+            f"plan: pinned unit {current_todo} — supervisor subprocess skipped",
+        )
+        sup_signal = ""
+    else:
+        try:
+            sup_signal = _run_supervisor_stage(
+                stage, current_todo, auto, project_dir, logs_dir, pipeline_name
+            )
+        except (RuntimeError, TimeoutError) as e:
+            print(
+                f"ERROR: supervisor stage '{s_name}' crashed. Pipeline stopped.",
+                file=sys.stderr,
+            )
+            print(f"  Details: {e}", file=sys.stderr)
+            _log(logs_dir, f"Pipeline stopped at stage {s_name}: {e}")
+            return current_todo, 0, 1
 
     if s_kind == "plan":
         # FU-05: single-phase plan — the contract is the TODO itself. The

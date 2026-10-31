@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1871,6 +1872,49 @@ def start_pipeline(
     )
 
 
+def _runner_drift_refusal(project_dir: Path) -> StartResult | None:
+    """Incident 31.10: the pinned checkout must BE the code this awf is.
+
+    ``automation.runner_dir`` makes the background child run with that
+    directory as its cwd, so ``python -m awf`` imports the PINNED checkout.
+    A runner left behind by a commit therefore executes yesterday's engine
+    while the operator verifies today's fix — the A13 spawn fix looked
+    broken only because the runner did not have it.
+
+    Refused rather than warned: a warning scrolls, and the run then does
+    something that does not match the tree the operator is looking at.
+    Equal commits, no commit evidence (a wheel, no git) and a missing
+    checkout keep today's behaviour — the runner shape itself is validated
+    by the launcher.
+    """
+    from .. import versions
+
+    config = cfg_mod.load(project_dir)
+    runner = versions.runner_path(project_dir, config)
+    if runner is None or not (runner / "awf" / "__init__.py").is_file():
+        return None
+    pinned = versions.repo_commit(runner)
+    running = versions.process_commit()
+    if not pinned or not running or pinned == running:
+        return None
+    message = (
+        f"pinned runner drift: automation.runner_dir ({runner}) is at "
+        f"{pinned}, this awf is {running}. The engine imports the pinned "
+        f"checkout, so the run would execute the older code. Sync it first: "
+        f'git -C "{runner}" reset --hard {running} — or unset '
+        f"automation.runner_dir."
+    )
+    print(f"ERROR: {message}", file=sys.stderr)
+    return StartResult(
+        run_mode="noop",
+        run_id=None,
+        log_file=None,
+        exit_code=1,
+        message=message,
+        warning="",
+    )
+
+
 def _opencode_gate(project_dir: Path) -> StartResult | None:
     """K3/R2: fail-closed launch gate — typed refusal, never an exception.
 
@@ -1912,6 +1956,12 @@ def _start_pipeline(
     opencode_refusal = _opencode_gate(project_dir)
     if opencode_refusal is not None:
         return opencode_refusal
+    # Incident 31.10: the pinned runner must be the code this awf is —
+    # otherwise the engine runs yesterday's tree and every verified fix
+    # looks broken. Refused before the readiness gate and the lease.
+    runner_refusal = _runner_drift_refusal(project_dir)
+    if runner_refusal is not None:
+        return runner_refusal
     # OPS IMP1 (R1/INV8): validate the cap BEFORE the readiness gate, the
     # lease and the first file — caller by raise, project key as a refusal.
     timeout = stage_timeout.validate_caller(timeout)
@@ -2255,6 +2305,11 @@ def _continue_pipeline(
     opencode_refusal = _opencode_gate(project_dir)
     if opencode_refusal is not None:
         return opencode_refusal
+    # Incident 31.10: a continue runs the pinned runner too — same drift
+    # refusal as start, before the ACK and the lease.
+    runner_refusal = _runner_drift_refusal(project_dir)
+    if runner_refusal is not None:
+        return runner_refusal
     # OPS IMP1 (R1/INV8): same early cap validation as start_pipeline —
     # before the ACK is written, the lease is taken and a stage starts.
     timeout = stage_timeout.validate_caller(timeout)

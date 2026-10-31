@@ -302,14 +302,20 @@ def _suite_canon_body(policy: str) -> str:
     """The managed test-policy text for one policy id."""
     if policy == "qa":
         return (
-            "Полный сьют — ОДИН канонический прогон на attempt: "
-            "`scripts/suite-canonical.sh`. Команда по умолчанию — "
-            "`verification.test_cmd` из `.agentic/config.yaml`; переопределяется "
-            "`AWF_SUITE_CMD` (узкий прогон — своя команда). Артефакт — "
+            "Полный сьют — ОДИН канонический прогон на attempt. Он дольше бюджета "
+            "одной команды, поэтому запускается отсоединённо: "
+            "`scripts/suite-canonical.sh --background` (rc 3 = идёт или уже идёт), "
+            "затем опрос `scripts/suite-canonical.sh --status` раз в минуту, пока "
+            "не вернёт 0 (зелёный) или 1 (красный); rc 4 — не запущен, вернись к "
+            "--background. Команда по умолчанию — `verification.test_cmd` из "
+            "`.agentic/config.yaml`; переопределяется `AWF_SUITE_CMD`. Артефакт — "
             "`.agentic/context/SUITE-<tree-sha>-<cmd8>.json`; повторный прогон на том "
-            "же дереве и той же команде — только с `--force`. Целевые и контрактные "
-            "проверки роль делает сама; `scripts/run-all.sh` целиком — только при "
-            "сомнении в воротах."
+            "же дереве и той же команде — только с `--force`. Сырой `pytest tests/` "
+            "не запускай: он не создаёт артефакт и оплачивается заново. Целевые "
+            "проверки по находкам — свои, поверх канона.\n\n"
+            "Вердикт BLOCKED ⇒ ТОЛЬКО `BLOCKED-{todo}.ready` + `BLOCKED-{todo}.md`; "
+            "`DONE-{todo}.*` не пишется — сигнал двигает пайплайн, а не вердикт в "
+            "отчёте."
         )
     if policy == "implementer":
         return (

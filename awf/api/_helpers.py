@@ -279,12 +279,28 @@ def read_file_text(path: Path, max_chars: int | None = None) -> str:
     return text
 
 
-def read_log_tail(log_file: Path, n: int) -> str | None:
+#: Lines a launch prints once, at the very start of ``awf-start.out``.
+#: The tail is cut at the LAST of them: ``awf-start.out`` is append-only, so
+#: a fresh run that wrote three lines used to be shown together with the
+#: previous run's progress report under it (incident 31.10).
+RUN_BANNERS: tuple[str, ...] = (
+    "=== Agentic Workflow: Starting Pipeline ===",
+    "=== Agentic Workflow: Continuing Pipeline ===",
+)
+
+
+def read_log_tail(
+    log_file: Path, n: int, markers: tuple[str, ...] = ()
+) -> str | None:
     """Read last N lines of a log file. Returns None if file is absent.
 
     dogfood-11: consecutive duplicate lines are collapsed to ``line  (×N)`` —
     retry loops repeat the same warning verbatim and flood the tail that the
     supervisor reads.
+
+    ``markers``: cut the file at the last line containing one of them, so a
+    multi-launch append-only log answers with THIS run only. No marker (a
+    launch that died before its banner, an old log) keeps the plain tail.
     """
     if not log_file.is_file():
         return None
@@ -293,6 +309,11 @@ def read_log_tail(log_file: Path, n: int) -> str | None:
     except OSError:
         return None
     lines = text.splitlines()
+    if markers:
+        for i in range(len(lines) - 1, -1, -1):
+            if any(marker in lines[i] for marker in markers):
+                lines = lines[i:]
+                break
     if not lines:
         return ""
     tail = lines[-n:] if len(lines) > n else lines

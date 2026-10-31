@@ -49,7 +49,9 @@ def _extract_stage_info(
 
     state = read_state(project_dir)
     log_tail_text = _read_log_tail(
-        paths.agentic_dir(project_dir) / "logs" / "awf-start.out", 30
+        paths.agentic_dir(project_dir) / "logs" / "awf-start.out",
+        30,
+        markers=_run_banners(),
     )
     if state and state_trusted(project_dir, state):
         # All fields available from structured state — no regex needed.
@@ -98,19 +100,25 @@ def _lookup_next_stage_role(project_dir: Path, current_stage: str | None) -> str
     return None
 
 
-def _read_log_tail(log_file: Path, n: int) -> str | None:
-    """Read last N lines of a log file. Returns None if file is absent."""
-    if not log_file.is_file():
-        return None
-    try:
-        text = log_file.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    lines = text.splitlines()
-    if not lines:
-        return ""
-    tail = lines[-n:] if len(lines) > n else lines
-    return "\n".join(tail)
+def _run_banners() -> tuple[str, ...]:
+    """The launch banner lines ``read_log_tail`` cuts the tail at."""
+    from ._helpers import RUN_BANNERS
+
+    return RUN_BANNERS
+
+
+def _read_log_tail(
+    log_file: Path, n: int, markers: tuple[str, ...] = ()
+) -> str | None:
+    """Read last N lines of a log file. Returns None if file is absent.
+
+    A12d (incident 31.10): the file is append-only across launches, so the
+    tail is cut at the last run banner — one owner for that rule lives in
+    ``_helpers.read_log_tail``.
+    """
+    from ._helpers import read_log_tail
+
+    return read_log_tail(log_file, n, markers=markers)
 
 
 def _compute_expected_action(
