@@ -11,9 +11,9 @@ read), so there is nothing to pin there.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
-from pathlib import Path
 
 import agent_workflow_ui
 import awf

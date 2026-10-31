@@ -115,9 +115,8 @@ def _build_parser():
     """
     # REVIEW W5: the variant names are the one registry in awf.api.setup —
     # a new starter must appear here without a second hardcoded list.
-    from .api.setup import BUILTIN_PIPELINES
-
     from . import __version__
+    from .api.setup import BUILTIN_PIPELINES
 
     parser = argparse.ArgumentParser(
         prog="awf",
