@@ -117,9 +117,17 @@ def _build_parser():
     # a new starter must appear here without a second hardcoded list.
     from .api.setup import BUILTIN_PIPELINES
 
+    from . import __version__
+
     parser = argparse.ArgumentParser(
         prog="awf",
         description="Agentic Workflow Framework",
+    )
+    # R12/AC37: `awf --version` is the one place a user reads the version.
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"awf {__version__}",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
