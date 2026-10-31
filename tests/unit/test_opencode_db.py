@@ -66,12 +66,42 @@ def _v2(tmp_path: Path) -> Path:
     return path
 
 
-def test_recent_models_v1(tmp_path):
-    assert db.recent_models(_v1(tmp_path)) == ["plain/model", "vllm/llm"]
+def test_recent_models_v1_db_is_empty(tmp_path, capsys):
+    """K3: a v1 database has no v2 table — empty list, one line, no crash."""
+    assert db.recent_models(_v1(tmp_path)) == []
+    assert "моделей не найдено" in capsys.readouterr().err
 
 
 def test_recent_models_v2(tmp_path):
     assert db.recent_models(_v2(tmp_path)) == ["vllm/llm"]
+
+
+def test_recent_models_mixed_db_reads_only_v2(tmp_path):
+    """AC11/AC12: v1 rows next to v2 are ignored, not merged."""
+    path = _v2(tmp_path)
+    con = sqlite3.connect(path)
+    con.executescript(
+        """
+        CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, directory TEXT,
+            model TEXT, cost REAL DEFAULT 0, tokens_input INTEGER DEFAULT 0,
+            tokens_output INTEGER DEFAULT 0, tokens_cache_read INTEGER DEFAULT 0,
+            tokens_cache_write INTEGER DEFAULT 0,
+            time_created INTEGER, time_updated INTEGER);
+        """
+    )
+    con.execute(
+        "INSERT INTO session VALUES ('old','t','/p','plain/model',0,0,0,0,0,9,9)"
+    )
+    con.commit()
+    con.close()
+    assert db.recent_models(path) == ["vllm/llm"]
+
+
+def test_recent_models_empty_db_is_empty(tmp_path, capsys):
+    path = tmp_path / "blank.db"
+    sqlite3.connect(path).close()
+    assert db.recent_models(path) == []
+    assert "моделей не найдено" in capsys.readouterr().err
 
 
 def test_recent_models_v2_field_unconfirmed(tmp_path, monkeypatch, capsys):
@@ -91,7 +121,20 @@ def test_detect_schema_markers(tmp_path):
         "CREATE TABLE session (id TEXT); CREATE TABLE part (id TEXT);"
         "CREATE TABLE session_message (id TEXT);"
     )
-    assert db.detect_schema(con) == db.SCHEMA_V1
+    assert db.detect_schema(con) == db.SCHEMA_NONE
+    con.close()
+
+
+def test_detect_schema_empty_and_missing(tmp_path):
+    path = tmp_path / "blank.db"
+    con = sqlite3.connect(path)
+    assert db.detect_schema(con) == db.SCHEMA_NONE
+    con.close()
+    # session_v2 without session_message is not v2 either (K3: pair marker).
+    path2 = tmp_path / "half.db"
+    con = sqlite3.connect(path2)
+    con.execute("CREATE TABLE session_v2 (id TEXT)")
+    assert db.detect_schema(con) == db.SCHEMA_NONE
     con.close()
 
 
@@ -180,30 +223,21 @@ def test_available_models_timeout_and_oserror_degrade(monkeypatch, capsys):
     assert "unavailable" in capsys.readouterr().err
 
 
-def test_models_flag_only_for_v2_with_support(monkeypatch):
+def test_models_argv_always_standalone_unless_managed(monkeypatch):
+    """K2/AC6: ``opencode models`` gets ``--standalone``; managed is the only
+    exception (INV3). The mode key is gone, so there is nothing to switch on."""
     import subprocess
-
-    from awf import opencode_version as ov
 
     seen: list[list[str]] = []
     monkeypatch.setattr(
         subprocess, "run", lambda argv, **kw: seen.append(argv) or _run_result(0, "a/b\n")
     )
 
-    monkeypatch.setattr(
-        "awf.opencode_version.probe_version", lambda *a, **kw: ov.Probe("ok", (1, 19, 4))
-    )
-    db.available_models()
-    assert seen[-1] == ["opencode", "models"]
-
-    monkeypatch.setattr(
-        "awf.opencode_version.probe_version", lambda *a, **kw: ov.Probe("ok", (2, 2, 3))
-    )
-    monkeypatch.setattr(db, "MODELS_STANDALONE_SUPPORTED", True)
+    monkeypatch.delenv("AWF_OPENCODE_MANAGED", raising=False)
     db.available_models()
     assert seen[-1] == ["opencode", "models", "--standalone"]
 
-    monkeypatch.setattr(db, "MODELS_STANDALONE_SUPPORTED", False)
+    monkeypatch.setenv("AWF_OPENCODE_MANAGED", "1")
     db.available_models()
     assert seen[-1] == ["opencode", "models"]
 
@@ -226,21 +260,6 @@ def test_real_2_2_3_models_output_parses(monkeypatch):
     assert db.available_models() == real.split()
 
 
-def test_doctor_reports_models_flag_support(monkeypatch, tmp_path):
-    from awf import doctor
-    from awf import opencode_version as ov
-
-    monkeypatch.setattr(
-        "awf.opencode_version.probe_version", lambda *a, **kw: ov.Probe("ok", (2, 2, 3))
-    )
-    monkeypatch.setattr(db, "available_models", lambda *a, **kw: [])
-    proj = tmp_path / "proj"
-    (proj / ".agentic").mkdir(parents=True)
-    report = doctor.run_doctor(proj)
-    assert any("models" in line and "поддерживается" in line for line in report.lines)
-
-
 def test_imp1_constants_are_filled():
     """D9: the values were measured on a real binary, not left as guesses."""
-    assert db.MODELS_STANDALONE_SUPPORTED is True
     assert db.V2_MODEL_FIELD == ("session_v2", "model")

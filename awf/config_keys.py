@@ -84,8 +84,7 @@ READ_KEYS: frozenset[str] = frozenset({
     "spec.budget.package",
     # ── worker ───────────────────────────────────────────────────────────
     "worker.mcp_servers",
-    # ── opencode 2.x (K1–K4: launch mode, managed opt-in) ────────────────
-    "opencode.standalone",
+    # ── opencode 2.x (managed opt-in; the launch mode is gone in awf 3) ──
     "opencode.managed",
     # ── metrics (awf metrics) ────────────────────────────────────────────
     "metrics.directory",
@@ -102,6 +101,30 @@ READ_KEYS: frozenset[str] = frozenset({
     # otherwise be reported dead).
     "metrics.tiers.*",
 })
+
+
+#: Top-level keys of the opencode config in the OLD (1.x) form. awf 3 reads
+#: and writes only the 2.x form, so a file that carries any of them is left
+#: byte-for-byte alone and the owner is told to convert it (R5, R11).
+#: ``mcp`` is special: ``mcp.servers`` is 2.x, any other key under ``mcp``
+#: (``mcp.<name>``) is 1.x — see :func:`v1_keys`.
+V1_KEYS: tuple[str, ...] = ("provider", "agent", "permission")
+
+
+def v1_keys(root: dict[str, Any]) -> list[str]:
+    """The 1.x-form opencode-config keys present in *root*, in file order.
+
+    One list for every reader (``awf init``, the agent writer and
+    ``awf doctor``) — two copies would let a file pass init and fail doctor
+    (architecture D9). A string ``model`` is valid 2.x and is NOT listed.
+    """
+    if not isinstance(root, dict):
+        return []
+    found = [key for key in V1_KEYS if key in root]
+    mcp = root.get("mcp")
+    if isinstance(mcp, dict):
+        found.extend(f"mcp.{key}" for key in mcp if key != "servers")
+    return found
 
 
 def is_read_key(leaf: str) -> bool:
@@ -138,4 +161,11 @@ def dead_keys(config: dict[str, Any]) -> list[str]:
     return sorted({leaf for leaf in leaf_keys(config) if not is_read_key(leaf)})
 
 
-__all__ = ["READ_KEYS", "dead_keys", "is_read_key", "leaf_keys"]
+__all__ = [
+    "READ_KEYS",
+    "V1_KEYS",
+    "dead_keys",
+    "is_read_key",
+    "leaf_keys",
+    "v1_keys",
+]

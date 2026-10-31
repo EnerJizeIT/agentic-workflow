@@ -375,7 +375,7 @@ def test_read_recent_models_no_db(tmp_path, monkeypatch):
 
 
 def test_read_recent_models_reads_sqlite(tmp_path, monkeypatch):
-    """Reads distinct models from opencode SQLite session table."""
+    """Reads distinct models from the opencode `session_v2` table (K3)."""
     import sqlite3
 
     fake_home = tmp_path / "fake_home"
@@ -385,7 +385,7 @@ def test_read_recent_models_reads_sqlite(tmp_path, monkeypatch):
 
     conn = sqlite3.connect(str(db_path))
     conn.execute("""
-        CREATE TABLE session (
+        CREATE TABLE session_v2 (
             id TEXT PRIMARY KEY,
             model TEXT,
             time_created INTEGER
@@ -398,7 +398,7 @@ def test_read_recent_models_reads_sqlite(tmp_path, monkeypatch):
         ("s4", json.dumps({"providerID": "openai", "id": "gpt-4"}), 4000),
         ("s5", None, 5000),
     ]
-    conn.executemany("INSERT INTO session VALUES (?, ?, ?)", sessions)
+    conn.executemany("INSERT INTO session_v2 VALUES (?, ?, ?)", sessions)
     conn.commit()
     conn.close()
 
@@ -423,10 +423,12 @@ def test_read_recent_models_respects_limit(tmp_path, monkeypatch):
     db_path = share_dir / "opencode.db"
 
     conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE session (id TEXT PRIMARY KEY, model TEXT, time_created INTEGER)")
+    conn.execute(
+        "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, model TEXT, time_created INTEGER)"
+    )
     for i in range(5):
         conn.execute(
-            "INSERT INTO session VALUES (?, ?, ?)",
+            "INSERT INTO session_v2 VALUES (?, ?, ?)",
             (f"s{i}", json.dumps({"providerID": "p", "id": f"m{i}"}), i),
         )
     conn.commit()
@@ -435,6 +437,29 @@ def test_read_recent_models_respects_limit(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: fake_home)
     recent = opencode_config.read_recent_models(limit=2)
     assert len(recent) == 2
+
+
+def test_read_recent_models_v1_db_is_empty(tmp_path, monkeypatch, capsys):
+    """AC12: a v1 base gives an empty list and a reason, never a crash."""
+    import sqlite3
+
+    fake_home = tmp_path / "fake_home"
+    share_dir = fake_home / ".local" / "share" / "opencode"
+    share_dir.mkdir(parents=True)
+    db_path = share_dir / "opencode.db"
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE session (id TEXT PRIMARY KEY, model TEXT)")
+    conn.execute(
+        "INSERT INTO session VALUES ('s1', ?)",
+        (json.dumps({"providerID": "anthropic", "id": "claude-3.5"}),),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    assert opencode_config.read_recent_models(limit=10) == []
+    assert "моделей не найдено" in capsys.readouterr().err
 
 
 def test_read_recent_models_closes_connection_on_error(tmp_path, monkeypatch):

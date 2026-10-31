@@ -249,7 +249,7 @@ def run_agent_stage(
 
     # K2: the same helper builds the effective argv for both spawns. 1.x and
     # ``off`` give a byte-identical argv (INV1); 2.x + auto/on adds the flag.
-    plan = opencode_version.resolve_standalone(
+    plan = opencode_version.resolve_plan(
         config, opencode_version.probe_version()
     )
     if plan.warning:

@@ -87,14 +87,15 @@ def _prime_opencode_probe():
 
     The autouse ``_isolate_xdg_env`` fakes ``subprocess.Popen/run``, so a
     REAL probe would collide with those fakes and turn launches into
-    refusals. Prime the same 1.x the stub reports. Priming per test (not
-    once) also undoes a ``reset_version_cache()`` done by a probe test that
-    ran earlier in the same xdist worker. A test that exercises the probe
-    resets the cache inside its body — after this fixture.
+    refusals. Prime a supported 2.x: awf 3 refuses anything older before the
+    first side effect (R1), so a 1.x answer would make every launch test
+    fail on the version gate instead of its own subject. Priming per test
+    (not once) also undoes a ``reset_version_cache()`` done by a probe test
+    that ran earlier in the same xdist worker.
     """
     from awf import opencode_version as _ocv
 
-    _ocv.prime_probe(_ocv.Probe("ok", (1, 19, 4)))
+    _ocv.prime_probe(_ocv.Probe("ok", (2, 2, 3)))
 
 
 @pytest.fixture(autouse=True)

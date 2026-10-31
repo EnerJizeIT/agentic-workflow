@@ -9,6 +9,8 @@ that already exist:
   (``automation.runner_dir``), the plugin module and the install metadata;
 - models: ``check_model_config`` (providers, role files) — its exception
   degrades to one ``unknown`` line, never a traceback;
+- config format: the opencode config is read in the 2.x form only; a file
+  with 1.x keys is named, never converted (R6, R11);
 - config keys: ``config_keys.dead_keys`` names the keys no code reads.
 
 Every line is ``<ok|WARN>  <check>: <fact>``; the rc-2 line (no
@@ -220,18 +222,55 @@ def _check_plugin(process: str, out: _Lines) -> None:
     _metadata_line(out, "agent-workflow-ui metadata", "agent-workflow-ui", plugin)
 
 
-def _opencode_json_problem() -> str:
-    """Why ``opencode.json`` cannot be trusted, or ``""`` when it reads fine."""
+def _load_opencode_root() -> tuple[dict[str, Any] | None, str]:
+    """The opencode config root and one problem line (``""`` when it reads).
+
+    Read-only, one read: the format row and the models row share the same
+    parse, so a broken file is reported once with the same wording. A
+    missing file is ``(None, "")`` — nothing to convert, not a problem.
+    """
     path = xdg.opencode_config_file()
     if not path.is_file():
-        return ""
+        return None, ""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
-        return f"opencode.json unreadable ({type(e).__name__})"
+        return None, f"opencode.json unreadable ({type(e).__name__})"
     if not isinstance(data, dict):
-        return f"opencode.json root is {type(data).__name__}, expected an object"
-    return ""
+        return None, f"opencode.json root is {type(data).__name__}, expected an object"
+    return data, ""
+
+
+def _opencode_json_problem() -> str:
+    """Why ``opencode.json`` cannot be trusted, or ``""`` when it reads fine."""
+    return _load_opencode_root()[1]
+
+
+def _check_config_format(out: _Lines) -> None:
+    """K8: the opencode config is in the 2.x form, or says how to get there.
+
+    V1 keys are named, never fixed: reading does not write (INV7), the
+    conversion is the owner's manual step (R11). A string ``model`` is
+    valid 2.x and gives no WARN. A mixed file counts as V1 — one 1.x key
+    means the file is not the form awf understands.
+    """
+    path = xdg.opencode_config_file()
+    root, problem = _load_opencode_root()
+    if problem:
+        out.warn("config", f"{problem} — V2-форму не проверить")
+        return
+    if root is None:
+        out.ok("config", f"no {path.name} at {path} — nothing to convert")
+        return
+    found = config_keys.v1_keys(root)
+    if found:
+        out.warn(
+            "config",
+            f"сконвертируй в V2: {', '.join(found)} — R11, вручную с "
+            "бэкапом (V2-ключи: providers, agents, mcp.servers, permissions)",
+        )
+        return
+    out.ok("config", "V2: providers, agents, mcp.servers, permissions")
 
 
 def _check_models(project_dir: Path, config_problem: str, out: _Lines) -> None:
@@ -298,33 +337,25 @@ def _check_opencode(config: dict[str, Any], config_problem: str, out: _Lines) ->
     """
     if config_problem:
         return
-    from . import opencode_db, opencode_version
+    from . import opencode_version
 
     probe = opencode_version.probe_version()
     managed = opencode_version.is_managed(config)
-    plan = opencode_version.resolve_standalone(config, probe, managed)
-    if plan.refusal:
-        out.warn("opencode.standalone", plan.refusal)
-        return
+    plan = opencode_version.resolve_plan(config, probe, managed)
     if probe.status == "missing":
         out.warn("opencode", "не найден в PATH — запуск невозможен")
-    elif probe.status != "ok":
+    elif probe.status != "ok" or probe.version is None:
         out.warn("opencode", "версия не определена — запуск запрещён (fail-closed)")
+    elif probe.version[0] < 2:
+        out.warn(
+            "opencode",
+            f"{probe.text} — awf 3 требует opencode 2.x, запуск будет отклонён",
+        )
     else:
         flag = " · --standalone" if plan.add_flag else ""
-        out.ok("opencode", f"{probe.text} · режим {plan.mode}{flag}")
-        if probe.version is not None and probe.version[0] >= 2:
-            supported = opencode_db.MODELS_STANDALONE_SUPPORTED
-            out.ok(
-                "models",
-                "opencode models --standalone поддерживается"
-                if supported
-                else "opencode models --standalone не поддерживается — без флага",
-            )
+        out.ok("opencode", f"{probe.text}{flag}")
     if managed:
         out.warn("managed", opencode_version.MANAGED_WARNING)
-    elif plan.warning:
-        out.warn("opencode.standalone", plan.warning)
     proxy_var = socks_proxy_var()
     if proxy_var:
         out.warn(
@@ -389,6 +420,7 @@ def run_doctor(project_dir: str | Path = ".") -> DoctorReport:
     out = _Lines()
     _check_versions(root, config, config_problem, out)
     _check_opencode(config, config_problem, out)
+    _check_config_format(out)
     _check_models(root, config_problem, out)
     _check_agent_names(config, config_problem, out)
     if config_problem:

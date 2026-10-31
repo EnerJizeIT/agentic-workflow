@@ -200,26 +200,36 @@ def _execute_force_init(project_dir: Path, confirm_digest, **init_kwargs):
 
 
 def _offer_opencode_agent_setup() -> None:
-    """Offer to add 'worker' agent to opencode.json. No-op if already there.
+    """Offer to add 'worker' agent to opencode.json (2.x form only).
+
+    R5 state matrix: a missing file is created in the 2.x form without a
+    backup; an existing 2.x file is backed up before the write; a file
+    with 1.x keys is left byte-for-byte alone and answers WARN (R11).
 
     AUD16-10: no model — the init flow never collected one (the prompt was
     removed in M5); per-role models come from the project-setup form.
     """
     oc_cfg = opencode_config_file()
-    if not oc_cfg.exists():
-        print()
-        print(f"NOTE: no opencode config found at {oc_cfg}")
-        print("      Create the 'worker' opencode agent manually (see README → Requirements).")
-        return
+    creating = not oc_cfg.exists()
 
     proposal = opencode_agents.propose(str(oc_cfg), ["worker"], "")
     # T2.8: typed Proposal instead of stringly-typed startswith checks.
     # __str__ keeps legacy format for prints, but branching on .kind is
     # exhaustiveness-checked and self-documenting.
+    if proposal.kind is opencode_agents.ProposalKind.SKIP_V1:
+        # AC20: the bytes stay as they are — converting a foreign config is
+        # the owner's manual step (R11), not an init side effect.
+        print()
+        print(f"WARN: {proposal.detail}")
+        print(f"      {oc_cfg.name} left unchanged.")
+        return
     if proposal.kind is opencode_agents.ProposalKind.ERR:
         print()
         print(f"NOTE: cannot propose agent changes — {proposal}")
-        print(f"      Add 'worker' manually to {oc_cfg}.")
+        if creating:
+            print(f"      Create {oc_cfg} in V2 form manually (agents, mcp.servers).")
+        else:
+            print(f"      Add 'worker' manually to {oc_cfg}.")
         return
     if proposal.kind is opencode_agents.ProposalKind.NOTHING:
         print()
@@ -227,10 +237,19 @@ def _offer_opencode_agent_setup() -> None:
         return
     if proposal.kind is opencode_agents.ProposalKind.PROPOSE:
         print()
-        print(f"Proposed change to {oc_cfg}:")
+        if creating:
+            print(f"No opencode config at {oc_cfg} — a V2 one will be created.")
+        else:
+            print(f"Proposed change to {oc_cfg}:")
         print(proposal.detail)
-        print(f"  (a timestamped backup {oc_cfg.name}.bak-<ts> will be created before writing)")
-        ans = input("Apply this change to opencode config? [Y/n] ").strip().lower()
+        if creating:
+            ans = input("Create the opencode config in V2 form? [Y/n] ").strip().lower()
+        else:
+            print(
+                f"  (a timestamped backup {oc_cfg.name}.bak-<ts> will be "
+                "created before writing)"
+            )
+            ans = input("Apply this change to opencode config? [Y/n] ").strip().lower()
         if ans and ans not in ("y", "yes"):
             print("Skipping agent creation (create them manually if needed).")
             return

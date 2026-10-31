@@ -48,19 +48,21 @@ U8d: GLM — кредитная модель (лимиты кредитов/не
   ``.agentic/state/metrics_models_cache.json``, относительно project_dir);
   ``metrics.output_dir`` — каталог отчёта (дефолт ``~/Desktop``, если
   существует, иначе project_dir);
-  (RUN10 #3-fix) по умолчанию собираются только сессии текущего проекта:
-  сессия принадлежит проекту, когда её ``part.data`` содержит путь
-  проекта (нормализованный ``project_dir``) — ``session.directory`` НЕ
-  дискриминатор: воркеров спавнит MCP-сервер из $HOME, у сессий
-  супервизора тот же directory. Сопоставление — один проход по ``part``
-  (LIKE) для кандидатов по заголовкам, затем пересечение.
+  (K3) единственная читаемая схема базы — v2 (``session_v2`` +
+  ``session_message``): токены и стоимость — из ``session_message.data``,
+  заголовок и каталог — из ``session_v2``. v1-схема, пустая база и база
+  без таблиц дают ``n/a`` с причиной и rc 0.
+  По умолчанию собираются только сессии текущего проекта: сессия
+  принадлежит проекту, когда ``session_v2.directory`` (cwd of
+  ``opencode run``) равен нормализованному ``project_dir``.
   ``all_projects=True`` (CLI ``--all-projects``) — все проекты общей
   opencode.db, данные смешаны; явный ``metrics.directory`` в конфиге —
-  legacy-фильтр по ``session.directory``, побеждает оба варианта.
+  фильтр по ``session_v2.directory``, побеждает оба варианта.
   Исключённые сессии других проектов считаются и называются
-  предупреждением в отчёт — без тихого вычета; путь проекта без единого
-  совпадения — пустые данные сессий + предупреждение (явное «нет
-  данных», а не чужие цифры).
+  предупреждением в отчёт — без тихого вычета; каталог проекта без
+  единого совпадения — пустые данные сессий + предупреждение (явное «нет
+  данных», а не чужие цифры). Компрессии в v2 не измеряются: 0 и одно
+  предупреждение на сбор.
   ``metrics.mirror_dir`` — U8c: архивное зеркало отчёта (путь; пусто =
   выключено). После успешной записи отчёта копия с тем же именем
   складывается туда (каталог создаётся; ошибка копирования —
@@ -323,7 +325,7 @@ def _open_db(db_path: Path, warnings: list[str]) -> sqlite3.Connection | None:
 
 
 def _norm_dir(p: Any) -> str:
-    """Нормализация пути для сравнения ``session.directory`` (RUN10 #3):
+    """Нормализация пути для сравнения ``session_v2.directory`` (K3):
     resolve + без хвостового слэша. Пустое → пустая строка."""
     s = str(p or "").strip()
     if not s:
@@ -384,74 +386,12 @@ class _DirGate:
             )
 
 
-def _like_escape(value: str) -> str:
-    """Экранирование LIKE-спецсимволов пути для паттерна (``ESCAPE '\\``)."""
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
-def candidate_session_ids(
-    con: sqlite3.Connection,
-    titles: list[str],
-    warnings: list[str],
-) -> list[str]:
-    """Кандидаты области отчёта (RUN10 #3-fix): заголовки воркеров и
-    подстроки заголовков супервизора.
-
-    Грубый LIKE-предфильтр одним запросом — точная сверка заголовков
-    (regex ``awf-<роль>-TODO-NNNN`` / подстроки) остаётся в
-    :func:`collect_workers` и :func:`collect_supervisor`.
-    """
-    clauses = ["title LIKE 'awf-%-TODO-%'"]
-    params: list[Any] = []
-    for t in titles:
-        clauses.append("title LIKE ?")
-        params.append(f"%{_like_escape(t)}%")
+def _has_session_rows(con: sqlite3.Connection) -> bool:
+    """True when ``session_v2`` holds at least one session row."""
     try:
-        rows = con.execute(
-            "SELECT id FROM session WHERE " + " OR ".join(clauses), params
-        ).fetchall()
-    except sqlite3.Error as e:
-        warnings.append(f"запрос по кандидатам упал: {e} — сессии не сопоставляются")
-        return []
-    return [r[0] for r in rows]
-
-
-def matched_session_ids(
-    con: sqlite3.Connection,
-    candidate_ids: list[str],
-    project_dir: str,
-    warnings: list[str],
-) -> frozenset[str]:
-    """Один проход по ``part``: чьё содержимое называет путь проекта.
-
-    RUN10 #3-fix: сессия принадлежит проекту, если в её ``part.data``
-    встречается путь проекта (нормализованный абсолютный путь).
-    ``session.directory`` — не дискриминатор: воркеров спавнит MCP-сервер
-    из $HOME, у сессий супервизора тот же directory. Проход ограничен
-    кандидатами (``IN``) и чанкуется — лимит параметров SQLite.
-    """
-    matched: set[str] = set()
-    if not candidate_ids:
-        return frozenset(matched)
-    pattern = f"%{_like_escape(str(project_dir))}%"
-    chunk = 500
-    for i in range(0, len(candidate_ids), chunk):
-        ids = candidate_ids[i : i + chunk]
-        marks = ",".join("?" * len(ids))
-        try:
-            rows = con.execute(
-                "SELECT DISTINCT session_id FROM part "
-                f"WHERE data LIKE ? ESCAPE '\\' AND session_id IN ({marks})",
-                (pattern, *ids),
-            ).fetchall()
-        except sqlite3.Error as e:
-            warnings.append(
-                f"запрос по содержимому сессий упал: {e} — "
-                "сессии не сопоставляются"
-            )
-            return frozenset()
-        matched.update(r[0] for r in rows)
-    return frozenset(matched)
+        return con.execute("SELECT 1 FROM session_v2 LIMIT 1").fetchone() is not None
+    except sqlite3.Error:
+        return False
 
 
 def _v2_tokens(
@@ -498,7 +438,7 @@ def _worker_rows_v2(
     since_ms: int | None,
     warnings: list[str],
 ) -> list[tuple]:
-    """v2 worker rows in the v1 tuple shape (K5/D2)."""
+    """v2 worker rows in one tuple shape (K3)."""
     tokens = _v2_tokens(con, warnings)
     sql = (
         "SELECT id, title, COALESCE(directory,''), time_created, time_updated "
@@ -536,25 +476,10 @@ def _worker_rows_v2(
     return rows
 
 
-def _has_session_rows(con: sqlite3.Connection, schema: str) -> bool:
-    """True when the detected schema holds at least one session row."""
-    table = (
-        "session"
-        if schema == opencode_db.SCHEMA_V1
-        else "session_v2"
-        if schema == opencode_db.SCHEMA_V2
-        else None
-    )
-    if table is None:
-        for name in ("session", "session_v2"):
-            try:
-                if con.execute(f"SELECT 1 FROM {name} LIMIT 1").fetchone():
-                    return True
-            except sqlite3.Error:
-                continue
-        return False
+def _has_session_rows(con: sqlite3.Connection) -> bool:
+    """True when ``session_v2`` holds at least one session row."""
     try:
-        return con.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None
+        return con.execute("SELECT 1 FROM session_v2 LIMIT 1").fetchone() is not None
     except sqlite3.Error:
         return False
 
@@ -583,47 +508,19 @@ def collect_workers(
     matched: frozenset[str] | None,
     warnings: list[str],
     known_roles: frozenset[str] | None = None,
-    schema: str = opencode_db.SCHEMA_V1,
 ) -> dict[str, dict]:
     """Воркерские сессии (``awf-<роль>-TODO-NNNN``), сгруппированные по TODO.
 
-    ``directory`` — legacy-фильтр по ``session.directory`` (явный
-    ``metrics.directory``); ``matched`` — content-область (RUN10 #3-fix):
-    сессия входит, если её id в наборе, чьё содержимое называет путь
-    проекта. ``None``/``None`` — все проекты, без фильтра.
+    Reads only ``session_v2`` + ``session_message`` (K3). ``directory`` —
+    legacy-фильтр по ``session_v2.directory`` (явный ``metrics.directory``);
+    ``matched`` — дефолтная область: id сессий, чей ``directory`` называет
+    проект. ``None``/``None`` — все проекты, без фильтра. Компрессии в v2
+    не измеряются — 0 и одно предупреждение на сбор.
     """
     workers: dict[str, dict] = {}
     gate = _DirGate(directory, "воркеров", warnings)
     excluded = 0
-    rows: list[tuple] = []
-    if schema in (opencode_db.SCHEMA_V1, opencode_db.SCHEMA_BOTH):
-        sql = (
-            "SELECT id, title, COALESCE(directory,''), COALESCE(tokens_input,0), "
-            "COALESCE(tokens_output,0), COALESCE(tokens_cache_read,0), "
-            "COALESCE(tokens_cache_write,0), COALESCE(cost,0), time_created, "
-            "time_updated FROM session"
-        )
-        where, params = [], []
-        if since_ms is not None:
-            where.append("time_created >= ?")
-            params.append(since_ms)
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY time_created"
-        try:
-            rows = list(con.execute(sql, params).fetchall())
-        except sqlite3.Error as e:
-            warnings.append(f"запрос по сессиям упал: {e} — воркеры не измеряются")
-            return workers
-    if schema in (opencode_db.SCHEMA_V2, opencode_db.SCHEMA_BOTH):
-        rows_v2 = _worker_rows_v2(con, since_ms, warnings)
-        if schema == opencode_db.SCHEMA_BOTH:
-            # AC41: one id in both schemas is counted once — v2 wins.
-            merged = {row[0]: row for row in rows}
-            merged.update({row[0]: row for row in rows_v2})
-            rows = list(merged.values())
-        else:
-            rows = rows_v2
+    rows = _worker_rows_v2(con, since_ms, warnings)
     for sid, title, sdir, tin, tout, tcr, tcw, cost, tc, tu in rows:
         todo = _todo_id_from_title(title)
         if not todo:
@@ -676,23 +573,15 @@ def collect_workers(
     gate.finish()
     if matched is not None and excluded:
         warnings.append(
-            f"исключены сессии других проектов: {excluded} (путь проекта "
-            "не найден в содержимом воркерских сессий)"
+            f"исключены сессии других проектов: {excluded} (каталог сессии "
+            "не совпадает с проектом)"
         )
 
-    id2todo = {sid: todo for todo, d in workers.items() for sid in d["ids"]}
-    if id2todo and schema != opencode_db.SCHEMA_V2:
-        marks = ",".join("?" * len(id2todo))
-        try:
-            for sid, cnt in con.execute(
-                "SELECT session_id, COUNT(*) FROM part "
-                "WHERE json_extract(data,'$.type')='compaction' "
-                f"AND session_id IN ({marks}) GROUP BY session_id",
-                tuple(id2todo),
-            ):
-                workers[id2todo[sid]]["compactions"] += cnt
-        except sqlite3.Error as e:
-            warnings.append(f"запрос по компрессиям упал: {e}")
+    # K3: v2 has no compaction rows — the number stays 0 and says so once.
+    if workers:
+        warnings.append(
+            "компрессии в схеме v2 не измеряются — в отчёте 0"
+        )
     return workers
 
 
@@ -763,13 +652,12 @@ def collect_supervisor(
     matched: frozenset[str] | None,
     windows: dict[str, tuple[int, int]],
     warnings: list[str],
-    schema: str = opencode_db.SCHEMA_V1,
 ) -> tuple[dict[str, dict], dict[str, float], int]:
     """Сессии супервизора: атрибутация сообщений по окнам юнитов.
 
+    Reads only ``session_v2`` + ``session_message`` (K3).
     ``directory``/``matched`` — то же, что в :func:`collect_workers`
-    (legacy-фильтр / content-область). У сессий супервизора directory
-    тоже $HOME — content-область для них обязательна (RUN10 #3-fix).
+    (legacy-фильтр / дефолтная область по каталогу сессии).
     """
     per_todo: dict[str, dict] = {
         t: {"in": 0, "out": 0, "cr": 0, "cw": 0, "cost": 0.0} for t in windows
@@ -782,37 +670,18 @@ def collect_supervisor(
     gate = _DirGate(directory, "супервизора", warnings)
     excluded = 0
     candidates: list[tuple] = []
-    v2_ids: set[str] = set()
-    if schema in (opencode_db.SCHEMA_V2, opencode_db.SCHEMA_BOTH):
-        sql_v2 = "SELECT id, title, COALESCE(directory, '') FROM session_v2 WHERE 1=1"
-        params_v2: list[Any] = []
-        if since_ms is not None:
-            sql_v2 += " AND time_created >= ?"
-            params_v2.append(since_ms)
-        try:
-            rows_v2 = con.execute(sql_v2, params_v2).fetchall()
-        except sqlite3.Error as e:
-            warnings.append(
-                f"запрос по session_v2 упал: {e} — супервизор не измеряется"
-            )
-            rows_v2 = []
-        v2_ids = {row[0] for row in rows_v2}
-        candidates.extend(rows_v2)
-    if schema in (opencode_db.SCHEMA_V1, opencode_db.SCHEMA_BOTH):
-        sql = "SELECT id, title, COALESCE(directory, '') FROM session WHERE 1=1"
-        params = []
-        if since_ms is not None:
-            sql += " AND time_created >= ?"
-            params.append(since_ms)
-        try:
-            rows_v1 = con.execute(sql, params).fetchall()
-        except sqlite3.Error as e:
-            warnings.append(
-                f"запрос по сессиям упал: {e} — супервизор не измеряется"
-            )
-            return per_todo, outside, session_count
-        # AC41: an id present in both schemas is read once — v2 wins.
-        candidates.extend(row for row in rows_v1 if row[0] not in v2_ids)
+    sql = "SELECT id, title, COALESCE(directory, '') FROM session_v2 WHERE 1=1"
+    params: list[Any] = []
+    if since_ms is not None:
+        sql += " AND time_created >= ?"
+        params.append(since_ms)
+    try:
+        candidates = list(con.execute(sql, params).fetchall())
+    except sqlite3.Error as e:
+        warnings.append(
+            f"запрос по session_v2 упал: {e} — супервизор не измеряется"
+        )
+        return per_todo, outside, session_count
 
     for sid, title, sdir in candidates:
         if not any(t in (title or "") for t in titles):
@@ -825,18 +694,11 @@ def collect_supervisor(
             continue
         session_count += 1
         try:
-            if sid in v2_ids:
-                rows = con.execute(
-                    "SELECT data, time_created FROM session_message "
-                    "WHERE session_id=? AND type='assistant' ORDER BY time_created",
-                    (sid,),
-                ).fetchall()
-            else:
-                rows = con.execute(
-                    "SELECT data, time_created FROM message "
-                    "WHERE session_id=? ORDER BY time_created",
-                    (sid,),
-                ).fetchall()
+            rows = con.execute(
+                "SELECT data, time_created FROM session_message "
+                "WHERE session_id=? AND type='assistant' ORDER BY time_created",
+                (sid,),
+            ).fetchall()
         except sqlite3.Error as e:
             warnings.append(f"сообщения сессии {sid} не читаются: {e}")
             continue
@@ -845,7 +707,7 @@ def collect_supervisor(
             try:
                 d = json.loads(data)
             except (json.JSONDecodeError, TypeError):
-                warnings.append("битая строка message.data пропущена (1 шт.)")
+                warnings.append("битая строка session_message.data пропущена (1 шт.)")
                 continue
             t = d.get("tokens") or {}
             if not t:
@@ -871,8 +733,8 @@ def collect_supervisor(
     gate.finish()
     if matched is not None and excluded:
         warnings.append(
-            f"исключены сессии других проектов: {excluded} (путь проекта "
-            "не найден в содержимом сессий супервизора)"
+            f"исключены сессии других проектов: {excluded} (каталог сессии "
+            "не совпадает с проектом)"
         )
     return per_todo, outside, session_count
 
@@ -1779,13 +1641,12 @@ def collect_metrics(
     ``mirror=False`` отключает копирование на один запуск.
 
     RUN10 #3-fix: ``all_projects=False`` (дефолт) — в отчёт попадают только
-    сессии текущего проекта: их ``part.data`` содержит путь проекта
-    (``session.directory`` — не дискриминатор, спавн из $HOME);
-    ``all_projects=True`` — все проекты общей opencode.db (данные смешаны),
-    поведение до RUN10 #3. Явный ``metrics.directory`` в конфиге —
-    legacy-фильтр по ``session.directory``, побеждает оба варианта.
+    сессии текущего проекта: их ``session_v2.directory`` равен каталогу
+    проекта; ``all_projects=True`` — все проекты общей opencode.db (данные
+    смешаны). Явный ``metrics.directory`` в конфиге — фильтр по
+    ``session_v2.directory``, побеждает оба варианта.
     Исключённые сессии других проектов — с предупреждением в отчёте;
-    путь проекта без совпадений — пустые данные сессий + предупреждение.
+    каталог проекта без совпадений — пустые данные сессий + предупреждение.
     """
     # A287-1: канонический корень — для сбора; исходный спеллинг пути
     # (до resolve) — для классификации отчёта. ``--out`` пришёл от той же
@@ -1803,10 +1664,9 @@ def collect_metrics(
         since if since not in (None, "") else config_mod.get(cfg, "metrics.since"),
         warnings,
     )
-    # RUN10 #3-fix: область отчёта. Явный metrics.directory — legacy-
-    # фильтр по session.directory, побеждает; иначе дефолт — только
-    # текущий проект (сопоставление по содержимому сессий),
-    # --all-projects — все.
+    # RUN10 #3-fix: область отчёта. Явный metrics.directory — фильтр по
+    # session_v2.directory, побеждает; иначе дефолт — только текущий
+    # проект (сопоставление по session_v2.directory), --all-projects — все.
     directory = config_mod.get(cfg, "metrics.directory") or None
     directory = directory if isinstance(directory, str) and directory else None
     content_scope = not directory and not all_projects
@@ -1859,49 +1719,40 @@ def collect_metrics(
     sup_per_todo: dict[str, dict] = {}
     sup_outside: dict[str, float] = {"in": 0, "out": 0, "cr": 0, "cw": 0, "cost": 0.0}
     sup_sessions = 0
-    # R4/K5: the schema decides the readers. ``session_message`` alone is not
-    # v2 — a v1 database already has it empty (CTX3/D7).
+    # K3: the only readable schema is v2 (``session_v2`` + ``session_message``).
+    # ``session_message`` alone is not v2 — a v1 database already has it empty.
     schema = opencode_db.SCHEMA_NONE
     sessions_na = ""
-    # RUN10 #3-fix: content-область — v1 by ``part.data``, v2 by
-    # ``session_v2.directory`` (the cwd of ``opencode run``, IMP1).
+    # Дефолтная область — ``session_v2.directory`` (cwd of ``opencode run``).
     matched: frozenset[str] | None = None
     if con is not None:
         schema = opencode_db.detect_schema(con)
         tables = opencode_db.table_names(con)
         if schema == opencode_db.SCHEMA_NONE:
-            sessions_na = "в базе opencode нет таблиц сессий"
-            warnings.append("база opencode без таблиц сессий — n/a")
-        elif schema != opencode_db.SCHEMA_V2 and "message" not in tables:
-            warnings.append(
-                "база opencode: нет таблицы message — сообщения супервизора "
-                "не читаются"
-            )
-        if schema != opencode_db.SCHEMA_NONE and content_scope:
-            ids: set[str] = set()
-            if schema in (opencode_db.SCHEMA_V1, opencode_db.SCHEMA_BOTH):
-                cands = candidate_session_ids(con, titles, warnings)
-                ids |= set(
-                    matched_session_ids(con, cands, str(project_dir), warnings)
-                )
-            if schema in (opencode_db.SCHEMA_V2, opencode_db.SCHEMA_BOTH):
-                ids |= set(v2_project_session_ids(con, project_dir))
-            matched = frozenset(ids)
+            # Fixed reasons (K3): a v1 base is named as such, an empty one
+            # only says the v2 tables are missing.
+            if tables & {"session", "part", "message"}:
+                sessions_na = "схема v1 не поддерживается"
+                warnings.append("база opencode со схемой v1 — n/a")
+            else:
+                sessions_na = "таблиц v2 нет"
+                warnings.append("база opencode без таблиц v2 — n/a")
+        elif content_scope:
+            matched = v2_project_session_ids(con, project_dir)
             if not matched:
                 warnings.append(
-                    "не удалось сопоставить сессии: путь проекта не найден ни в "
+                    "не удалось сопоставить сессии: каталог проекта не найден ни в "
                     "одной сессии — данные сессий не измеряются (коммиты юнитов "
                     "измеряются)"
                 )
-                if _has_session_rows(con, schema):
+                if _has_session_rows(con):
                     sessions_na = "сессии проекта в базе opencode не найдены"
-        if not sessions_na and not _has_session_rows(con, schema):
+        if not sessions_na and not _has_session_rows(con):
             sessions_na = "в базе opencode нет сессий"
     if con is not None:
         workers = collect_workers(
             con, since_ms, directory, matched, warnings,
             known_roles=known_role_slugs(project_dir),
-            schema=schema,
         )
     commits = collect_commit_info(project_dir, warnings)
 
@@ -1915,7 +1766,6 @@ def collect_metrics(
     if con is not None:
         sup_per_todo, sup_outside, sup_sessions = collect_supervisor(
             con, titles, since_ms, directory, matched, windows, warnings,
-            schema=schema,
         )
         con.close()
 
@@ -2002,7 +1852,7 @@ def collect_metrics(
     if tot["wcost"] < 0.0005 and workers:
         notes.append("Примечание: у воркеров cost=0 (локальная модель).")
     notes.append(
-        "«Компрессии» — число сжатий контекста по частям type=compaction; "
+        "«Компрессии» в схеме v2 не измеряются (в отчёте 0); "
         "строки кода — diff коммитов юнита; Δt — окно юнита (от baseline до коммита)."
     )
 

@@ -166,11 +166,11 @@ def test_skill_install_is_0600(tmp_path, monkeypatch):
 
 class TestEnsureMcpBlock:
     def test_adds_block_and_backs_up(self, tmp_path):
-        cfg = _cfg(tmp_path, {"agent": {}})
+        cfg = _cfg(tmp_path, {"agents": {}})
         result = opencode_agents.ensure_mcp_block(cfg)
         assert not result.startswith("ERR"), result
         data = json.loads(Path(cfg).read_text(encoding="utf-8"))
-        assert data["mcp"]["agent-workflow-ui"]["command"] == [
+        assert data["mcp"]["servers"]["agent-workflow-ui"]["command"] == [
             "python3",
             "-m",
             "agent_workflow_ui",
@@ -199,10 +199,10 @@ class TestEnsureMcpBlock:
         assert json.loads(Path(cfg).read_text(encoding="utf-8")) == {"mcp": "oops"}
 
     def test_already_present_no_backup(self, tmp_path):
-        cfg = _cfg(tmp_path, {"mcp": {"agent-workflow-ui": {
+        cfg = _cfg(tmp_path, {"mcp": {"servers": {"agent-workflow-ui": {
             "type": "local",
             "command": ["python3", "-m", "agent_workflow_ui"],
-        }}})
+        }}}})
         result = opencode_agents.ensure_mcp_block(cfg)
         assert "already" in result
         assert not list(Path(cfg).parent.glob("*.bak-*"))
@@ -213,28 +213,28 @@ class TestEnsureMcpBlock:
 
 class TestApplyBackupDiscipline:
     def test_noop_apply_creates_no_backup(self, tmp_path):
-        cfg = _cfg(tmp_path, {"agent": {"worker": {
+        cfg = _cfg(tmp_path, {"agents": {"worker": {
             "description": "w",
             "model": "model-a",
-            "permission": {"external_directory": {
-                "/tmp/opencode/**": "allow",
-                "/tmp/pytest-*": "allow",
-                "/tmp/pytest-*/**": "allow",
-            }},
+            "permissions": [{
+                "action": "external_directory",
+                "resource": "*",
+                "effect": "allow",
+            }],
         }}})
         result = opencode_agents.apply(cfg, ["worker"], "model-a")
         assert "Nothing to write" in result
         assert not list(Path(cfg).parent.glob("*.bak-*"))
 
     def test_two_applies_same_second_two_backups(self, tmp_path):
-        cfg = _cfg(tmp_path, {"agent": {}})
+        cfg = _cfg(tmp_path, {"agents": {}})
         opencode_agents.apply(cfg, ["worker"], "model-a")
         opencode_agents.apply(cfg, ["worker"], "model-b")
         baks = sorted(Path(cfg).parent.glob("opencode.json.bak-*"))
         assert len(baks) == 2, [b.name for b in baks]
 
     def test_propose_detail_mentions_deny_default(self, tmp_path):
-        cfg = _cfg(tmp_path, {"agent": {"worker": {"description": "w"}}})
+        cfg = _cfg(tmp_path, {"agents": {"worker": {"description": "w"}}})
         p = opencode_agents.propose(cfg, ["worker"], "")
         assert p.kind is opencode_agents.ProposalKind.PROPOSE
         assert "deny" in p.detail

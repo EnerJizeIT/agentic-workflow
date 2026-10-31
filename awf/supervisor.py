@@ -1199,7 +1199,7 @@ def run_supervisor_via_subprocess(
     # two argv builders can never drift (T1).
     from . import opencode_version
 
-    plan = opencode_version.resolve_standalone(
+    plan = opencode_version.resolve_plan(
         config, opencode_version.probe_version()
     )
     if plan.warning:

@@ -1,6 +1,6 @@
 """Unit tests for awf.metrics (U8: awf metrics).
 
-Синтетическая opencode.db (sqlite session/message/part) + временный git-репо
+Синтетическая opencode.db (sqlite session_v2/session_message) + временный git-репо
 + models.json → отчёт, ИТОГО-блок, конверсия с точной математикой,
 дефолтный вывод на «рабочий стол», деградация без базы/models.json.
 """
@@ -44,7 +44,7 @@ def _ms(sec: int) -> int:
 
 
 _SCHEMA = """
-CREATE TABLE session (
+CREATE TABLE session_v2 (
     id TEXT PRIMARY KEY, title TEXT NOT NULL,
     directory TEXT NOT NULL DEFAULT '',
     cost REAL DEFAULT 0 NOT NULL,
@@ -52,20 +52,15 @@ CREATE TABLE session (
     tokens_cache_read INTEGER DEFAULT 0, tokens_cache_write INTEGER DEFAULT 0,
     time_created INTEGER, time_updated INTEGER
 );
-CREATE TABLE message (
+CREATE TABLE session_message (
     id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
-    time_created INTEGER, data TEXT NOT NULL
-);
-CREATE TABLE part (
-    id TEXT PRIMARY KEY, message_id TEXT NOT NULL,
-    session_id TEXT NOT NULL, time_created INTEGER, data TEXT NOT NULL
+    type TEXT, time_created INTEGER, data TEXT NOT NULL
 );
 """
 
 
-# RUN10 #3-fix: реальная модель данных — directory сессий НЕ дискриминатор
-# проекта: воркеров спавнит MCP-сервер из $HOME, у супервизора тот же
-# directory. Признак проекта — путь в содержимом part.data.
+# K3: единственная читаемая схема — v2. Признак проекта — session_v2.directory
+# (cwd `opencode run`), содержимое сообщений для этого не используется.
 _FAKE_HOME = "/home/awf"
 
 
@@ -76,19 +71,19 @@ def make_db(
     proj_dir: str = "/proj/test",
     home_dir: str = _FAKE_HOME,
 ) -> Path:
-    """Синтетическая база: 2 юнита, 3 воркерские сессии, 1 супервизор.
+    """Синтетическая v2-база: 2 юнита, 3 воркерские сессии, 1 супервизор.
 
-    Фикстура отражает реальность (RUN10 #3-fix): directory всех сессий —
-    $HOME-подобный каталог (не путь проекта), путь проекта встречается
-    в содержимом part.
+    Токены и стоимость живут в ``session_message.data`` ассистентской строки
+    (IMP1), каталог сессии — ``session_v2.directory``; у сессии другого
+    проекта (``other``) он чужой, поэтому она вне области.
     """
     con = sqlite3.connect(path)
     con.executescript(_SCHEMA)
 
-    def sess(sid, title, tin, tout, tcr, tcw, cost, tc):
+    def sess(sid, title, tin, tout, tcr, tcw, cost, tc, directory=proj_dir):
         con.execute(
-            "INSERT INTO session VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (sid, title, home_dir, cost, tin, tout, tcr, tcw, tc, tc + 60_000),
+            "INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (sid, title, directory, cost, tin, tout, tcr, tcw, tc, tc + 60_000),
         )
 
     # TODO-0001: две сессии (implementer + qa-review)
@@ -99,34 +94,29 @@ def make_db(
     # супервизор + сессия, не похожая ни на воркера, ни на супервизора —
     # не должна попасть ни в какую статистику
     sess("sup", supervisor_title, 0, 0, 0, 0, 0.0, _ms(T0))
-    sess("other", "awf-supervisor-plan", 9_999_999, 9_999, 0, 0, 9.9, _ms(T0 + 9000))
+    sess("other", "awf-supervisor-plan", 9_999_999, 9_999, 0, 0, 9.9, _ms(T0 + 9000), home_dir)
 
-    def msg(mid, sid, ts, data):
-        con.execute("INSERT INTO message VALUES (?,?,?,?)", (mid, sid, ts, data))
-
-    def text_part(pid, mid, sid, ts, text):
+    def msg(mid, sid, ts, data, type_="assistant"):
         con.execute(
-            "INSERT INTO part VALUES (?,?,?,?,?)",
-            (pid, mid, sid, ts, json.dumps({"type": "text", "text": text})),
+            "INSERT INTO session_message VALUES (?,?,?,?,?)",
+            (mid, sid, type_, ts, data),
         )
 
-    msg("m1", "sup", _ms(T0 + 1000), json.dumps(
-        {"tokens": {"input": 1000, "output": 100, "cache": {"read": 2000, "write": 50}}, "cost": 0.01}
-    ))
-    msg("m2", "sup", _ms(T0 + 9000), json.dumps(
-        {"tokens": {"input": 3000, "output": 300, "cache": {"read": 0, "write": 0}}, "cost": 0.03}
-    ))
-    msg("m3", "sup", _ms(T0 + 1500), "not-json{{{")
+    def tokens(tin, tout, tcr, tcw, cost):
+        return json.dumps(
+            {"tokens": {"input": tin, "output": tout,
+                        "cache": {"read": tcr, "write": tcw}},
+             "cost": cost}
+        )
 
-    con.execute("INSERT INTO part VALUES (?,?,?,?,?)", ("p1", "m1", "s1", _ms(T0), json.dumps({"type": "compaction"})))
-    con.execute("INSERT INTO part VALUES (?,?,?,?,?)", ("p2", "m1", "s1", _ms(T0), json.dumps({"type": "compaction"})))
-    con.execute("INSERT INTO part VALUES (?,?,?,?,?)", ("p3", "m1", "s2", _ms(T0), json.dumps({"type": "compaction"})))
-    con.execute("INSERT INTO part VALUES (?,?,?,?,?)", ("p4", "m1", "s2", _ms(T0), json.dumps({"type": "text"})))
-    # части с путём проекта — признак принадлежности сессий к проекту
-    text_part("pt1", "m1", "s1", _ms(T0), f"Read {proj_dir}/.agentic/config.yaml")
-    text_part("pt2", "m2", "s2", _ms(T0 + 1800), f"cd {proj_dir} && git status")
-    text_part("pt3", "m1", "s3", _ms(T0 + 4000), f"git -C {proj_dir} log --oneline")
-    text_part("pt4", "m2", "sup", _ms(T0), f"supervisor session in {proj_dir}")
+    # токены воркеров — в session_message.data (v2), не в колонках
+    msg("w1", "s1", _ms(T0), tokens(1_000_000, 100_000, 2_000_000, 100_000, 0.0))
+    msg("w2", "s2", _ms(T0 + 1800), tokens(500_000, 50_000, 1_000_000, 0, 0.25))
+    msg("w3", "s3", _ms(T0 + 4000), tokens(100_000, 10_000, 0, 0, 0.0))
+    # сообщения супервизора: m1 в окне TODO-0001, m2 — вне всех окон
+    msg("m1", "sup", _ms(T0 + 1000), tokens(1000, 100, 2000, 50, 0.01))
+    msg("m2", "sup", _ms(T0 + 9000), tokens(3000, 300, 0, 0, 0.03))
+    msg("m3", "sup", _ms(T0 + 1500), "not-json{{{")
     con.commit()
     con.close()
     return path
@@ -179,9 +169,8 @@ def env(tmp_path: Path):
     proj = tmp_path / "proj"
     proj.mkdir()
     make_repo(proj)
-    # RUN10 #3-fix: directory сессий — $HOME-подобный (не дискриминатор);
-    # путь проекта в part.data — дефолтная область отчёта (только текущий
-    # проект) находит сессии по содержимому.
+    # K3: каталог сессии (session_v2.directory) — дефолтная область отчёта
+    # (только текущий проект).
     db = make_db(tmp_path / "opencode.db", proj_dir=str(proj))
     models = make_models(tmp_path / "models.json")
     return {"proj": proj, "db": db, "models": models, "tmp": tmp_path}
@@ -207,7 +196,7 @@ class TestCollect:
         assert u1["w_in"] == 1_500_000
         assert u1["w_out"] == 150_000
         assert u1["w_cr"] == 3_000_000
-        assert u1["compactions"] == 3
+        assert u1["compactions"] == 0  # K3: v2 не измеряет компрессии
         assert u1["ins"] == 10
         # супервизор: m1 в окне 0001 (1000/100), m2 вне всех окон
         assert u1["s_in"] == 1000
@@ -223,7 +212,7 @@ class TestCollect:
         assert t["wout"] == 160_000
         assert t["wcr"] == 3_000_000
         assert t["wcw"] == 100_000
-        assert t["comp"] == 3
+        assert t["comp"] == 0
         assert t["ins"] == 14
         assert res.supervisor_outside["in"] == 3000
         assert res.supervisor_outside["cost"] == pytest.approx(0.03)
@@ -726,14 +715,13 @@ class TestCli:
         empty_db = env["tmp"] / "empty.db"
         con = sqlite3.connect(empty_db)
         con.executescript(
-            "CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, directory TEXT,"
-            " cost REAL, tokens_input INTEGER, tokens_output INTEGER,"
-            " tokens_cache_read INTEGER, tokens_cache_write INTEGER,"
+            "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, title TEXT,"
+            " directory TEXT, cost REAL, tokens_input INTEGER,"
+            " tokens_output INTEGER, tokens_cache_read INTEGER,"
+            " tokens_cache_write INTEGER,"
             " time_created INTEGER, time_updated INTEGER);"
-            "CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT,"
-            " time_created INTEGER, data TEXT);"
-            "CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT,"
-            " session_id TEXT, time_created INTEGER, data TEXT);"
+            "CREATE TABLE session_message (id TEXT PRIMARY KEY,"
+            " session_id TEXT, type TEXT, time_created INTEGER, data TEXT);"
         )
         con.commit()
         con.close()
@@ -1109,12 +1097,11 @@ def make_db_two_projects(
     sup_b: bool = False,
     home_dir: str = _FAKE_HOME,
 ) -> Path:
-    """RUN10 #3-fix: два проекта в одной общей базе + сессия без признака.
+    """K3: два проекта в одной общей базе + сессия без каталога проекта.
 
-    Реальная модель данных: directory всех сессий — $HOME-подобный
-    каталог (спавн из $HOME), признак проекта — путь в part.data: сессии A
-    называют proj_a, сессии B — proj_b, у «старой записи» пути проекта в
-    содержимом нет вовсе.
+    Признак проекта — ``session_v2.directory``: сессии A называют proj_a,
+    сессии B — proj_b, у «старой записи» каталога проекта нет вовсе
+    (пустой/чужой каталог).
 
     ``sup_b=True`` — ещё и сессия супервизора проекта B с сообщением вне
     окон юнитов A (проверка гейта collect_supervisor, не только воркеров).
@@ -1122,43 +1109,47 @@ def make_db_two_projects(
     con = sqlite3.connect(path)
     con.executescript(_SCHEMA)
 
-    def sess(sid, title, tin, tout, tcr, tcw, cost, tc):
+    def sess(sid, title, tin, tout, tcr, tcw, cost, tc, directory):
         con.execute(
-            "INSERT INTO session VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (sid, title, home_dir, cost, tin, tout, tcr, tcw, tc, tc + 60_000),
+            "INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (sid, title, directory, cost, tin, tout, tcr, tcw, tc, tc + 60_000),
+        )
+        con.execute(
+            "INSERT INTO session_message VALUES (?,?,?,?,?)",
+            (
+                f"{sid}_m",
+                sid,
+                "assistant",
+                tc,
+                json.dumps(
+                    {"tokens": {"input": tin, "output": tout,
+                                "cache": {"read": tcr, "write": tcw}},
+                     "cost": cost}
+                ),
+            ),
         )
 
-    def text_part(pid, sid, ts, text):
-        con.execute(
-            "INSERT INTO part VALUES (?,?,?,?,?)",
-            (pid, "m0", sid, ts, json.dumps({"type": "text", "text": text})),
-        )
-
-    # проект A (тестируемый): воркерская сессия называет proj_a
+    # проект A (тестируемый): воркерская сессия в каталоге proj_a
     sess("a1", "awf-agent-implementer-TODO-0001",
-         1_000_000, 100_000, 2_000_000, 100_000, 0.0, _ms(T0))
-    text_part("pa1", "a1", _ms(T0), f"Read {proj_a}/.agentic/config.yaml")
-    # проект B: юнит того же класса (нет в репо A), называет proj_b
+         1_000_000, 100_000, 2_000_000, 100_000, 0.0, _ms(T0), proj_a)
+    # проект B: юнит того же класса (нет в репо A), каталог proj_b
     sess("b1", "awf-agent-implementer-TODO-0009",
-         7_000_000, 700_000, 0, 0, 1.5, _ms(T0 + 1000))
-    text_part("pb1", "b1", _ms(T0 + 1000), f"Read {proj_b}/.agentic/config.yaml")
-    # старая запись: пути проекта в содержимом сессии нет
+         7_000_000, 700_000, 0, 0, 1.5, _ms(T0 + 1000), proj_b)
+    # старая запись: каталога проекта в сессии нет
     sess("u1", "awf-agent-qa-review-TODO-0005",
-         4_000_000, 400_000, 0, 0, 0.4, _ms(T0 + 2000))
+         4_000_000, 400_000, 0, 0, 0.4, _ms(T0 + 2000), home_dir)
     # супервизор проекта A
-    sess("sup", supervisor_title, 0, 0, 0, 0, 0.0, _ms(T0))
-    text_part("psup", "sup", _ms(T0), f"supervisor session in {proj_a}")
+    sess("sup", supervisor_title, 0, 0, 0, 0, 0.0, _ms(T0), proj_a)
     if sup_b:
         # супервизор проекта B: сессия + сообщение с токенами, которое в
-        # дефолтной области должно быть исключено (путь B, не A).
+        # дефолтной области должно быть исключено (каталог B, не A).
         # ts раньше всех окон юнитов A (T0-60 — baseline TODO-0001),
         # чтобы попадать в «вне окон», а не в окно чужого юнита
-        sess("sup_b", supervisor_title, 0, 0, 0, 0, 0.0, _ms(T0))
-        text_part("psupb", "sup_b", _ms(T0), f"supervisor session in {proj_b}")
+        sess("sup_b", supervisor_title, 0, 0, 0, 0, 0.0, _ms(T0), proj_b)
         con.execute(
-            "INSERT INTO message VALUES (?,?,?,?)",
+            "INSERT INTO session_message VALUES (?,?,?,?,?)",
             (
-                "sup_b_m1", "sup_b", _ms(T0 - 100_000),
+                "sup_b_m1", "sup_b", "assistant", _ms(T0 - 100_000),
                 json.dumps(
                     {"tokens": {"input": 88_000, "output": 8_000,
                                 "cache": {"read": 0, "write": 0}},
@@ -1250,24 +1241,24 @@ class TestRun10ProjectScope:
         assert "все проекты" not in text
 
     def test_explicit_config_directory_wins_over_default(self, env):
-        # явный metrics.directory — legacy-фильтр по session.directory;
-        # он побеждает content-область: все сессии лежат в одном
-        # $HOME-каталоге, и чужой проект B попадает в отчёт
+        # явный metrics.directory — фильтр по session_v2.directory;
+        # он побеждает дефолтную область (текущий проект), поэтому в отчёт
+        # попадает чужой проект B
         self._two_project_env(env, env["tmp"] / "db2.db")
-        _set_metrics_cfg(env, f"  directory: {_FAKE_HOME}\n")
+        _set_metrics_cfg(env, "  directory: /proj/other\n")
         res = M.collect_metrics(
             env["proj"], db_path=env["db"], models_path=env["models"],
             out=env["tmp"] / "r.md",
         )
         todos = [u["todo"] for u in res.units]
         assert "TODO-0009" in todos
-        assert res.totals["win"] == 12_000_000
+        assert res.totals["win"] == 7_000_000
         text = Path(res.report_path).read_text(encoding="utf-8")
-        assert f"Область: проект: {_FAKE_HOME}." in text
+        assert "Область: проект: /proj/other." in text
         assert not any("исключены сессии других проектов" in w for w in res.warnings)
 
-    def test_path_in_content_trailing_slash(self, env):
-        # путь проекта в part.data с хвостовым слэшем — тот же проект
+    def test_directory_trailing_slash(self, env):
+        # каталог сессии с хвостовым слэшем — тот же проект (нормализация)
         db = make_db_two_projects(
             env["tmp"] / "db3.db",
             proj_a=str(env["proj"]) + "/",
@@ -1278,8 +1269,8 @@ class TestRun10ProjectScope:
             env["proj"], db_path=env["db"], models_path=env["models"],
             out=env["tmp"] / "r.md",
         )
-        # a1 (путь с хвостовым слэшем) сопоставился; исключены только
-        # сессия B (b1) и без пути (u1) — 2, не 3
+        # a1 (каталог с хвостовым слэшем) сопоставился; исключены только
+        # сессия B (b1) и сессия без каталога проекта (u1) — 2, не 3
         assert res.totals["win"] == 1_000_000
         excl = [w for w in res.warnings if "исключены сессии других проектов" in w]
         assert any("2" in w for w in excl)
@@ -1308,16 +1299,12 @@ class TestRun10ProjectScope:
         assert res_all.supervisor_outside["in"] == 88_000
 
 
-class TestContentMatchEscaping:
-    """RUN10 #3-fix: LIKE-спецсимволы пути проекта не расширяют область."""
-
-    def test_like_escape_specials(self):
-        assert M._like_escape("/a_b/c%d\\e") == "/a\\_b/c\\%d\\\\e"
+class TestDirectoryScope:
+    """K3: область проекта — точное совпадение каталога, а не LIKE-шаблон."""
 
     def test_underscore_path_not_overmatched(self, env):
-        # имя проекта с подчёркиванием: без экранирования паттерн
-        # «proj_under» совпал бы с соседним «projXunder» (LIKE: _ =
-        # любой символ) и подмешал бы чужой проект
+        # имя проекта с подчёркиванием: соседний «projXunder» — другой
+        # каталог, его сессии не смешиваются с текущим проектом
         proj2 = env["tmp"] / "proj_under"
         proj2.mkdir()
         make_repo(proj2)
@@ -1331,8 +1318,8 @@ class TestContentMatchEscaping:
             proj2, db_path=db, models_path=env["models"],
             out=env["tmp"] / "r.md",
         )
-        # сопоставился только a1 (точный путь); сосед projXunder и
-        # без пути (u1) — исключены
+        # сопоставился только a1 (точный каталог); сосед projXunder и
+        # сессия без каталога проекта (u1) — исключены
         assert res.totals["win"] == 1_000_000
         excl = [w for w in res.warnings if "исключены сессии других проектов" in w]
         assert any("2" in w for w in excl)
@@ -1371,15 +1358,29 @@ class TestSessionTitleParsing:
         con = sqlite3.connect(db)
         con.executescript(_SCHEMA)
         con.execute(
-            "INSERT INTO session VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?,?,?)",
             ("n1", "awf-implementer-agent-developer-TODO-0001-a1", _FAKE_HOME, 0.0,
-             100, 10, 0, 0, _ms(T0), _ms(T0 + 60)),
+            100, 10, 0, 0, _ms(T0), _ms(T0 + 60)),
         )
         con.execute(
-            "INSERT INTO session VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?,?,?)",
             ("n2", "awf-implementer-TODO-0002", _FAKE_HOME, 0.0,
-             200, 20, 0, 0, _ms(T0 + 90), _ms(T0 + 120)),
+            200, 20, 0, 0, _ms(T0 + 90), _ms(T0 + 120)),
         )
+        for sid, tin, tout, ts in (
+            ("n1", 100, 10, _ms(T0)), ("n2", 200, 20, _ms(T0 + 90))
+        ):
+            con.execute(
+                "INSERT INTO session_message VALUES (?,?,?,?,?)",
+                (
+                    f"{sid}_m", sid, "assistant", ts,
+                    json.dumps(
+                        {"tokens": {"input": tin, "output": tout,
+                                    "cache": {"read": 0, "write": 0}},
+                         "cost": 0.0}
+                    ),
+                ),
+            )
         con.commit()
         con.close()
         models = make_models(tmp_path / "models.json")
@@ -1410,15 +1411,29 @@ class TestSessionTitleParsing:
         con = sqlite3.connect(db)
         con.executescript(_SCHEMA)
         con.execute(
-            "INSERT INTO session VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?,?,?)",
             ("n1", "awf-implementer-agent-developer-TODO-0001-a1", _FAKE_HOME, 0.0,
-             100, 10, 0, 0, _ms(T0), _ms(T0 + 60)),
+            100, 10, 0, 0, _ms(T0), _ms(T0 + 60)),
         )
         con.execute(
-            "INSERT INTO session VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO session_v2 VALUES (?,?,?,?,?,?,?,?,?,?)",
             ("n2", "awf-implementer-TODO-0002", _FAKE_HOME, 0.0,
-             200, 20, 0, 0, _ms(T0 + 90), _ms(T0 + 120)),
+            200, 20, 0, 0, _ms(T0 + 90), _ms(T0 + 120)),
         )
+        for sid, tin, tout, ts in (
+            ("n1", 100, 10, _ms(T0)), ("n2", 200, 20, _ms(T0 + 90))
+        ):
+            con.execute(
+                "INSERT INTO session_message VALUES (?,?,?,?,?)",
+                (
+                    f"{sid}_m", sid, "assistant", ts,
+                    json.dumps(
+                        {"tokens": {"input": tin, "output": tout,
+                                    "cache": {"read": 0, "write": 0}},
+                         "cost": 0.0}
+                    ),
+                ),
+            )
         con.commit()
         con.close()
         models = make_models(tmp_path / "models.json")

@@ -45,7 +45,9 @@ _POLICIES = {"off": "off", "fix-only": "fix-only", "always": "always", "on": "fi
 #: cannot drift (a new alias is added in ONE place).
 MODES = tuple(_POLICIES)
 
-_SESSION_TABLES = ("session", "session_v2")
+#: The only table awf 3 captures from (K4). A v1 or empty base has no
+#: ``session_v2``, so the capture writes no id — silently, no exception.
+_SESSION_TABLES = ("session_v2",)
 _KEY_RE = re.compile(r"^[^/\\]+$")
 
 

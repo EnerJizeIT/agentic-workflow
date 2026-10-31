@@ -94,9 +94,10 @@ def test_worker_spawn_with_agent_name_has_one_flag(tmp_path, monkeypatch):
 
 
 def test_supervisor_spawn_without_agent_name_has_no_flag(tmp_path, monkeypatch):
+    """A13 + R2: no agent flag when the role is unnamed, isolation always."""
     cmd = _supervisor_argv(tmp_path, monkeypatch, {})
     assert "--agent" not in cmd
-    assert cmd[:3] == ["opencode", "run", "--auto"]
+    assert cmd[:4] == ["opencode", "run", "--standalone", "--auto"]
 
 
 def test_supervisor_spawn_with_agent_name_has_one_flag(tmp_path, monkeypatch):
@@ -113,7 +114,7 @@ def test_verify_spawn_without_agent_name_has_no_flag(tmp_path, monkeypatch):
         tmp_path, monkeypatch, {}, kind="verify", todo_id="TODO-0001"
     )
     assert "--agent" not in cmd
-    assert cmd[:3] == ["opencode", "run", "--auto"]
+    assert cmd[:4] == ["opencode", "run", "--standalone", "--auto"]
     assert "awf-supervisor-verify" in cmd
 
 

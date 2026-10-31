@@ -16,7 +16,7 @@ prove_red, DONE-факты) жили только в `.agentic/roles/` этог�
   (включая supervisor) ведут себя как раньше
 - test_add_role_missing_builtin_falls_back_to_placeholder — старой
   установки без файла шаблон деградирует в плейсхолдер
-- test_env_readonly_role_denies_edit_write — readonly-роль с edit/write=deny (V-04)
+- test_env_readonly_role_denies_edit_write — readonly-роль с edit=deny (V-04)
 - test_env_normal_role_keeps_edit_write — обычная роль со всем как раньше
 - test_env_empty_readonly_list_keeps_previous_behavior — пустой список =
   прежнее поведение
@@ -45,7 +45,12 @@ DOCTRINE_NAMES = (
 
 
 def _permission(env: dict) -> dict:
-    return json.loads(env["OPENCODE_CONFIG_CONTENT"])["permission"]
+    """The resolved action→effect map (2.x: the last matching rule wins)."""
+    resolved: dict[str, str] = {}
+    for rule in json.loads(env["OPENCODE_CONFIG_CONTENT"])["permissions"]:
+        if rule.get("resource") == "*":
+            resolved[str(rule.get("action"))] = str(rule.get("effect"))
+    return resolved
 
 
 def _env_project(base: Path, monkeypatch, yaml_text: str, name: str) -> Path:
@@ -190,13 +195,12 @@ _READONLY_YAML = "automation:\n  readonly_roles:\n    - agent-qa-review\n"
 
 
 def test_env_readonly_role_denies_edit_write(tmp_path, monkeypatch):
-    """Роль из automation.readonly_roles: edit/write=deny (V-04), bash остаётся."""
+    """Роль из automation.readonly_roles: edit=deny (V-04), shell остаётся."""
     proj = _env_project(tmp_path, monkeypatch, _READONLY_YAML, "ro")
     env = awf_subprocess_env(role="agent-qa-review", project_dir=proj)
     perm = _permission(env)
     assert perm["edit"] == "deny"
-    assert perm["write"] == "deny"
-    assert perm["bash"] == "allow"
+    assert perm["shell"] == "allow"
     assert perm["webfetch"] == "allow"
 
 
@@ -206,8 +210,7 @@ def test_env_normal_role_keeps_edit_write(tmp_path, monkeypatch):
     env = awf_subprocess_env(role="agent-implementer", project_dir=proj)
     perm = _permission(env)
     assert perm["edit"] == "allow"
-    assert perm["write"] == "allow"
-    assert perm["bash"] == "allow"
+    assert perm["shell"] == "allow"
 
 
 def test_env_empty_readonly_list_keeps_previous_behavior(tmp_path, monkeypatch):
@@ -219,14 +222,12 @@ def test_env_empty_readonly_list_keeps_previous_behavior(tmp_path, monkeypatch):
         env = awf_subprocess_env(role="agent-qa-review", project_dir=proj)
         perm = _permission(env)
         assert perm["edit"] == "allow", yaml_text
-        assert perm["write"] == "allow", yaml_text
 
     # вызов без роли/проекта — ровно как было до W7
     env = awf_subprocess_env()
     perm = _permission(env)
     assert perm["edit"] == "allow"
-    assert perm["write"] == "allow"
-    assert perm["bash"] == "allow"
+    assert perm["shell"] == "allow"
 
 
 # ─── 4. Доктрина в поставке: init сеет, re-init не затирает ─────────────

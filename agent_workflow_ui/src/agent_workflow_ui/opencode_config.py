@@ -42,9 +42,9 @@ def read_recent_models(limit: int = 8) -> list[str]:
     """Get recently used models from opencode session history (SQLite).
 
     Reads ~/.local/share/opencode/opencode.db through the SHARED reader
-    ``awf.opencode_db.recent_models`` — the CLI uses the same function, so a
-    schema change (v1 ``session`` / v2 ``session_v2``) lands in one place
-    (K6, D8, AC24).
+    ``awf.opencode_db.recent_models`` — the CLI uses the same function, so
+    the one readable schema (v2 ``session_v2``) lives in one place
+    (K3, D8, AC12).
     """
     # AUD-5: respect XDG_DATA_HOME (was hardcoded ~/.local/share)
     data_home = os.environ.get("XDG_DATA_HOME", "").strip()

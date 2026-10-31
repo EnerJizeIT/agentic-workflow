@@ -1187,9 +1187,9 @@ class TestRunSubprocessUntilSignal:
         env = _awf_subprocess_env()
         assert "OPENCODE_CONFIG_CONTENT" in env
         cfg = json.loads(env["OPENCODE_CONFIG_CONTENT"])
-        assert cfg["permission"]["edit"] == "allow"
-        assert cfg["permission"]["bash"] == "allow"
-        assert cfg["permission"]["write"] == "allow"
+        rules = cfg["permissions"]
+        assert {"action": "edit", "resource": "*", "effect": "allow"} in rules
+        assert {"action": "shell", "resource": "*", "effect": "allow"} in rules
 
     def test_popen_receives_awf_env_bd22(self, tmp_path, monkeypatch) -> None:
         """BD-22: Popen is called with env containing permission override."""

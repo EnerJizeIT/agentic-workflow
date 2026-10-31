@@ -411,13 +411,13 @@ class TestOpencodeAgentsNoEmptyModel:
         from awf import opencode_agents
 
         cfg = tmp_path / "opencode.json"
-        cfg.write_text(json.dumps({"agent": {}}))
+        cfg.write_text(json.dumps({"agents": {}}))
 
         result = opencode_agents.apply(str(cfg), ["worker"], "")
         # Read back
         data = json.loads(cfg.read_text())
-        assert "worker" in data["agent"]
-        assert "model" not in data["agent"]["worker"], (
+        assert "worker" in data["agents"]
+        assert "model" not in data["agents"]["worker"], (
             "M5: empty model should not produce 'model': '' key"
         )
 
@@ -428,11 +428,11 @@ class TestOpencodeAgentsNoEmptyModel:
         from awf import opencode_agents
 
         cfg = tmp_path / "opencode.json"
-        cfg.write_text(json.dumps({"agent": {}}))
+        cfg.write_text(json.dumps({"agents": {}}))
 
         opencode_agents.apply(str(cfg), ["worker"], "claude-4")
         data = json.loads(cfg.read_text())
-        assert data["agent"]["worker"]["model"] == "claude-4"
+        assert data["agents"]["worker"]["model"] == "claude-4"
 
     def test_apply_atomic_no_corrupt_on_write(self, tmp_path, monkeypatch):
         """T2.6 fix: apply uses atomic_write_text — no temp files left on crash.
@@ -445,7 +445,7 @@ class TestOpencodeAgentsNoEmptyModel:
         from awf import _atomic, opencode_agents
 
         cfg = tmp_path / "opencode.json"
-        original = {"agent": {"existing": {"model": "old"}}}
+        original = {"agents": {"existing": {"model": "old"}}}
         cfg.write_text(json.dumps(original))
 
         # Sabotage os.replace (last step of atomic_write_text) to simulate

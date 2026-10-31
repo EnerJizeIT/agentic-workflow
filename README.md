@@ -6,6 +6,8 @@
 [![PyPI](https://img.shields.io/pypi/v/awf.svg)](https://pypi.org/project/awf/)
 
 > **Multi-agent pipeline orchestrator for opencode. Plan → build → verify → commit — through typed MCP tools, not bash.**
+> **Requires opencode 2.x** (`opencode --version` ≥ 2). awf 2.x remains on its
+> tag for anyone still on the 1.x line.
 
 ## The problem it solves
 

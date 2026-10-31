@@ -170,7 +170,7 @@ def test_empty_v2_and_no_tables_are_na(tmp_path):
     blank = tmp_path / "blank.db"
     sqlite3.connect(blank).close()
     res2 = _collect(tmp_path, proj, blank)
-    assert res2.sessions_na == "в базе opencode нет таблиц сессий"
+    assert res2.sessions_na == "таблиц v2 нет"
     assert res2.exit_code == 0
 
 
@@ -193,11 +193,12 @@ def _schema_v1(path):
     return con
 
 
-def test_mixed_db_counts_each_session_once(tmp_path):
+def test_mixed_db_counts_only_v2(tmp_path):
+    """AC11: v1 tables next to v2 are ignored — no union, no double count."""
     proj = _project(tmp_path)
     db = tmp_path / "mixed.db"
     con = _schema_v2(db)
-    # v1 tables added next to v2 — the "both" schema.
+    # v1 tables added next to v2 — awf reads only session_v2.
     con.executescript(
         """
         CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, directory TEXT,
@@ -212,25 +213,17 @@ def test_mixed_db_counts_each_session_once(tmp_path):
         """
     )
     ts = 1_700_000_000_000
-    # Same id in both schemas: v2 must win (AC41).
+    # Same id in both schemas: the v2 row is the one read.
     con.execute(
         "INSERT INTO session VALUES ('dup','awf-developer-TODO-0001',?,0,1,1,0,0,?,?)",
         (str(proj), ts, ts),
     )
-    con.execute(
-        f"INSERT INTO part VALUES ('p1','m1','dup',?,'{proj}')",
-        (ts,),
-    )
     _add_v2_session(con, "dup", "awf-developer-TODO-0001", proj, ts)
     _add_message(con, "dup", 1, {"input": 4000, "output": 400, "cache": {"read": 2000, "write": 0}}, ts=ts)
-    # v1-only session, another unit.
+    # v1-only session, another unit — must NOT be measured.
     con.execute(
         "INSERT INTO session VALUES ('s2','awf-qa-TODO-0002',?,0,100,10,0,0,?,?)",
         (str(proj), ts + 10, ts + 10),
-    )
-    con.execute(
-        f"INSERT INTO part VALUES ('p2','m2','s2',?,'{proj}')",
-        (ts + 10,),
     )
     con.commit()
     con.close()
@@ -238,14 +231,14 @@ def test_mixed_db_counts_each_session_once(tmp_path):
     res = _collect(tmp_path, proj, db)
     units = {u["todo"]: u for u in res.units}
 
+    assert set(units) == {"TODO-0001"}
     assert units["TODO-0001"]["sessions"] == 1
     assert units["TODO-0001"]["w_in"] == 4000          # v2 row, not v1's 1
-    assert units["TODO-0002"]["w_in"] == 100           # v1-only row still read
-    assert res.totals["win"] == 4100                   # no double count
+    assert res.totals["win"] == 4000                   # v1-only row not read
 
 
-def test_v1_schema_unchanged(tmp_path):
-    """AC17/AC20: the current v1 database keeps the previous numbers."""
+def test_v1_schema_is_na_not_zero(tmp_path):
+    """AC10: v1 base → n/a with the fixed reason, rc 0, no v1 numbers."""
     proj = _project(tmp_path)
     db = tmp_path / "v1.db"
     con = _schema_v1(db)
@@ -253,15 +246,12 @@ def test_v1_schema_unchanged(tmp_path):
         "INSERT INTO session VALUES ('s1','awf-developer-TODO-0001',?,0,1000,100,300,10,1,1)",
         (str(proj),),
     )
-    con.execute(
-        "INSERT INTO part VALUES ('p1','m1','s1',1,?)", (str(proj),)
-    )
     con.commit()
     con.close()
 
     res = _collect(tmp_path, proj, db)
-    assert res.totals["win"] == 1000
-    assert res.totals["wout"] == 100
-    assert res.totals["wcr"] == 300
-    assert res.totals["wcw"] == 10
-    assert res.sessions_na == ""
+    assert res.totals["win"] == 0
+    assert res.workers_by_role == {}
+    assert res.sessions_na == "схема v1 не поддерживается"
+    assert "n/a" in res.report
+    assert res.exit_code == 0

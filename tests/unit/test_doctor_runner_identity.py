@@ -51,7 +51,7 @@ def project(tmp_path):
 @pytest.fixture
 def env(monkeypatch, tmp_path):
     opencode = tmp_path / "opencode.json"
-    opencode.write_text(json.dumps({"provider": {}}), encoding="utf-8")
+    opencode.write_text(json.dumps({"providers": {}}), encoding="utf-8")
     monkeypatch.setattr("awf.doctor.xdg.opencode_config_file", lambda: opencode)
     monkeypatch.setattr("awf.versions.process_commit", lambda: "proc0000")
     monkeypatch.setattr(
@@ -60,7 +60,7 @@ def env(monkeypatch, tmp_path):
     return opencode
 
 
-def _versions(monkeypatch, *, process="2.3.0", plugin="2.3.0", metadata="2.3.0"):
+def _versions(monkeypatch, *, process="3.0.0", plugin="3.0.0", metadata="3.0.0"):
     monkeypatch.setattr("awf.versions.process_version", lambda: process)
     monkeypatch.setattr("awf.versions.plugin_version", lambda: plugin)
     monkeypatch.setattr("awf.versions.install_metadata", lambda name: metadata)
@@ -101,7 +101,7 @@ def _pinned_runner(
     """A runner checkout pinned by the project config; optionally a git repo."""
     runner = project.parent / "runner"
     (runner / "awf").mkdir(parents=True)
-    (runner / "awf" / "__init__.py").write_text('__version__ = "2.3.0"\n')
+    (runner / "awf" / "__init__.py").write_text('__version__ = "3.0.0"\n')
     if git:
         _git_repo(runner)
     config = dict(CLEAN_CONFIG)
@@ -189,7 +189,7 @@ def test_commitless_dirty_runner_is_still_a_warn(project, env, monkeypatch):
     """
     runner = project.parent / "runner"
     (runner / "awf").mkdir(parents=True)
-    (runner / "awf" / "__init__.py").write_text('__version__ = "2.3.0"\n')
+    (runner / "awf" / "__init__.py").write_text('__version__ = "3.0.0"\n')
     subprocess.run(["git", "init", "-q"], cwd=runner, check=True)
     (runner / "wip.py").write_text("# work in progress\n")
     config = dict(CLEAN_CONFIG)

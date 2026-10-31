@@ -27,7 +27,7 @@ from pathlib import Path
 from awf.metrics import collect_commit_info, collect_metrics, collect_workers
 
 _SESSION_SCHEMA = """
-CREATE TABLE session (
+CREATE TABLE session_v2 (
     id TEXT PRIMARY KEY,
     title TEXT,
     directory TEXT,
@@ -38,21 +38,46 @@ CREATE TABLE session (
     cost REAL,
     time_created INTEGER,
     time_updated INTEGER
+);
+CREATE TABLE session_message (
+    id TEXT PRIMARY KEY,
+    session_id TEXT,
+    type TEXT,
+    time_created INTEGER,
+    data TEXT
 )
 """
 
 
-def _worker_db(titles: list[tuple[str, str, int]]) -> sqlite3.Connection:
-    """In-memory opencode.db: session-строки (id, title, tokens_input) + пустая part."""
-    con = sqlite3.connect(":memory:")
-    con.execute(_SESSION_SCHEMA)
-    con.execute("CREATE TABLE part (session_id TEXT, data TEXT)")
-    con.executemany(
-        "INSERT INTO session (id, title, directory, tokens_input, tokens_output,"
+def _insert_session(con, sid, title, tin, directory=""):
+    """строка session_v2 + ассистентское сообщение с токенами (v2, K3)."""
+    con.execute(
+        "INSERT INTO session_v2 (id, title, directory, tokens_input, tokens_output,"
         " tokens_cache_read, tokens_cache_write, cost, time_created, time_updated)"
-        " VALUES (?, ?, '', ?, 0, 0, 0, 0.0, 1000, 2000)",
-        [(sid, title, tin) for sid, title, tin in titles],
+        " VALUES (?, ?, ?, ?, 0, 0, 0, 0.0, 1000, 2000)",
+        (sid, title, directory, tin),
     )
+    con.execute(
+        "INSERT INTO session_message (id, session_id, type, time_created, data)"
+        " VALUES (?, ?, 'assistant', 1000, ?)",
+        (
+            f"{sid}-m",
+            sid,
+            json.dumps(
+                {"tokens": {"input": tin, "output": 0,
+                            "cache": {"read": 0, "write": 0}},
+                 "cost": 0.0}
+            ),
+        ),
+    )
+
+
+def _worker_db(titles: list[tuple[str, str, int]]) -> sqlite3.Connection:
+    """In-memory opencode.db: session_v2-строки (id, title, tokens_input)."""
+    con = sqlite3.connect(":memory:")
+    con.executescript(_SESSION_SCHEMA)
+    for sid, title, tin in titles:
+        _insert_session(con, sid, title, tin)
     con.commit()
     return con
 
@@ -133,24 +158,13 @@ def test_commit_subject_word_suffix_is_not_a_todo(tmp_git_repo):
 
 
 def _worker_db_file(db_path: Path, repo: Path, titles: list[tuple[str, str, int]]) -> None:
-    """Временная SQLite из схемы кода: session-строки + part, чьё
-    содержимое называет путь проекта (content-область отчёта, RUN10 #3)."""
+    """Временная SQLite из схемы кода: session_v2-строки, каталог сессии —
+    путь проекта (K3: область отчёта по ``session_v2.directory``)."""
     con = sqlite3.connect(db_path)
-    con.execute(_SESSION_SCHEMA)
-    con.execute("CREATE TABLE part (session_id TEXT, data TEXT)")
+    con.executescript(_SESSION_SCHEMA)
     repo_s = str(Path(repo).resolve())
     for sid, title, tin in titles:
-        con.execute(
-            "INSERT INTO session (id, title, directory, tokens_input,"
-            " tokens_output, tokens_cache_read, tokens_cache_write, cost,"
-            " time_created, time_updated) VALUES (?, ?, '', ?, 0, 0, 0, 0.0,"
-            " 1000, 2000)",
-            (sid, title, tin),
-        )
-        con.execute(
-            "INSERT INTO part (session_id, data) VALUES (?, ?)",
-            (sid, json.dumps({"type": "text", "text": f"workdir: {repo_s}"})),
-        )
+        _insert_session(con, sid, title, tin, repo_s)
     con.commit()
     con.close()
 

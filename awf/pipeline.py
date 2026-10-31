@@ -504,8 +504,9 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
                         raise AwfApiError(
                             f"Pipeline {source}: stage '{label}' tools "
                             f"profile has an unknown permission key: "
-                            f"'{key}'. Known keys: bash/edit/write/"
-                            "webfetch and MCP tools as <server>_<tool>."
+                            f"'{key}'. Known keys: shell/edit/webfetch/"
+                            "subagent (the 1.x names bash/write/task are "
+                            "accepted too) and MCP tools as <server>_<tool>."
                         )
         for pk in _POLICY_KEYS:
             if pk in stage and stage[pk] is not None:

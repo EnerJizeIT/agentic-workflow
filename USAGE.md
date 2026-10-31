@@ -10,6 +10,7 @@ Structure your AI coding sessions: plan → build → verify → commit. A super
 - **Stay in control** — approve or reject each TODO. Reject sends the work back with fix instructions.
 - **Watch in real-time** — live dashboard with agent handoffs, TODO content, worker status.
 - Works **through chat**: just say what you want — the supervisor calls the right tool.
+- **Requires opencode 2.x.** The launch refuses an older binary with a typed message; there is no 1.x compatibility layer.
 
 ## Is this for you?
 

@@ -1,21 +1,19 @@
-"""Shared opencode.db probe + readers (K5, K6, D8).
+"""Shared opencode.db probe + readers (K3, K4, D8).
 
 One module owns the schema decision and the "recent models" SQL: the CLI
 (``awf/api/model_check.py``) and the plugin
 (``agent_workflow_ui/.../opencode_config.py``) import it instead of keeping
-two copies that would drift (AC24).
+two copies that would drift (AC12).
 
-Two database generations exist in the wild:
+The only schema awf 3 reads is v2 — ``session_v2`` / ``session_message``
+(the v1 tables are gone, the data columns moved to JSON in
+``session_message.data``). The v2 marker is ``session_v2``, not
+``session_message``: a v1 database already has an empty
+``session_message`` table (CTX3, D7). Anything else is ``none``: metrics
+answer ``n/a`` with a reason, the session capture writes no id.
 
-- v1 — ``session`` / ``part`` / ``message``;
-- v2 — ``session_v2`` / ``session_message`` (``part`` is gone, the data
-  columns moved to JSON in ``session_message.data``).
-
-The v2 marker is ``session_v2``, not ``session_message``: a v1 database
-already has an empty ``session_message`` table (CTX3, D7).
-
-``V2_MODEL_FIELD`` and ``MODELS_STANDALONE_SUPPORTED`` are the two facts
-IMP1 measured on the real 2.2.3 binary, not guesses (D9, A6, A7).
+``V2_MODEL_FIELD`` is one of the two facts IMP1 measured on the real 2.2.3
+binary, not a guess (D9, A7).
 """
 from __future__ import annotations
 
@@ -24,18 +22,12 @@ import sqlite3
 import sys
 from pathlib import Path
 
-# IMP1 probe (opencode 2.2.3, 2026-10-30): `opencode models --standalone`
-# is accepted and lists the same models (rc 0).
-MODELS_STANDALONE_SUPPORTED = True
-
 # IMP1 probe (opencode 2.2.3): `session_v2.model` holds
 # ``{"id": "...", "providerID": "..."}``. Until a probe confirms a field the
 # constant stays None and the reader refuses to guess (RR25).
 V2_MODEL_FIELD: tuple[str, str] | None = ("session_v2", "model")
 
-SCHEMA_V1 = "v1"
 SCHEMA_V2 = "v2"
-SCHEMA_BOTH = "both"
 SCHEMA_NONE = "none"
 
 _MODELS_TIMEOUT = 10.0
@@ -55,15 +47,13 @@ def table_names(con: sqlite3.Connection) -> set[str]:
 
 
 def detect_schema(con: sqlite3.Connection) -> str:
-    """``v1`` / ``v2`` / ``both`` / ``none`` by ``sqlite_master`` (K5)."""
+    """``v2`` when ``session_v2`` + ``session_message`` exist, else ``none`` (K3).
+
+    The marker is the table pair, not ``session_message`` alone: a v1
+    database already carries an empty ``session_message`` (CTX3, D7).
+    """
     names = table_names(con)
-    has_v1 = {"session", "part"} <= names
-    has_v2 = {"session_v2", "session_message"} <= names
-    if has_v1 and has_v2:
-        return SCHEMA_BOTH
-    if has_v1:
-        return SCHEMA_V1
-    if has_v2:
+    if {"session_v2", "session_message"} <= names:
         return SCHEMA_V2
     return SCHEMA_NONE
 
@@ -91,19 +81,6 @@ def _limit_clause(limit: int | None) -> tuple[str, tuple[int, ...]]:
     if limit is None:
         return "", ()
     return " LIMIT ?", (limit * 2,)
-
-
-def _rows_v1(con: sqlite3.Connection, limit: int | None) -> list[object]:
-    tail, params = _limit_clause(limit)
-    return [
-        row[0]
-        for row in con.execute(
-            "SELECT model, MAX(time_created) AS last_used FROM session "
-            "WHERE model IS NOT NULL GROUP BY model ORDER BY last_used DESC"
-            + tail,
-            params,
-        ).fetchall()
-    ]
 
 
 def _rows_v2(con: sqlite3.Connection, limit: int | None) -> list[object]:
@@ -146,10 +123,10 @@ def _dedupe(raw_rows: list[object], limit: int | None) -> list[str]:
 
 
 def recent_models(db_path: str | Path, limit: int | None = 8) -> list[str]:
-    """Recently used model IDs from ``opencode.db`` (K6, AC23).
+    """Recently used model IDs from ``opencode.db``, v2 only (K3, AC12).
 
-    v1 — ``session.model``; v2 — ``V2_MODEL_FIELD``; both — union, v2 first,
-    no duplicates. Any error degrades to an empty list.
+    Reads ``V2_MODEL_FIELD``. A v1 or empty base is an empty list and one
+    stderr line — the CLI and the plugin both degrade, neither crashes.
     """
     path = Path(db_path)
     if not path.is_file():
@@ -159,16 +136,19 @@ def recent_models(db_path: str | Path, limit: int | None = 8) -> list[str]:
     except sqlite3.Error:
         return []
     try:
-        # The model column only needs its own table: a partial v1 database
-        # (session without part) still carries history, and ``detect_schema``
-        # is strict on purpose (it decides the metrics reader, not this one).
-        names = table_names(con)
-        raw: list[object] = []
-        if "session_v2" in names:
-            raw += _rows_v2(con, limit)
-        if "session" in names:
-            raw += _rows_v1(con, limit)
-        return _dedupe(raw, limit)
+        # The model column only needs its own table: a partial v2 database
+        # (session_v2 without session_message) still carries history, and
+        # ``detect_schema`` is strict on purpose (it decides the metrics
+        # reader, not this one).
+        if "session_v2" not in table_names(con):
+            # One fixed message for both "no v2 table" and "field unconfirmed"
+            # (K3, T11): the callers only need to know that the list is empty.
+            print(
+                "моделей не найдено (v2: поле не подтверждено)",
+                file=sys.stderr,
+            )
+            return []
+        return _dedupe(_rows_v2(con, limit), limit)
     except sqlite3.Error as e:
         print(f"model_check: cannot read opencode.db: {e}", file=sys.stderr)
         return []
@@ -177,22 +157,17 @@ def recent_models(db_path: str | Path, limit: int | None = 8) -> list[str]:
 
 
 def available_models(timeout: float = _MODELS_TIMEOUT) -> list[str]:
-    """``opencode models`` output as ``provider/model`` lines (K6, AC25–27).
+    """``opencode models`` output as ``provider/model`` lines (R2).
 
-    ``--standalone`` is added only for major ≥ 2 with a confirmed flag
-    support; 1.x never gets it. Any failure is an empty list and a warning,
-    never an exception.
+    awf 3 runs opencode 2.x only, so the CLI gets ``--standalone`` on every
+    call: without it the call goes to the shared server and can hang on a
+    server the worker does not own. Any failure is an empty list and a
+    warning, never an exception.
     """
     from . import opencode_version
 
     argv = [opencode_version.BINARY, "models"]
-    probe = opencode_version.probe_version()
-    if (
-        probe.status == "ok"
-        and probe.version is not None
-        and probe.version[0] >= 2
-        and MODELS_STANDALONE_SUPPORTED
-    ):
+    if not opencode_version.is_managed(None):
         argv.append("--standalone")
     try:
         import subprocess
@@ -231,10 +206,7 @@ def available_models(timeout: float = _MODELS_TIMEOUT) -> list[str]:
 
 
 __all__ = [
-    "MODELS_STANDALONE_SUPPORTED",
-    "SCHEMA_BOTH",
     "SCHEMA_NONE",
-    "SCHEMA_V1",
     "SCHEMA_V2",
     "V2_MODEL_FIELD",
     "available_models",
