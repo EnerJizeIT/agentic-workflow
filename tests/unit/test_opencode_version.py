@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from awf import agent_stage, config, supervisor
+from awf import agent_stage, supervisor
 from awf import opencode_version as ov
 from awf.pipeline import Stage
 
@@ -130,75 +130,86 @@ def test_doubles_answer_version_without_signals(tmp_path, binary):
     assert list(tmp_path.iterdir()) == []
 
 
-# ─── K2/AC37: the domain after yaml.safe_load ───────────────────────────
+# ─── R2: the flag is unconditional (managed is the only exception) ──────
 
 
-@pytest.mark.parametrize(
-    "raw, mode",
-    [
-        ("on", "on"),
-        ("off", "off"),
-        ("auto", "auto"),
-        ('"true"', "on"),
-        ('"False"', "off"),
-        ("true", "on"),
-        ("false", "off"),
-    ],
-)
-def test_mode_domain_from_real_yaml(tmp_path, raw, mode):
-    agentic = tmp_path / ".agentic"
-    agentic.mkdir()
-    (agentic / "config.yaml").write_text(
-        f"opencode:\n  standalone: {raw}\n", encoding="utf-8"
+def test_plan_always_adds_the_flag():
+    """R2: there is no mode to choose — 2.x always runs isolated."""
+    v1 = ov.Probe("ok", (1, 19, 4))
+    v2 = ov.Probe("ok", (2, 2, 3))
+    assert ov.resolve_plan({}, v2).add_flag is True
+    assert ov.resolve_plan({}, v1).add_flag is True
+    managed = ov.resolve_plan({"opencode": {"managed": True}}, v2)
+    assert managed.add_flag is False
+    assert ov.MANAGED_WARNING in managed.warning
+
+
+def test_launch_plan_refuses_opencode_1(tmp_path):
+    """R1/AC1: an older binary is a typed refusal with both versions named."""
+    (tmp_path / ".agentic").mkdir()
+    _probe, _plan, refusal = ov.launch_plan(
+        tmp_path, config={}, probe=ov.Probe("ok", (1, 19, 4))
     )
-    cfg = config.load(tmp_path)
-    assert ov.standalone_mode(cfg) == (mode, "")
+    assert refusal is not None
+    assert refusal.rc == 1
+    assert "требует opencode 2.x" in refusal.message
+    assert "1.19.4" in refusal.message
 
 
-def test_mode_default_is_auto(tmp_path):
-    agentic = tmp_path / ".agentic"
-    agentic.mkdir()
-    (agentic / "config.yaml").write_text("project:\n  name: x\n", encoding="utf-8")
-    assert ov.standalone_mode(config.load(tmp_path)) == ("auto", "")
-
-
-@pytest.mark.parametrize("raw", ["maybe", "1", "[1]"])
-def test_mode_garbage_is_refused_with_key_name(tmp_path, raw):
-    agentic = tmp_path / ".agentic"
-    agentic.mkdir()
-    (agentic / "config.yaml").write_text(
-        f"opencode:\n  standalone: {raw}\n", encoding="utf-8"
+def test_launch_plan_unknown_version_is_fail_closed(tmp_path):
+    """R1/AC2: an undetermined version refuses with its own text and rc 0."""
+    (tmp_path / ".agentic").mkdir()
+    _probe, _plan, refusal = ov.launch_plan(
+        tmp_path, config={}, probe=ov.Probe("unknown")
     )
-    mode, refusal = ov.standalone_mode(config.load(tmp_path))
-    assert mode == ""
-    assert "opencode.standalone" in refusal
+    assert refusal is not None
+    assert refusal.rc == 0
+    assert "версия не определена" in refusal.message
+
+
+def test_launch_plan_missing_binary(tmp_path):
+    (tmp_path / ".agentic").mkdir()
+    _probe, _plan, refusal = ov.launch_plan(
+        tmp_path, config={}, probe=ov.Probe("missing")
+    )
+    assert refusal is not None
+    assert refusal.rc == 1
+    assert "не найден" in refusal.message
+
+
+def test_launch_plan_accepts_2x(tmp_path):
+    (tmp_path / ".agentic").mkdir()
+    _probe, plan, refusal = ov.launch_plan(
+        tmp_path, config={}, probe=ov.Probe("ok", (2, 2, 3))
+    )
+    assert refusal is None
+    assert plan.add_flag is True
+
+
+def test_launch_plan_managed_skips_the_version_gate(tmp_path):
+    """R1/AC4: the operator owns the server policy in managed mode."""
+    (tmp_path / ".agentic").mkdir()
+    _probe, plan, refusal = ov.launch_plan(
+        tmp_path,
+        config={"opencode": {"managed": True}},
+        probe=ov.Probe("ok", (1, 19, 4)),
+    )
+    assert refusal is None
+    assert plan.add_flag is False
 
 
 # ─── K2: plan table ─────────────────────────────────────────────────────
 
 
-def test_plan_table():
-    v1 = ov.Probe("ok", (1, 19, 4))
-    v2 = ov.Probe("ok", (2, 2, 3))
-    assert ov.resolve_standalone({}, v2).add_flag is True
-    assert ov.resolve_standalone({"opencode": {"standalone": True}}, v2).add_flag
-    assert not ov.resolve_standalone({"opencode": {"standalone": False}}, v2).add_flag
-    assert not ov.resolve_standalone({}, v1).add_flag
-    on_v1 = ov.resolve_standalone({"opencode": {"standalone": "on"}}, v1)
-    assert on_v1.add_flag is False and "--standalone" in on_v1.warning
-    unknown = ov.resolve_standalone({"opencode": {"standalone": "on"}}, ov.Probe("unknown"))
-    assert unknown.add_flag is False
-
-
 def test_apply_standalone_inserts_after_subcommand():
-    plan = ov.Plan("auto", add_flag=True)
+    plan = ov.Plan(add_flag=True)
     assert ov.apply_standalone(["opencode", "run", "--auto", "--", "p"], plan) == [
         "opencode", "run", "--standalone", "--auto", "--", "p",
     ]
     assert ov.apply_standalone(["opencode", "models"], plan) == [
         "opencode", "models", "--standalone",
     ]
-    assert ov.apply_standalone(["opencode", "run"], ov.Plan("off", False)) == [
+    assert ov.apply_standalone(["opencode", "run"], ov.Plan(add_flag=False)) == [
         "opencode", "run",
     ]
 
@@ -233,24 +244,16 @@ def _capture_worker(monkeypatch) -> dict:
     return captured
 
 
-def test_worker_argv_v1_has_no_flag(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "awf.opencode_version.probe_version", lambda *a, **kw: ov.Probe("ok", (1, 19, 4))
-    )
-    captured = _capture_worker(monkeypatch)
-    proj = _worker_project(tmp_path)
-    agent_stage.run_agent_stage(
-        Stage(name="dev", role="developer", kind="execute"),
-        "TODO-0001", proj, {}, proj / ".agentic" / "logs",
-    )
-    cmd = captured["cmd"]
-    assert cmd[:2] == ["opencode", "run"]
-    assert "--standalone" not in cmd
-    assert cmd[2] == "--auto"
-
-
-@pytest.mark.parametrize("cfg", [{}, {"opencode": {"standalone": "auto"}}])
-def test_worker_argv_v2_has_flag_in_place(tmp_path, monkeypatch, cfg):
+@pytest.mark.parametrize(
+    "cfg",
+    [
+        {},
+        {"opencode": {"managed": False}},
+        # R2/AC7: the removed key no longer refuses anything.
+        {"opencode": {"standalone": "maybe"}},
+    ],
+)
+def test_worker_argv_always_has_the_flag(tmp_path, monkeypatch, cfg):
     monkeypatch.setattr(
         "awf.opencode_version.probe_version", lambda *a, **kw: ov.Probe("ok", (2, 1, 4))
     )
@@ -263,7 +266,7 @@ def test_worker_argv_v2_has_flag_in_place(tmp_path, monkeypatch, cfg):
     cmd = captured["cmd"]
     assert cmd[:3] == ["opencode", "run", "--standalone"]
     assert cmd[3:] == [
-        "--auto", "--print-logs", "--agent", "developer",
+        "--auto", "--print-logs",
         "--title", "awf-developer-TODO-0001",
         "--file", str(proj / ".agentic" / "roles" / "developer.md"),
         "--file", str(proj / ".agentic" / "inbox" / "TODO-0001.md"),
@@ -271,21 +274,19 @@ def test_worker_argv_v2_has_flag_in_place(tmp_path, monkeypatch, cfg):
     ]
 
 
-def test_worker_on_v1_warns_and_starts(tmp_path, monkeypatch, capsys):
+def test_worker_managed_has_no_flag(tmp_path, monkeypatch):
+    """R2: managed is the only path without ``--standalone``."""
     monkeypatch.setattr(
-        "awf.opencode_version.probe_version", lambda *a, **kw: ov.Probe("ok", (1, 19, 4))
+        "awf.opencode_version.probe_version", lambda *a, **kw: ov.Probe("ok", (2, 2, 3))
     )
     captured = _capture_worker(monkeypatch)
     proj = _worker_project(tmp_path)
     agent_stage.run_agent_stage(
         Stage(name="dev", role="developer", kind="execute"),
-        "TODO-0001", proj, {"opencode": {"standalone": "on"}},
+        "TODO-0001", proj, {"opencode": {"managed": True}},
         proj / ".agentic" / "logs",
     )
     assert "--standalone" not in captured["cmd"]
-    out = capsys.readouterr().out
-    assert "--standalone не поддерживается" in out
-    assert "1.19.4" in out
 
 
 def test_supervisor_argv_v2_has_flag(tmp_path, monkeypatch):

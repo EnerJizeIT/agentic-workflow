@@ -94,7 +94,7 @@ class _HungPopen:
 
 
 def _write_opencode_json(path: Path, providers: dict) -> Path:
-    path.write_text(json.dumps({"provider": providers}), encoding="utf-8")
+    path.write_text(json.dumps({"providers": providers}), encoding="utf-8")
     return path
 
 
@@ -104,7 +104,7 @@ def _write_opencode_json(path: Path, providers: dict) -> Path:
 class TestPreflight:
 
     MODEL_CMD = ["fake-opencode", "run", "--model", "prov/m", "--", "prompt"]
-    OC_PROV = {"prov": {"options": {"baseURL": "http://127.0.0.1:1/v1"}}}
+    OC_PROV = {"prov": {"settings": {"baseURL": "http://127.0.0.1:1/v1"}}}
 
     def test_dead_endpoint_not_spawned_until_up(
         self, tmp_path, monkeypatch
@@ -227,9 +227,10 @@ class TestPreflight:
 class TestModelEndpointUrl:
 
     def test_resolves_base_url(self, tmp_path):
+        """R4: preflight reads only ``providers.<p>.settings.baseURL``."""
         oc = _write_opencode_json(
             tmp_path / "opencode.json",
-            {"prov": {"options": {"baseURL": "http://127.0.0.1:1/v1"}}},
+            {"prov": {"settings": {"baseURL": "http://127.0.0.1:1/v1"}}},
         )
         assert (
             _net.model_endpoint_url("prov/m", oc) == "http://127.0.0.1:1/v1"
@@ -238,7 +239,7 @@ class TestModelEndpointUrl:
     def test_unknown_provider_none(self, tmp_path):
         oc = _write_opencode_json(
             tmp_path / "opencode.json",
-            {"prov": {"options": {"baseURL": "http://x/v1"}}},
+            {"prov": {"settings": {"baseURL": "http://x/v1"}}},
         )
         assert _net.model_endpoint_url("other/m", oc) is None
 
@@ -249,7 +250,7 @@ class TestModelEndpointUrl:
     def test_bare_model_none(self, tmp_path):
         oc = _write_opencode_json(
             tmp_path / "opencode.json",
-            {"prov": {"options": {"baseURL": "http://x/v1"}}},
+            {"prov": {"settings": {"baseURL": "http://x/v1"}}},
         )
         assert _net.model_endpoint_url("just-model", oc) is None
 
@@ -269,14 +270,22 @@ class TestModelEndpointUrl:
         }), encoding="utf-8")
         assert _net.model_endpoint_url("prov/m", oc) == "http://v2/v1"
 
-    def test_v1_wins_when_both_forms_exist(self, tmp_path):
-        """AC29: the v1 path is tried first."""
+    def test_v1_form_is_ignored(self, tmp_path):
+        """R4/AC15: the 1.x form is not read; the V2 form answers."""
         oc = tmp_path / "opencode.json"
         oc.write_text(json.dumps({
-            "provider": {"prov": {"options": {"baseURL": "http://v1/v1"}}},
+            "provider": {"prov": {"settings": {"baseURL": "http://v1/v1"}}},
             "providers": {"prov": {"settings": {"baseURL": "http://v2/v1"}}},
         }), encoding="utf-8")
-        assert _net.model_endpoint_url("prov/m", oc) == "http://v1/v1"
+        assert _net.model_endpoint_url("prov/m", oc) == "http://v2/v1"
+
+    def test_v1_form_alone_disables_preflight(self, tmp_path):
+        """R4/AC14: only the 1.x form → preflight off, file untouched."""
+        oc = tmp_path / "opencode.json"
+        oc.write_text(json.dumps({
+            "provider": {"prov": {"settings": {"baseURL": "http://v1/v1"}}},
+        }), encoding="utf-8")
+        assert _net.model_endpoint_url("prov/m", oc) is None
 
     def test_no_form_in_either_place_is_none(self, tmp_path):
         """AC30: preflight stays off, the config is not rewritten."""
@@ -511,7 +520,6 @@ class TestNetworkClassifier:
     @pytest.mark.parametrize("text", [
         "error: Cannot connect to API. Retrying in 5s...",
         "connect ECONNREFUSED 127.0.0.1:8000",
-        "TypeError: fetch failed",
         "socket hang up: Connection reset by peer",
         "connect ETIMEDOUT 10.0.0.5:443",
     ])
@@ -528,8 +536,12 @@ class TestNetworkClassifier:
         assert _net.is_network_failure(text) is False
 
     def test_marker_inside_long_tail(self):
-        tail = "x" * 100000 + "fetch failed"
+        tail = "x" * 100000 + "Unable to connect"
         assert _net.is_network_failure(tail) is True
+
+    def test_removed_v1_marker_does_not_classify(self):
+        """R7/AC25: "fetch failed" alone is not network any more."""
+        assert _net.is_network_failure("TypeError: fetch failed") is False
 
     @pytest.mark.parametrize("text", [
         # IMP1 probe of 2.2.3 on a dead endpoint (verbatim tail lines).

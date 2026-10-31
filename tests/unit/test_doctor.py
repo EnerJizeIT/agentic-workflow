@@ -53,7 +53,7 @@ def _write_config(root, config) -> None:
 def env(monkeypatch, tmp_path):
     """Hermetic surfaces: opencode.json, the process commit, the model check."""
     opencode = tmp_path / "opencode.json"
-    opencode.write_text(json.dumps({"provider": {}}), encoding="utf-8")
+    opencode.write_text(json.dumps({"providers": {}}), encoding="utf-8")
     monkeypatch.setattr("awf.doctor.xdg.opencode_config_file", lambda: opencode)
     monkeypatch.setattr("awf.versions.process_commit", lambda: "proc0000")
     monkeypatch.setattr(
@@ -62,7 +62,7 @@ def env(monkeypatch, tmp_path):
     return opencode
 
 
-def _versions(monkeypatch, *, process="2.3.0", plugin="2.3.0", metadata="2.3.0"):
+def _versions(monkeypatch, *, process="3.0.0", plugin="3.0.0", metadata="3.0.0"):
     monkeypatch.setattr("awf.versions.process_version", lambda: process)
     monkeypatch.setattr("awf.versions.plugin_version", lambda: plugin)
     monkeypatch.setattr("awf.versions.install_metadata", lambda name: metadata)
@@ -97,7 +97,7 @@ def test_runner_version_drift_is_a_warn(project, env, monkeypatch):
     runner_warns = [line for line in report.warnings if line.startswith("WARN  runner:")]
     assert len(runner_warns) == 1, _lines(report)
     assert "2.0.0" in runner_warns[0]
-    assert "2.3.0" in runner_warns[0]
+    assert "3.0.0" in runner_warns[0]
     assert str(runner) in runner_warns[0]
 
 
@@ -105,7 +105,7 @@ def test_same_version_different_code_is_a_warn(project, env, monkeypatch):
     """AUD-0293-2: equal versions do not identify code — commits do."""
     runner = project.parent / "runner"
     (runner / "awf").mkdir(parents=True)
-    (runner / "awf" / "__init__.py").write_text('__version__ = "2.3.0"\n')
+    (runner / "awf" / "__init__.py").write_text('__version__ = "3.0.0"\n')
     config = dict(CLEAN_CONFIG)
     config["automation"] = {"runner_dir": str(runner)}
     _write_config(project, config)
@@ -169,11 +169,11 @@ def test_config_without_dead_keys_has_no_key_warn(project, env, monkeypatch):
 
 def test_plugin_and_metadata_warnings_are_separate(project, env, monkeypatch):
     """AC23: plugin vs awf is one WARN, metadata vs module is another."""
-    monkeypatch.setattr("awf.versions.process_version", lambda: "2.3.0")
+    monkeypatch.setattr("awf.versions.process_version", lambda: "3.0.0")
     monkeypatch.setattr("awf.versions.plugin_version", lambda: "2.0.0")
     monkeypatch.setattr(
         "awf.versions.install_metadata",
-        lambda name: "1.6.0" if name == "agent-workflow-ui" else "2.3.0",
+        lambda name: "1.6.0" if name == "agent-workflow-ui" else "3.0.0",
     )
 
     report = run_doctor(project)
@@ -185,7 +185,7 @@ def test_plugin_and_metadata_warnings_are_separate(project, env, monkeypatch):
         if line.startswith("WARN  agent-workflow-ui metadata:")
     ]
     assert len(plugin_warn) == 1, _lines(report)
-    assert "2.0.0" in plugin_warn[0] and "2.3.0" in plugin_warn[0]
+    assert "2.0.0" in plugin_warn[0] and "3.0.0" in plugin_warn[0]
     assert len(meta_warn) == 1, _lines(report)
     assert "1.6.0" in meta_warn[0] and "2.0.0" in meta_warn[0]
     assert "stale, reinstall the package" in meta_warn[0]
@@ -349,7 +349,7 @@ def test_unreadable_pinned_runner_does_not_blame_the_plugin(project, env, monkey
         line for line in report.lines if line.startswith("WARN  plugin:")
     ]
     assert not plugin_warns, _lines(report)
-    assert any("plugin: 2.3.0" in line for line in report.lines), _lines(report)
+    assert any("plugin: 3.0.0" in line for line in report.lines), _lines(report)
 
 
 def test_plugin_drift_ignores_an_unknown_runner():
@@ -394,3 +394,79 @@ def test_invalid_runner_dir_is_a_warn_not_not_pinned(project, env, monkeypatch, 
     assert "automation.runner_dir" in runner_warns[0]
     assert "launch will refuse" in runner_warns[0]
     assert "not pinned" not in _lines(report)
+
+
+def test_roles_without_agent_name_are_one_ok_line(project, env, monkeypatch):
+    """A13: the default-agent roles are named once, as information."""
+    _versions(monkeypatch)
+    config = json.loads(json.dumps(CLEAN_CONFIG))
+    config["models"]["supervisor"] = {"model": "p/two"}
+    _write_config(project, config)
+
+    report = run_doctor(project)
+    lines = [line for line in report.lines if line.startswith("ok  agents:")]
+    assert len(lines) == 1, _lines(report)
+    assert "supervisor" in lines[0]
+    assert "worker" not in lines[0]
+    assert report.warnings == []
+
+
+def test_all_roles_named_no_agents_line(project, env, monkeypatch):
+    """A13: no noise when every role names its agent."""
+    _versions(monkeypatch)
+    report = run_doctor(project)
+    assert not [line for line in report.lines if "agents:" in line], _lines(report)
+
+
+def test_models_wrong_shape_does_not_crash_agents_line(project, env, monkeypatch):
+    """A13 review: ``models: []`` is wrong shape, not a traceback (INV7)."""
+    _versions(monkeypatch)
+    config = json.loads(json.dumps(CLEAN_CONFIG))
+    config["models"] = []
+    _write_config(project, config)
+
+    report = run_doctor(project)
+    assert "agents:" not in _lines(report)
+
+
+def test_unusable_agent_name_is_named_not_silent(project, env, monkeypatch):
+    """A13: doctor and argv share one predicate.
+
+    ``agent_name: 123`` cannot become an argv flag (``argv_agent_flag``
+    requires a string), so the role really runs on the default agent — the
+    doctor must name it instead of staying silent.
+    """
+    _versions(monkeypatch)
+    config = json.loads(json.dumps(CLEAN_CONFIG))
+    config["models"]["supervisor"] = {"agent_name": 123}
+    _write_config(project, config)
+
+    report = run_doctor(project)
+    lines = [line for line in report.lines if line.startswith("ok  agents:")]
+    assert len(lines) == 1, _lines(report)
+    assert "supervisor" in lines[0]
+    assert "worker" not in lines[0]
+
+
+def test_non_string_role_key_does_not_crash_the_agents_line(project, env, monkeypatch):
+    """INV7: a numeric YAML role key is malformed, never a traceback."""
+    _versions(monkeypatch)
+    config = json.loads(json.dumps(CLEAN_CONFIG))
+    config["models"][123] = {}
+    _write_config(project, config)
+
+    report = run_doctor(project)
+    lines = [line for line in report.lines if line.startswith("ok  agents:")]
+    assert len(lines) == 1, _lines(report)
+    assert "123" in lines[0]
+
+def test_missing_models_block_names_the_default_agent(project, env, monkeypatch):
+    """A13/CTX3: no ``models`` block still tells the operator what runs."""
+    _versions(monkeypatch)
+    _write_config(project, {"project": {"name": "NoModels"}})
+
+    report = run_doctor(project)
+    assert any(
+        line.startswith("ok  agents:") and "default agent" in line
+        for line in report.lines
+    ), _lines(report)

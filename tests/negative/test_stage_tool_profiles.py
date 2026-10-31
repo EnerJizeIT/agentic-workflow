@@ -4,19 +4,22 @@
 неизвестный ключ — поручение не могло сузить набор tools: аналитик
 получал edit/write, а сузить набор поручением было нельзя.
 
-Механизм (без нового, тот же что M2.2): permission-ключи в
-``OPENCODE_CONFIG_CONTENT``. Профиль мержится поверх базовых правил
-(host-конфиг + awf-оверрайд + readonly_roles); управляющие tools
-M2.2 для execute — locked deny: deny сильнее allow, базовые
-управляющие запреты профилем не отменяются (allow управляющего
+Механизм (без нового, тот же что M2.2): правила в
+``OPENCODE_CONFIG_CONTENT``. В 2.x ``permissions`` — упорядоченный список
+``{action, resource, effect}``, побеждает последнее совпадение: профиль
+мержится поверх базовых правил (host-конфиг + awf-оверрайд +
+readonly_roles), управляющие tools M2.2 для execute — locked deny:
+базовые управляющие запреты профилем не отменяются (allow управляющего
 tool не снимает M2.2).
 
-Реестр известных ключей (единый, как схема M3.1): встроенные
-``bash``/``edit``/``write``/``webfetch`` + MCP-tools вида
-``<server>_<tool>``. Неизвестный ключ — ошибка загрузки пайплайна.
+Реестр известных ключей (единый, как схема M3.1): 2.x-действия
+``shell``/``edit``/``webfetch``/``subagent``, старые имена
+``bash``/``write`` принимаются и сворачиваются в 2.x-действие, плюс
+MCP-tools вида ``<server>_<tool>``. Неизвестный ключ — ошибка загрузки
+пайплайна.
 
 Профиль сужает случайные возможности стадии — не граница
-безопасности (bash остаётся, если профиль его явно не запретил).
+безопасности (shell остаётся, если профиль его явно не запретил).
 
 Покрывают:
 - test_stage_tools_profile_narrows_to_allowed — профиль сужает
@@ -54,7 +57,9 @@ from awf.pipeline import load_stages, pipeline_snapshot_text
 MCP = "agent-workflow-ui"
 
 # Execute-стадия с профилем: набор сужается до allow-списка
-# (bash/webfetch остаются), edit/write запрещены.
+# (shell/webfetch остаются), edit запрещён. Имена 1.x (bash/write)
+# приняты и свернуты в 2.x-действия — back-compat пользовательских
+# пайплайнов.
 PROFILE_YAML = (
     "stages:\n"
     "  - name: plan\n    role: supervisor\n"
@@ -103,6 +108,25 @@ def _config(env: dict) -> dict:
     return json.loads(env["OPENCODE_CONFIG_CONTENT"])
 
 
+def _effect_by_action(rules: list[dict]) -> dict[str, str]:
+    """Resolve the ordered 2.x rules into action→effect (last match wins)."""
+    resolved: dict[str, str] = {}
+    for rule in rules:
+        if rule.get("resource") == "*":
+            resolved[str(rule.get("action"))] = str(rule.get("effect"))
+    return resolved
+
+
+def _agent_denies(config: dict, agent: str) -> dict[str, str]:
+    """The agent's rule list as action→effect (last match wins)."""
+    rules = config.get("agents", {}).get(agent, {}).get("permissions", [])
+    return {
+        str(rule.get("action")): str(rule.get("effect"))
+        for rule in rules
+        if rule.get("resource") == "*"
+    }
+
+
 def _stage_with_tools(tools_yaml: str) -> str:
     return (
         "stages:\n"
@@ -135,14 +159,13 @@ def test_stage_tools_profile_narrows_to_allowed(tmp_path, monkeypatch):
         restrict_control_tools=True,
         tools_profile=stages[1].tools,
     )
-    perm = _config(env)["permission"]
-    # сужение: ровно allow-список жив, edit/write — deny
-    assert perm["bash"] == "allow"
+    perm = _effect_by_action(_config(env)["permissions"])
+    # сужение: ровно allow-список жив, edit — deny (1.x ``write`` → ``edit``)
+    assert perm["shell"] == "allow"
     assert perm["webfetch"] == "allow"
     assert perm["edit"] == "deny"
-    assert perm["write"] == "deny"
     # M2.2 цел: управляющие tools запрещены в agent-блоке
-    agent_perm = _config(env)["agent"]["worker"]["permission"]
+    agent_perm = _agent_denies(_config(env), "worker")
     for tool in ("awf_approve", "awf_kill"):
         assert agent_perm[f"{MCP}_{tool}"] == "deny"
 
@@ -201,8 +224,8 @@ def test_profile_cannot_reenable_control_tools(tmp_path, monkeypatch):
         restrict_control_tools=True,
         tools_profile=stages[1].tools,
     )
-    assert _config(env)["permission"][f"{MCP}_awf_approve"] == "deny"
-    agent_perm = _config(env)["agent"]["worker"]["permission"]
+    assert _effect_by_action(_config(env)["permissions"])[f"{MCP}_awf_approve"] == "deny"
+    agent_perm = _agent_denies(_config(env), "worker")
     assert agent_perm[f"{MCP}_awf_approve"] == "deny"
 
 
@@ -214,12 +237,12 @@ def test_profile_deny_beats_allow(tmp_path, monkeypatch):
         project_dir=proj,
         tools_profile={"allow": ["webfetch"], "deny": ["webfetch"]},
     )
-    assert _config(env)["permission"]["webfetch"] == "deny"
+    assert _effect_by_action(_config(env)["permissions"])["webfetch"] == "deny"
 
 
 def test_readonly_profile_cannot_reenable_edit(tmp_path, monkeypatch):
-    """ORCH M7.2: readonly edit/write (V-04) — базовый запрет,
-    профиль его не отменяет; bash остаётся."""
+    """ORCH M7.2: readonly edit (V-04) — базовый запрет,
+    профиль его не отменяет; shell остаётся."""
     cfg = (
         "project:\n  name: test\n"
         "automation:\n  readonly_roles: [analyst]\n"
@@ -230,10 +253,9 @@ def test_readonly_profile_cannot_reenable_edit(tmp_path, monkeypatch):
         project_dir=proj,
         tools_profile={"allow": ["edit", "write"]},
     )
-    perm = _config(env)["permission"]
+    perm = _effect_by_action(_config(env)["permissions"])
     assert perm["edit"] == "deny"
-    assert perm["write"] == "deny"
-    assert perm["bash"] == "allow"
+    assert perm["shell"] == "allow"
 
 
 # ── Back-compat и применение по объявлению ─────────────────────────────────
@@ -260,10 +282,8 @@ def test_no_tools_profile_unchanged(tmp_path, monkeypatch):
         restrict_control_tools=True,
         tools_profile={},
     )
-    perm = _config(env_exec)["permission"]
-    assert (perm["bash"], perm["edit"], perm["write"]) == (
-        "allow", "allow", "allow",
-    )
+    perm = _effect_by_action(_config(env_exec)["permissions"])
+    assert (perm["shell"], perm["edit"]) == ("allow", "allow")
 
 
 def test_profile_applies_to_plan_stage(tmp_path, monkeypatch):
@@ -287,9 +307,10 @@ def test_profile_applies_to_plan_stage(tmp_path, monkeypatch):
         tools_profile=stages[0].tools,
     )
     config = _config(env)
-    assert config["permission"]["webfetch"] == "deny"
-    assert config["permission"]["bash"] == "allow"
-    assert "agent" not in config
+    perm = _effect_by_action(config["permissions"])
+    assert perm["webfetch"] == "deny"
+    assert perm["shell"] == "allow"
+    assert "agents" not in config
 
 
 # ── Один ruleset: снапшот и write-путь ─────────────────────────────────────

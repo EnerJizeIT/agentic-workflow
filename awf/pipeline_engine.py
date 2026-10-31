@@ -41,7 +41,9 @@ from .signals import (
     expected_signal_prefixes,
     find_signal_file,
     read_signal_for_todo,
+    short_id,
     signal_type,
+    stage_signal_paths,
     wait_for_signal,
 )
 from .supervisor import run_supervisor_stage as _run_supervisor_stage
@@ -49,6 +51,159 @@ from .transitions import resolve_transition
 from .verify_pack import verify_pack as _verify_pack_fn
 
 # ─── shared helpers ─────────────────────────────────────────────────────
+
+
+def _log_safe_name(name: str) -> str:
+    """A12/CTX1: make an outbox file name writable to a UTF-8 stage log.
+
+    ``Path.iterdir`` hands back undecodable bytes as lone surrogates; the log
+    opens its file with ``encoding="utf-8"`` and catches only ``OSError``,
+    so a raw surrogate raises ``UnicodeEncodeError`` and ends the stage
+    instead of salvaging it. Diagnostics lose the exact byte, never the run.
+    """
+    return name.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+
+
+_UNIT_FILE_PREFIXES = (
+    "DONE",
+    "BLOCKED",
+    "REVIEW-",
+    "PROGRESS",
+    "TEST-RESULTS",
+    # CTX3 (audit round 3): BUDGET-<id>.{md,json} are this unit's artifacts
+    # too — the list is hand-kept, so it is verified against the outbox->done
+    # moves in todos.py before adding.
+    "BUDGET",
+)
+# QA-4: без границы "DONEFOO-…" читается как префикс "DONE" — сверяем имя
+# префикса и отдельный разделитель после него.
+_UNIT_FILE_STEMS = tuple(prefix.rstrip("-") for prefix in _UNIT_FILE_PREFIXES)
+
+
+def _unit_file_names(outbox: Path, todo_id: str) -> list[str]:
+    """A12: outbox file names belonging to this unit — diagnostics only.
+
+    Names, never contents: the stage log must show what the worker actually
+    wrote next to the missing DONE-<todo>.ready signal. A file belongs to the
+    unit when its name starts with a known report prefix and carries the full
+    id (``DONE-TODO-0001.md``) or the legacy short id as a whole
+    dash/dot-delimited segment (``DONE-0001.md``); a bare substring would
+    also catch unrelated run-report timestamps (CTX5: ``RUN-0001.md``).
+    """
+    short = short_id(todo_id)
+    try:
+        names = sorted(p.name for p in outbox.iterdir() if p.is_file())
+    except OSError:
+        return []
+    unit: list[str] = []
+    for name in names:
+        if not any(
+            name.startswith(stem) and name[len(stem):len(stem) + 1] in ("-", ".")
+            for stem in _UNIT_FILE_STEMS
+        ):
+            continue
+        # QA1: match on a dash/dot boundary, never on a bare substring —
+        # TODO-00011 and TODO-00010 must not answer as TODO-0001.
+        padded = f"-{name.replace('.', '-')}-"
+        if f"-{todo_id}-" in padded or f"-{short}-" in padded:
+            unit.append(_log_safe_name(name))
+    return unit
+
+
+def _format_unit_files(outbox: Path, todo_id: str, limit: int = 10) -> str:
+    """A12/CTX10: render the unit's outbox names, marking truncation.
+
+    Silent truncation at ten files reads as "that is all there is"; the
+    count of the remainder says otherwise, same as ``render_done_json``.
+    """
+    names = _unit_file_names(outbox, todo_id)
+    shown = names[:limit]
+    text = ", ".join(shown) if shown else "(none)"
+    if len(names) > limit:
+        text += f" … +{len(names) - limit}"
+    return text
+
+
+def _expected_signals_note(
+    prefixes: list[str] | tuple[str, ...], todo_id: str
+) -> str:
+    """A12/CTX7: name every signal prefix the engine actually accepts.
+
+    The retry text used to promise only ``DONE-<todo>.ready``, while
+    ``read_signal_for_todo`` also takes BLOCKED and both REVIEW verdicts —
+    a worker who emitted one of those was sent looking for the wrong file.
+    """
+    if not prefixes:
+        # A stage kind that emits no worker signal must not be told to
+        # write one — a promise the engine will never read.
+        return f"no worker signal is expected from this stage kind ({todo_id})"
+    names = ", ".join(f"{prefix}-{todo_id}.ready" for prefix in prefixes)
+    return f"expected signal is one of {names}"
+
+
+def _rejected_ready_note(
+    outbox: Path, todo_id: str, prefixes: list[str] | tuple[str, ...]
+) -> str:
+    """A12/QA3: a ``.ready`` next to an unusable report is refused, not missing.
+
+    ``read_signal_for_todo`` accepts a ``.ready`` only when the companion
+    ``.md`` is absent or has content, so one real case reads as "no signal":
+    the marker is there, the report is blank or unreadable. The stage log
+    must not call that file missing — it names the state of the companion
+    instead, or the operator goes looking for a file they already have.
+    A marker with NO companion is a valid signal, so it produces no note.
+
+    The marker set comes from ``stage_signal_paths`` (BD-21 typos included)
+    and the companion name from the same stem rule ``read_signal_for_todo``
+    uses — a local loop over prefixes and ids would be a second enumeration
+    of the signal surface, free to drift from the reader.
+    """
+    for marker in stage_signal_paths(outbox, todo_id, *prefixes):
+        if not marker.is_file():
+            continue
+        stem = marker.stem
+        base = stem.rsplit(".md", 1)[0] if stem.endswith(".md") else stem
+        companion = outbox / f"{base}.md"
+        if not companion.exists():
+            # A12/QA5: no companion at all is a VALID signal — that is
+            # exactly what read_signal_for_todo accepts, so this marker
+            # cannot be the reason the signal was missed and the note must
+            # not call the report "unreadable".
+            continue
+        try:
+            body = companion.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            # AUD01-04 reads the same file the same way: unreadable
+            # counts as empty, so the note says unreadable.
+            state = "unreadable"
+        else:
+            if body.strip():
+                # The companion is fine, so the signal was refused for
+                # another reason — claim nothing here.
+                return ""
+            state = "empty"
+        return (
+            f"; {marker.name} is present but its companion "
+            f"{companion.name} is {state} — an {state} report is "
+            "not a signal"
+        )
+    return ""
+
+
+def _signal_gap_note(
+    outbox: Path, todo_id: str, prefixes: list[str] | tuple[str, ...]
+) -> str:
+    """A12: the one text for "no signal" — what was expected, what is there.
+
+    Two surfaces report the same event (a silent exit with work, and the
+    salvage path after the retry budget). Composing the note in one place
+    keeps them from drifting apart.
+    """
+    return (
+        f"{_expected_signals_note(prefixes, todo_id)} — outbox files for "
+        f"this unit: {_format_unit_files(outbox, todo_id)}"
+        f"{_rejected_ready_note(outbox, todo_id, prefixes)}"
+    )
 
 
 def _find_stage_index(stages: list[Stage], name: str) -> int:
@@ -1171,15 +1326,41 @@ def execute_supervisor_stage(
     if s_kind == "verify" and current_todo:
         _maybe_run_verify_pack(current_todo, project_dir, config, logs_dir)
 
-    try:
-        sup_signal = _run_supervisor_stage(
-            stage, current_todo, auto, project_dir, logs_dir, pipeline_name
+    # A12c (incident 31.10): a pinned, already-dispatched unit needs no
+    # supervisor authoring. The plan stage used to spawn the supervisor
+    # subprocess anyway; on the default agent it renumbered the unit
+    # (TODO-0314 → TODO-0315) and moved the original file, leaving the
+    # engine with "File not found" mid-run. The contract IS the TODO, so
+    # the stage only has to keep the unit and pass the checkpoint.
+    pinned_plan = (
+        s_kind == "plan"
+        and auto
+        and bool(current_todo)
+        and (paths.inbox(project_dir) / f"{current_todo}.md").is_file()
+    )
+    if pinned_plan:
+        print(
+            f"Plan stage: {current_todo} is already dispatched — "
+            "supervisor subprocess skipped (the contract is the TODO)."
         )
-    except (RuntimeError, TimeoutError) as e:
-        print(f"ERROR: supervisor stage '{s_name}' crashed. Pipeline stopped.", file=sys.stderr)
-        print(f"  Details: {e}", file=sys.stderr)
-        _log(logs_dir, f"Pipeline stopped at stage {s_name}: {e}")
-        return current_todo, 0, 1
+        _log(
+            logs_dir,
+            f"plan: pinned unit {current_todo} — supervisor subprocess skipped",
+        )
+        sup_signal = ""
+    else:
+        try:
+            sup_signal = _run_supervisor_stage(
+                stage, current_todo, auto, project_dir, logs_dir, pipeline_name
+            )
+        except (RuntimeError, TimeoutError) as e:
+            print(
+                f"ERROR: supervisor stage '{s_name}' crashed. Pipeline stopped.",
+                file=sys.stderr,
+            )
+            print(f"  Details: {e}", file=sys.stderr)
+            _log(logs_dir, f"Pipeline stopped at stage {s_name}: {e}")
+            return current_todo, 0, 1
 
     if s_kind == "plan":
         # FU-05: single-phase plan — the contract is the TODO itself. The
@@ -2425,14 +2606,19 @@ def execute_agent_stage(
                 if signal:
                     break
                 sw_retries += 1
+                gap_note = _signal_gap_note(outbox, current_todo, prefixes)
                 print(
                     f"Worker exited with work in the tree but no signal — "
                     f"continue-push retry ({sw_retries}/{SILENT_WORK_LIMIT})...",
                     file=sys.stderr,
                 )
+                # CTX4 (audit round 3): the operator reads awf-start.out (this
+                # stream), not orchestrator.log — the reason must be HERE.
+                print(f"  {gap_note}", file=sys.stderr)
                 _log(logs_dir, f"TODO-0196: silent exit WITH work — continue-push "
                     f"retry {sw_retries}/{SILENT_WORK_LIMIT} for {s_name} "
-                    f"(elapsed={agent_elapsed:.0f}s, diff in tree, no signal)")
+                    f"(elapsed={agent_elapsed:.0f}s, diff in tree, no signal); "
+                    f"{gap_note}")
                 _ws(project_dir, sw_retry_count=sw_retries, sw_retry_key=net_key,
                     logs_dir=logs_dir)
                 pending_note = _silent_work_retry_note(
@@ -2510,7 +2696,11 @@ def execute_agent_stage(
         import time as _time
         salvage_detect = _time.monotonic()
         print(f"WARNING: No signal after agent stage '{s_name}'.", file=sys.stderr)
-        _log(logs_dir, f"No signal after {s_name} — salvage path")
+        # A12 (BD-31): the retry budget is spent, but the question is the
+        # same one the retry line answers — name the signal the engine
+        # waits for and the files the worker actually left behind.
+        _log(logs_dir, f"No signal after {s_name} — salvage path; "
+            f"{_signal_gap_note(outbox, current_todo, prefixes)}")
 
         # Dogfood-11: count consecutive silent exits for this stage. A repeat
         # salvage means retrying the same scope won't help — the SALVAGE note

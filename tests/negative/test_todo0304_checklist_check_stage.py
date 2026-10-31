@@ -267,7 +267,7 @@ def test_close_entry_records_the_fact_before_the_spawn(tmp_path, monkeypatch):
 def _session_db(path: Path) -> Path:
     con = sqlite3.connect(path)
     con.execute(
-        "CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT NOT NULL, "
+        "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, title TEXT NOT NULL, "
         "directory TEXT NOT NULL DEFAULT '', time_created INTEGER, "
         "time_updated INTEGER)"
     )
@@ -283,7 +283,7 @@ def test_qa_role_session_is_reusable_for_the_check(tmp_path, monkeypatch):
     now_ms = int(time.time() * 1000)
     con = sqlite3.connect(db)
     con.execute(
-        "INSERT INTO session VALUES (?,?,?,?,?)",
+        "INSERT INTO session_v2 VALUES (?,?,?,?,?)",
         ("s-qa", "awf-agent-qa-review-agent-qa-review-TODO-0001-a1", "/p",
          now_ms, now_ms),
     )

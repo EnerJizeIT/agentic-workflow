@@ -31,7 +31,7 @@ _SCHEMA = (
 )
 
 
-def _make_db(path, table="session"):
+def _make_db(path, table="session_v2"):
     con = sqlite3.connect(path)
     con.execute(_SCHEMA.format(table=table))
     con.commit()
@@ -39,7 +39,7 @@ def _make_db(path, table="session"):
     return path
 
 
-def _insert(db, sid, title, tc, *, directory=HOME_DIR, tu=None, table="session"):
+def _insert(db, sid, title, tc, *, directory=HOME_DIR, tu=None, table="session_v2"):
     con = sqlite3.connect(db)
     con.execute(
         f"INSERT INTO {table} VALUES (?,?,?,?,?)", (sid, title, directory, tc, tu)
@@ -171,8 +171,8 @@ def test_off_keeps_old_title_and_writes_no_file(tmp_path, monkeypatch):
 
 
 # T14 ----------------------------------------------------------------------
-@pytest.mark.parametrize("table", ["session", "session_v2"])
-def test_capture_by_title_and_time_window(tmp_path, table):
+def test_capture_by_title_and_time_window(tmp_path):
+    table = "session_v2"
     db = _make_db(tmp_path / "opencode.db", table)
     proj = tmp_path / "proj"
     proj.mkdir()
@@ -247,6 +247,62 @@ def test_foreign_schema_writes_no_file(tmp_path, monkeypatch):
 
     assert not session_store.session_file(proj, TODO, STAGE).exists()
     assert "session capture: " in _log_text(proj)
+
+
+def test_v1_base_writes_no_id_and_raises_nothing(tmp_path, monkeypatch):
+    """K4/AC10: a v1 base is not read — the capture silently writes no id."""
+    proj = _project(tmp_path)
+    db = tmp_path / "v1.db"
+    con = sqlite3.connect(db)
+    con.executescript(
+        "CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT NOT NULL,"
+        " directory TEXT NOT NULL DEFAULT '', time_created INTEGER,"
+        " time_updated INTEGER);"
+        "CREATE TABLE part (id TEXT PRIMARY KEY, session_id TEXT, data TEXT);"
+    )
+    con.execute(
+        "INSERT INTO session VALUES ('v1-1', ?, ?, ?, ?)",
+        (f"awf-{ROLE}-{STAGE}-{TODO}-a1", HOME_DIR,
+         int(time.time() * 1000), int(time.time() * 1000)),
+    )
+    con.commit()
+    con.close()
+    monkeypatch.setattr(session_store, "db_path", lambda: db)
+
+    assert session_store.capture_after_spawn(
+        proj, todo_id=TODO, stage=STAGE,
+        title=f"awf-{ROLE}-{STAGE}-{TODO}-a1", agent=ROLE, model="",
+        attempt=1, spawn_started_ms=int(time.time() * 1000),
+    ) is None
+    assert not session_store.session_file(proj, TODO, STAGE).exists()
+
+
+def test_mixed_base_captures_from_v2(tmp_path, monkeypatch):
+    """K4/AC11: on a mixed base the capture takes the ``session_v2`` row."""
+    proj = _project(tmp_path)
+    db = _make_db(tmp_path / "mixed.db")
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT NOT NULL,"
+        " directory TEXT NOT NULL DEFAULT '', time_created INTEGER,"
+        " time_updated INTEGER)"
+    )
+    now = int(time.time() * 1000)
+    title = f"awf-{ROLE}-{STAGE}-{TODO}-a1"
+    con.execute(
+        "INSERT INTO session (id, title, directory, time_created, time_updated)"
+        " VALUES ('v1-1', ?, ?, ?, ?)",
+        (title, HOME_DIR, now, now),
+    )
+    con.commit()
+    con.close()
+    _insert(db, "v2-1", title, now)
+    monkeypatch.setattr(session_store, "db_path", lambda: db)
+
+    assert session_store.capture_after_spawn(
+        proj, todo_id=TODO, stage=STAGE, title=title, agent=ROLE, model="",
+        attempt=1, spawn_started_ms=now,
+    ) == "v2-1"
 
 
 def test_slow_base_respects_one_second_budget(tmp_path, monkeypatch):
@@ -460,7 +516,8 @@ def test_reused_argv_keeps_flags_and_files(tmp_path, monkeypatch):
     _run(proj, monkeypatch, db, cfg, attempt=1)
     second = seen[1]
 
-    assert "--agent" in second and second[second.index("--agent") + 1] == ROLE
+    # A13: the config names no agent for this role — no --agent, default agent.
+    assert "--agent" not in second
     assert second[second.index("--model") + 1] == "test/model"
     first_files = [second[i + 1] for i, tok in enumerate(second) if tok == "--file"]
     for value in (first[i + 1] for i, tok in enumerate(first) if tok == "--file"):
@@ -662,10 +719,10 @@ def test_unreadable_base_does_not_retire_the_pair(tmp_path, monkeypatch):
 
 
 # TODO-0309 (1): the capture must be proven on a COPY of the live opencode
-# schema — the 5-column fake hid the real table's NOT NULL columns and
+# 2.x schema — the 5-column fake hid the real table's NOT NULL columns and
 # defaults. A debug of the live base starts with this shape, not the fake.
 _LIVE_SESSION_SCHEMA = """
-CREATE TABLE `session` (
+CREATE TABLE `session_v2` (
   `id` text PRIMARY KEY,
   `project_id` text NOT NULL,
   `workspace_id` text,
@@ -695,13 +752,22 @@ CREATE TABLE `session` (
   `time_updated` integer NOT NULL,
   `time_compacting` integer,
   `time_archived` integer
+);
+CREATE TABLE `session_message` (
+  `id` text PRIMARY KEY,
+  `session_id` text NOT NULL,
+  `type` text,
+  `seq` integer,
+  `time_created` integer NOT NULL,
+  `time_updated` integer NOT NULL,
+  `data` text NOT NULL
 )
 """
 
 
 def _make_live_schema_db(path):
     con = sqlite3.connect(path)
-    con.execute(_LIVE_SESSION_SCHEMA)
+    con.executescript(_LIVE_SESSION_SCHEMA)
     con.commit()
     con.close()
     return path
@@ -710,10 +776,10 @@ def _make_live_schema_db(path):
 def _insert_live(db, sid, title, tc, *, directory=HOME_DIR):
     con = sqlite3.connect(db)
     con.execute(
-        "INSERT INTO session (id, project_id, slug, directory, title, version, "
+        "INSERT INTO session_v2 (id, project_id, slug, directory, title, version, "
         "agent, model, time_created, time_updated) "
         "VALUES (?,?,?,?,?,?,?,?,?,?)",
-        (sid, "prj_1", "slug-1", directory, title, "1.19.4", "worker",
+        (sid, "prj_1", "slug-1", directory, title, "2.2.3", "worker",
          '{"id":"m","providerID":"p"}', tc, tc),
     )
     con.commit()

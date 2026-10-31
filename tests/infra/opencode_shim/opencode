@@ -61,7 +61,7 @@ set -euo pipefail
 # with the version the test asked for; touch no signals and no invocation
 # trace (a probe is not a stage call).
 if [[ "${1:-}" == "--version" ]]; then
-    echo "${AWF_SHIM_VERSION:-${AWF_TEST_OPENCODE_VERSION:-1.19.4}}"
+    echo "${AWF_SHIM_VERSION:-${AWF_TEST_OPENCODE_VERSION:-2.2.3}}"
     exit 0
 fi
 

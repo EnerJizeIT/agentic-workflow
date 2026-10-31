@@ -69,10 +69,10 @@ def _is_readonly_role(role: str, project_dir: str | Path | None) -> bool:
 
 # ORCH M2.2 (V-03, audit 2026-09-27): MCP tools that control the run's
 # verdicts and state. Execute-stage workers get them hidden from their
-# tool list (agent-scoped permission deny, see :func:`awf_subprocess_env`)
+# tool list (agent-scoped deny rules, see :func:`awf_subprocess_env`)
 # so they cannot accidentally approve/kill/rollback/dispatch. This reduces
 # accidental errors — it is NOT a security boundary (the worker keeps
-# ``bash``). Strict isolation is a separate effort (ORCH plan).
+# ``shell``). Strict isolation is a separate effort (ORCH plan).
 MCP_CONTROL_SERVER = "agent-workflow-ui"
 
 CONTROL_TOOLS: tuple[str, ...] = (
@@ -186,11 +186,11 @@ def configured_mcp_servers(
     Project entries override global ones per server name (opencode's own
     precedence). An unreadable/invalid project config is a warning, never
     a silent skip and never a crash: the spawn must go on.
+
+    Only the 2.x form is read: ``mcp.servers``. A 1.x ``mcp.<name>`` block
+    is not normalized (R5, D3) — such a file is a manual conversion (R11).
     """
-    servers: dict = {}
-    global_mcp = user_config.get("mcp")
-    if isinstance(global_mcp, dict):
-        servers.update(global_mcp)
+    servers: dict = _mcp_servers_of(user_config)
     if project_dir is None:
         return servers
     base = Path(project_dir)
@@ -212,10 +212,18 @@ def configured_mcp_servers(
                 stacklevel=2,
             )
             continue
-        project_mcp = data.get("mcp")
-        if isinstance(project_mcp, dict):
-            servers.update(project_mcp)
+        servers.update(_mcp_servers_of(data))
     return servers
+
+
+def _mcp_servers_of(document: dict) -> dict:
+    """``mcp.servers`` of a 2.x opencode config (empty when absent)."""
+    mcp = document.get("mcp")
+    if not isinstance(mcp, dict):
+        return {}
+    servers = mcp.get("servers")
+    return dict(servers) if isinstance(servers, dict) else {}
+
 
 
 def worker_mcp_servers(project_dir: str | Path | None) -> list[str]:
@@ -243,55 +251,115 @@ def worker_mcp_servers(project_dir: str | Path | None) -> list[str]:
 
 
 # ORCH M7.2 (29.09): tools-profile registry — the permission keys a stage
-# ``tools: {allow/deny}`` profile may name. The builtin tools opencode
-# gates by name, plus MCP tools as ``<server>_<tool>`` (the same
-# mechanism M2.2 uses: permission keys glob-match tool names). Single
-# source of truth — the loader (awf/pipeline.py) validates against it,
-# so an unknown key is a pipeline load error, not a silent no-op.
-BUILTIN_TOOLS: tuple[str, ...] = ("bash", "edit", "write", "webfetch")
+# ``tools: {allow/deny}`` profile may name. In opencode 2.x the builtin
+# actions are ``shell``/``edit``/``webfetch``/``subagent``; the 1.x names
+# (``bash``, ``write``, ``task``) stay accepted in user pipelines and are
+# mapped onto the 2.x action when the rule is assembled (architecture D2).
+# MCP tools are named ``<server>_<tool>``. Single source of truth — the
+# loader (awf/pipeline.py) validates against it, so an unknown key is a
+# pipeline load error, not a silent no-op.
+BUILTIN_TOOLS: tuple[str, ...] = ("shell", "edit", "webfetch", "subagent")
+
+#: 1.x action name → 2.x action name (architecture D2, R5).
+TOOL_ACTION_ALIASES: dict[str, str] = {
+    "bash": "shell",
+    "write": "edit",
+    "edit": "edit",
+    "task": "subagent",
+}
+
+#: Every rule covers all resources unless it says otherwise.
+DEFAULT_RESOURCE = "*"
 
 _MCP_KEY_RE = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9_-]*_[A-Za-z0-9][A-Za-z0-9_-]*\Z"
 )
 
 
+def tool_action(key: str) -> str:
+    """The 2.x action name for a permission key (``bash`` → ``shell``)."""
+    return TOOL_ACTION_ALIASES.get(key, key)
+
+
 def is_known_permission_key(key: str) -> bool:
     """ORCH M7.2: True when *key* is in the tools-profile registry."""
-    if key in BUILTIN_TOOLS:
+    if tool_action(key) in BUILTIN_TOOLS:
         return True
     return _MCP_KEY_RE.fullmatch(key) is not None
 
 
+def permission_rule(action: str, effect: str, resource: str = DEFAULT_RESOURCE) -> dict:
+    """One 2.x rule: ``{"action", "resource", "effect"}`` (architecture D2)."""
+    return {"action": tool_action(action), "resource": resource, "effect": effect}
+
+
+def host_permission_rules(user_config: dict) -> list[dict]:
+    """The 2.x ``permissions`` list of the host config, kept in its order.
+
+    Only the 2.x form is read: a 1.x ``permission`` mapping is not
+    normalized into rules (R5, D3) — the file is the owner's to convert
+    (R11), and ``awf doctor`` names it. Malformed entries are dropped
+    rather than crashing the spawn.
+    """
+    raw = user_config.get("permissions")
+    if not isinstance(raw, list):
+        return []
+    rules: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        action = item.get("action")
+        effect = item.get("effect")
+        if not isinstance(action, str) or not action:
+            continue
+        if effect not in ("allow", "deny", "ask"):
+            continue
+        rules.append(
+            permission_rule(action, str(effect), str(item.get("resource", DEFAULT_RESOURCE)))
+        )
+    return rules
+
+
 def merge_tool_profile(
-    base_permissions: dict[str, str],
+    base_permissions: list[dict],
     tools_profile: dict[str, list[str]] | None,
     locked_deny: tuple[str, ...] = (),
-) -> dict[str, str]:
-    """ORCH M7.2: merge a stage tools-profile onto base permissions.
+) -> list[dict]:
+    """ORCH M7.2: merge a stage tools-profile onto the base rules.
 
-    Rules (M7.2 contract):
-    - the profile adds ``allow``/``deny`` entries on top of the base
-      (host config + awf overrides + readonly_roles);
-    - deny beats allow — a key listed in both ends up denied;
-    - ``locked_deny`` stays denied no matter what the profile says —
-      the base control prohibitions (M2.2 control tools on execute
-      stages, edit/write for a readonly role) cannot be lifted by a
-      profile.
+    Rules (M7.2 contract, re-expressed for the 2.x list form — the last
+    matching rule wins, so the ORDER is the contract):
+    - the base rules (host config + awf overrides) come first;
+    - the profile's ``allow`` rules follow, then its ``deny`` rules — a key
+      listed in both therefore ends up denied;
+    - ``locked_deny`` goes LAST: the base control prohibitions (M2.2
+      control tools on execute stages, edit for a readonly role) cannot be
+      lifted by a profile or by a host rule.
 
-    Returns a new dict; the inputs are not mutated. A profile narrows
+    Returns a new list; the inputs are not mutated. A profile narrows
     the stage's discretionary tools — it is NOT a security boundary.
     """
-    merged = dict(base_permissions)
+    merged = [dict(rule) for rule in base_permissions]
     if tools_profile:
-        profile: dict[str, str] = {}
+        allow: dict[str, str] = {}
+        deny: dict[str, str] = {}
         for key in tools_profile.get("allow") or ():
-            profile[key] = "allow"
+            allow[tool_action(key)] = "allow"
         for key in tools_profile.get("deny") or ():
-            profile[key] = "deny"  # deny beats allow
-        merged.update(profile)
+            deny[tool_action(key)] = "deny"  # deny beats allow
+        for action in allow:
+            merged.append(permission_rule(action, "allow"))
+        for action in deny:
+            merged.append(permission_rule(action, "deny"))
+    seen: set[str] = set()
     for key in locked_deny:
-        merged[key] = "deny"
+        action = tool_action(key)
+        if action in seen:
+            continue
+        seen.add(action)
+        merged.append(permission_rule(action, "deny"))
     return merged
+
 
 
 def awf_subprocess_env(
@@ -305,49 +373,50 @@ def awf_subprocess_env(
 ) -> dict[str, str]:
     """BD-22/KAUD-5: env for opencode subprocess spawned by awf.
 
-    Sets ``OPENCODE_CONFIG_CONTENT`` to override permission rules so
-    the subprocess can run ``edit``/``bash``/``write`` without prompting.
+    Sets ``OPENCODE_CONFIG_CONTENT`` to a 2.x config document that
+    overrides permission rules so the subprocess can run ``edit``/
+    ``shell``/``webfetch`` without prompting (R5).
+
+    Shape (architecture K5): top-level ``permissions`` — an ORDERED list
+    of ``{action, resource, effect}`` rules — ``agents`` (per agent), and
+    ``mcp.servers``. The 1.x keys ``permission``, ``agent`` and
+    ``mcp.<name>`` are never written: the last matching rule wins, so the
+    stage's rules and ``locked_deny`` go last and beat the host's rules.
 
     ORCH M2.2 (V-03, 27.09): with ``restrict_control_tools=True`` and a
-    non-empty ``agent_name``, the config content also carries an
-    agent-scoped permission block that DENIES the control MCP tools
-    (see :data:`CONTROL_TOOLS`) for that agent only — execute stages
-    pass both so the worker's model does not see approve/kill/rollback/
-    dispatch in its tool list. Plan/verify stages pass nothing and keep
-    the full set. The deny keys are full MCP tool names
-    (``agent-workflow-ui_awf_*``) — opencode matches permission keys as
-    glob patterns against tool names, so the same mechanism that gates
-    ``bash`` gates MCP tools. Verified live on opencode 1.18.32: the
-    deny rule lands after the ``*`` allow in the resolved config and the
-    denied tools disappear from the model's tool list.
+    non-empty ``agent_name``, the document also carries an agent-scoped
+    rule list that DENIES the control MCP tools (see
+    :data:`CONTROL_TOOLS`) for that agent only — execute stages pass both
+    so the worker's model does not see approve/kill/rollback/dispatch in
+    its tool list. Plan/verify stages pass nothing and keep the full set.
 
     W7 + V-04 (readonly roles): when ``role`` is listed in the project's
     ``automation.readonly_roles`` (``.agentic/config.yaml``, default
-    empty), ``edit``/``write`` are FORCED to ``deny`` on top of any user
-    permission settings — a host config that allows writing cannot
-    re-enable them for a listed role. ``bash`` stays ``allow``
-    (deliberate: QA runs tests); ``webfetch`` and everything else stay
-    as before.
+    empty), ``edit`` is FORCED to ``deny`` on top of any user permission
+    settings — a host config that allows writing cannot re-enable it for a
+    listed role. ``shell`` stays ``allow`` (deliberate: QA runs tests);
+    ``webfetch`` and everything else stay as before.
 
     ORCH M7.2 (29.09): ``tools_profile`` (a stage's ``tools:
     {allow/deny}`` mapping, permission keys) merges on top of those base
     rules — deny beats allow; the base control prohibitions (M2.2
-    control tools on execute stages, readonly edit/write) are locked and
-    a profile cannot lift them. Without a profile the payload is
-    unchanged. The profile narrows the stage's discretionary tools —
-    it is NOT a security boundary (``bash`` stays allowed unless the
-    profile denies it).
+    control tools on execute stages, readonly edit) are locked and a
+    profile cannot lift them. Without a profile the payload is unchanged.
+    The profile narrows the stage's discretionary tools — it is NOT a
+    security boundary (``shell`` stays allowed unless the profile denies
+    it). 1.x profile keys (``bash``, ``write``) are mapped onto the 2.x
+    actions.
 
-    KAUD-5: MERGES with user's existing opencode.json instead of replacing.
-    Reads user's config, adds our permission overrides on top, preserves
-    user's other settings (theme, providers, agents, etc.).
+    KAUD-5: the host's own 2.x ``permissions`` rules are kept, with our
+    overrides after them, and the host's other settings (theme, providers,
+    agents, …) are left to opencode itself — env carries permissions only.
 
     BD-25: strip ``OPENCODE_SERVER_*`` env vars so the subprocess does NOT
     attach to a running ``opencode serve`` instance.
     """
     env = os.environ.copy()
 
-    # KAUD-5: Start from user's existing config, then merge our overrides
+    # KAUD-5: Start from user's config, then merge our overrides
     user_config: dict = {}
     # The permission merge tolerates a broken host config (start from
     # empty). MCP isolation cannot: "every other configured server is
@@ -366,50 +435,41 @@ def awf_subprocess_env(
     except (OSError, json.JSONDecodeError) as exc:
         user_config_error = str(exc)  # start from empty; isolation warns below
 
-    # Merge: user config + our permission overrides (ours take priority)
-    merged = user_config.copy()
-    merged_permissions = merged.get("permission", {})
-    if not isinstance(merged_permissions, dict):
-        merged_permissions = {}
     # W7: a readonly role (automation.readonly_roles) does not get the
-    # edit/write allow-overrides.
+    # edit allow-override.
     # V-04 (27.09): "not granted" was not a denial — the user's own
-    # edit/write=allow in opencode.json survived the merge. Now a listed
-    # role gets edit/write FORCED to deny on top of any host config;
-    # bash stays allowed (deliberate: QA runs tests).
+    # edit allow in opencode.json survived the merge. Now a listed role
+    # gets edit FORCED to deny on top of any host config; shell stays
+    # allowed (deliberate: QA runs tests).
     readonly = _is_readonly_role(role, project_dir)
-    overrides = {
-        "bash": "allow",
-        "webfetch": "allow",
-    }
-    if readonly:
-        overrides["edit"] = "deny"
-        overrides["write"] = "deny"
-    else:
-        overrides["edit"] = "allow"
-        overrides["write"] = "allow"
+    overrides = [("shell", "allow"), ("webfetch", "allow")]
+    overrides.append(("edit", "deny" if readonly else "allow"))
     # ORCH M7.2: base control prohibitions a stage tools-profile cannot
-    # lift — M2.2 control tools (execute stages) + readonly edit/write.
+    # lift — M2.2 control tools (execute stages) + readonly edit.
     locked_deny: tuple[str, ...] = ()
     if restrict_control_tools:
         locked_deny = tuple(control_tool_permission_keys())
     if readonly:
-        locked_deny = locked_deny + ("edit", "write")
-    base_permissions = dict(merged_permissions)
-    base_permissions.update(overrides)
-    final_permissions = merge_tool_profile(
-        base_permissions, tools_profile, locked_deny
+        locked_deny = locked_deny + ("edit",)
+    base_rules = host_permission_rules(user_config)
+    base_rules.extend(
+        permission_rule(action, effect) for action, effect in overrides
     )
-    merged["permission"] = final_permissions
+    final_permissions = merge_tool_profile(
+        base_rules, tools_profile, locked_deny
+    )
 
     # ORCH M2.2: execute stages hide the control MCP tools from the
-    # stage's agent only — an agent-scoped deny block, merged by opencode
-    # with the user's own agent definition (probed on 1.18.32).
+    # stage's agent only — an agent-scoped rule list, merged by opencode
+    # with the user's own agent definition.
     agent_block: dict | None = None
     if restrict_control_tools and agent_name:
         agent_block = {
             agent_name: {
-                "permission": {key: "deny" for key in control_tool_permission_keys()}
+                "permissions": [
+                    permission_rule(key, "deny")
+                    for key in control_tool_permission_keys()
+                ]
             }
         }
 
@@ -417,14 +477,14 @@ def awf_subprocess_env(
     # providers, or other sensitive fields from opencode.json. Workers only
     # need the permission overrides; everything else is loaded by opencode
     # itself from the real config file.
-    payload: dict = {"permission": final_permissions}
+    payload: dict = {"permissions": final_permissions}
     if agent_block is not None:
-        payload["agent"] = agent_block
+        payload["agents"] = agent_block
 
     # TODO-0242 (P0-3): an execute worker gets the configured MCP servers
     # only — the rest are switched off by name in the merged config. The
-    # user's own ``mcp`` block is read, never rewritten: a server outside
-    # the allow-list gets ``enabled: false``; an allow-list name the config
+    # user's own ``mcp.servers`` is read, never rewritten: a server outside
+    # the allow-list gets ``disabled: true``; an allow-list name the config
     # does not define is a warning (typo) and never a failure.
     if isolate_mcp:
         if user_config_error:
@@ -438,12 +498,12 @@ def awf_subprocess_env(
         allowed = set(worker_mcp_servers(project_dir))
         configured_mcp = configured_mcp_servers(user_config, project_dir)
         disabled = {
-            name: {"enabled": False}
+            name: {"disabled": True}
             for name in configured_mcp
             if name not in allowed
         }
         if disabled:
-            payload["mcp"] = disabled
+            payload["mcp"] = {"servers": disabled}
         for name in sorted(allowed - set(configured_mcp)):
             warnings.warn(
                 f"worker.mcp_servers names {name!r}, which the opencode "

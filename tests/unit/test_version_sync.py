@@ -13,6 +13,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 import agent_workflow_ui
 import awf
 
@@ -48,3 +50,13 @@ def test_plugin_depends_on_awf_at_its_own_version():
     match = re.search(r'"awf>=([\d.]+)"', text)
     assert match, "plugin pyproject must pin awf>=X"
     assert match.group(1) == _pyproject_version(REPO_ROOT / "pyproject.toml")
+
+
+def test_cli_version_flag_prints_the_package_version(capsys):
+    """R12/AC37: ``awf --version`` is the user-facing version."""
+    from awf import cli
+
+    with pytest.raises(SystemExit) as exc:
+        cli._dispatch_subcommand(["--version"])
+    assert exc.value.code == 0
+    assert awf.__version__ in capsys.readouterr().out

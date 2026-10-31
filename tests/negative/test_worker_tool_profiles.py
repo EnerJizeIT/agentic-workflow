@@ -5,12 +5,12 @@
 новый TODO. Решение владельца: честная формулировка — «снижение
 случайных ошибок, не запрет».
 
-Механизм (проба с живым opencode 1.18.32): permission-ключи матчатся
-как glob-паттерны по имени tool, включая MCP-tools —
-``agent-workflow-ui_awf_approve: deny`` прячет tool из списка модели,
-и deny-правило бьёт ``*`` allow. Профайл подаётся в
-``OPENCODE_CONFIG_CONTENT`` блоком ``agent.<имя>.permission`` — только
-для execute-стадий; plan/verify сохраняют полный набор.
+Механизм (проба с живым opencode): в 2.x ``permissions`` — упорядоченный
+список правил ``{action, resource, effect}``, побеждает последнее
+совпадение. Профайл подаётся в ``OPENCODE_CONFIG_CONTENT`` правилами
+стадии; ``locked_deny`` идёт последним — только для execute-стадий;
+plan/verify сохраняют полный набор. Имена действий 2.x: ``shell``
+(бывший ``bash``), ``edit`` (бывшие ``edit``/``write``).
 
 Список :data:`CONTROL_TOOL_NAMES` — спека юнита (что реально управляет
 вердиктом/состоянием), а не копия production-константы: тест 1
@@ -21,8 +21,8 @@
   запрещает управляющие tools для агента стадии (prove_red)
 - test_plan_verify_stages_keep_full_toolset — в конфиге plan/verify
   запретов нет (супервизор сохраняет полный набор)
-- test_execute_config_keeps_bash_edit_write — bash/edit/write остаются
-  разрешёнными («bash остаётся»)
+- test_execute_config_keeps_shell_edit — shell/edit остаются
+  разрешёнными («shell остаётся»)
 - test_control_tools_cover_run_control_surface — production-список —
   суперсет управляющей поверхности из TODO (страховка от сужения)
 """
@@ -77,8 +77,23 @@ def _config(env: dict) -> dict:
     return json.loads(env["OPENCODE_CONFIG_CONTENT"])
 
 
+def _effect(rules: list[dict], action: str) -> str | None:
+    """The effect of the last matching rule (2.x: last match wins)."""
+    effect = None
+    for rule in rules:
+        if rule.get("action") == action and rule.get("resource") == "*":
+            effect = rule.get("effect")
+    return effect
+
+
 def _agent_permission(env: dict, agent: str) -> dict:
-    return _config(env).get("agent", {}).get(agent, {}).get("permission", {})
+    """The agent's rules as an action→effect map (last match wins)."""
+    rules = _config(env).get("agents", {}).get(agent, {}).get("permissions", [])
+    resolved: dict[str, str] = {}
+    for rule in rules:
+        if rule.get("resource") == "*":
+            resolved[str(rule.get("action"))] = str(rule.get("effect"))
+    return resolved
 
 
 def _execute_env(proj: Path) -> dict:
@@ -115,21 +130,21 @@ def test_plan_verify_stages_keep_full_toolset(tmp_path, monkeypatch):
     proj = _env_project(tmp_path, monkeypatch, "plan")
     env = awf_subprocess_env(role="supervisor", project_dir=proj)
     denies: dict[str, str] = {}
-    for agent_def in (_config(env).get("agent") or {}).values():
-        if isinstance(agent_def, dict) and isinstance(agent_def.get("permission"), dict):
+    for agent_def in (_config(env).get("agents") or {}).values():
+        if isinstance(agent_def, dict) and isinstance(agent_def.get("permissions"), list):
             denies.update(
-                {k: v for k, v in agent_def["permission"].items() if v == "deny"}
+                {r["action"]: r["effect"] for r in agent_def["permissions"]
+                 if r.get("effect") == "deny"}
             )
     assert not denies, f"в конфиге не-execute стадии появились запреты: {denies}"
 
 
-def test_execute_config_keeps_bash_edit_write(tmp_path, monkeypatch):
-    """Профайл не забирает bash/edit/write — «bash остаётся»."""
+def test_execute_config_keeps_shell_edit(tmp_path, monkeypatch):
+    """Профайл не забирает shell/edit — «shell остаётся»."""
     proj = _env_project(tmp_path, monkeypatch, "keep")
-    perm = _config(_execute_env(proj))["permission"]
-    assert perm["bash"] == "allow"
-    assert perm["edit"] == "allow"
-    assert perm["write"] == "allow"
+    rules = _config(_execute_env(proj))["permissions"]
+    assert _effect(rules, "shell") == "allow"
+    assert _effect(rules, "edit") == "allow"
 
 
 def test_control_tools_cover_run_control_surface():

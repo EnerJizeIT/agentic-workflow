@@ -28,14 +28,20 @@ root=$(CDPATH= cd -- "$script_dir/.." && pwd) || exit 2
 
 project=$(pwd)
 force=0
+# TODO-0316 (incident 31.10): the full suite outlives the worker's command
+# budget, so the run must be startable detached and polled. ``run`` is the
+# historical foreground mode (tests, CI, humans).
+mode=run
 
 usage() {
-  echo "usage: suite-canonical.sh [--force] [--project DIR]" >&2
+  echo "usage: suite-canonical.sh [--force] [--background|--status] [--project DIR]" >&2
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --force) force=1 ;;
+    --background) mode=background ;;
+    --status) mode=status ;;
     --project)
       shift
       [ "$#" -gt 0 ] || { echo "suite-canonical: --project needs a path" >&2; usage; exit 2; }
@@ -139,6 +145,69 @@ if ! git check-ignore -q -- "$context/SUITE-probe.json" 2>/dev/null; then
   fi
 fi
 
+pid_file="$artifact.pid"
+run_log="$artifact.log"
+
+# Artifact exit code (empty when absent, unreadable or made by another
+# command — the same cache rule as the foreground path below).
+artifact_exit() {
+  [ -f "$artifact" ] || return 1
+  "$pybin" - "$artifact" "$cmd" <<'PYCODE'
+import json
+import sys
+
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+    if data.get("command") == sys.argv[2] and isinstance(data.get("exit"), int):
+        print(data["exit"])
+except Exception:
+    pass
+PYCODE
+}
+
+running_pid() {
+  [ -f "$pid_file" ] || return 1
+  pid=$(cat "$pid_file" 2>/dev/null || true)
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$pid" 2>/dev/null || return 1
+  echo "$pid"
+}
+
+# TODO-0316: status mode answers without touching the suite — a worker polls
+# it between short commands instead of blocking on a 12-minute run.
+if [ "$mode" = status ]; then
+  if rc=$(artifact_exit); then
+    echo "suite-canonical: done (tree-sha $sha) — $artifact"
+    cat "$artifact"
+    exit "$rc"
+  fi
+  if pid=$(running_pid); then
+    echo "suite-canonical: running (pid $pid, tree-sha $sha); poll again"
+    exit 3
+  fi
+  echo "suite-canonical: not started (tree-sha $sha) — run --background"
+  exit 4
+fi
+
+if [ "$mode" = background ]; then
+  if rc=$(artifact_exit); then
+    echo "suite-canonical: cached (tree-sha $sha, same command) — $artifact"
+    cat "$artifact"
+    exit "$rc"
+  fi
+  if pid=$(running_pid); then
+    echo "suite-canonical: already running (pid $pid, tree-sha $sha)"
+    exit 3
+  fi
+  force_arg=""
+  [ "$force" -eq 1 ] && force_arg="--force"
+  setsid nohup "$0" $force_arg --project "$project" >"$run_log" 2>&1 </dev/null &
+  child=$!
+  echo "$child" > "$pid_file"
+  echo "suite-canonical: started (pid $child, tree-sha $sha); poll with --status"
+  exit 3
+fi
+
 if [ "$force" -ne 1 ] && [ -f "$artifact" ]; then
   # The cache is keyed by the tree AND by the command: the same tree with a
   # different AWF_SUITE_CMD must not serve the other command's result as
@@ -164,7 +233,8 @@ PY
 fi
 
 log=$(mktemp "${TMPDIR:-/tmp}/awf-suite.XXXXXX") || exit 2
-trap 'rm -f "$log"' EXIT
+echo "$$" > "$pid_file"
+trap 'rm -f "$log" "$pid_file"' EXIT
 
 started_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 start_s=$(date +%s)

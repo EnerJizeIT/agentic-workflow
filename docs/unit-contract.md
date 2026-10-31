@@ -584,8 +584,9 @@ Gitignored-файлы тоже не попадают — git их не отсл�
 `stage` — идентичность стадии. Worker получает её в промпте (строка
 «Stage identity»: stage_id/attempt/role), так что блок — копия
 данных, а не угадывание. Битый json или нарушение схемы (в том числе в
-блоке `stage`) — предупреждение в `orchestrator.log`, файл пропускается,
-пада нет.
+блоке `stage`) — предупреждение в `orchestrator.log` с причиной (ключ,
+ожидание и фактический тип: `'gates' must be a list of strings, got
+object`), файл пропускается, пада нет.
 
 Движок при сборке handoff (`awf/agent_stage.py::collect_handoff`) включает
 валидный файл в секцию «Machine facts (DONE.json)» handoff-файла следующей
@@ -593,8 +594,10 @@ Gitignored-файлы тоже не попадают — git их не отсл�
 «Stage facts»: stage_id/attempt/role и model, если он известен из
 конфига, — движок заполняет её сам, из стадии и счётчика ретраев, — плюс
 метаданные прогона (время генерации, exit code, длительность, сигналы,
-изменения к baseline) и факт `DONE-json=present/absent` в строке
-«worker notes». Если в DONE.json есть блок `stage`, секция получает строку
+изменения к baseline) и факт `DONE-json=present/absent/invalid` в строке
+«worker notes»: `invalid` — файл есть, но не читается или мимо схемы
+(причина — в `orchestrator.log`), и следующая роль лечит файл, а не ищет
+его. Если в DONE.json есть блок `stage`, секция получает строку
 сверки (matched/mismatched — пометка для следующей роли, не ошибка).
 Секция «DONE summary (from worker)» — дайджест (первые 10 непустых строк
 отчёта) и ссылка `full report: .agentic/outbox/DONE-<id>.md`; полная

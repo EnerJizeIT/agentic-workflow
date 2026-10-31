@@ -18,8 +18,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 BINARY = "opencode"
-STANDALONE_KEY = "opencode.standalone"
-KEY = STANDALONE_KEY
 MANAGED_KEY = "opencode.managed"
 MANAGED_ENV = "AWF_OPENCODE_MANAGED"
 MANAGED_WARNING = (
@@ -49,12 +47,10 @@ class Probe:
 
 @dataclass(frozen=True)
 class Plan:
-    """Effective mode: what to add to argv and what the user must be told."""
+    """What to add to argv and what the user must be told (R2)."""
 
-    mode: str
     add_flag: bool
     warning: str = ""
-    refusal: str = ""
 
 
 @dataclass(frozen=True)
@@ -147,33 +143,6 @@ def _opencode_section(config: dict | None) -> dict:
     return section if isinstance(section, dict) else {}
 
 
-def standalone_mode(config: dict | None) -> tuple[str, str]:
-    """The ``opencode.standalone`` domain AFTER yaml.safe_load (D5).
-
-    Missing — ``auto``. ``True``/``"on"``/``"true"`` — on; ``False``/
-    ``"off"``/``"false"`` — off; ``auto`` — auto. Anything else — refusal
-    naming the key and the value (AC5).
-    """
-    section = _opencode_section(config)
-    if "standalone" not in section:
-        return "auto", ""
-    raw = section["standalone"]
-    if isinstance(raw, bool):
-        return ("on" if raw else "off"), ""
-    if isinstance(raw, str):
-        word = raw.strip().lower()
-        if word == "auto":
-            return "auto", ""
-        if word in ("on", "true"):
-            return "on", ""
-        if word in ("off", "false"):
-            return "off", ""
-    return "", (
-        f"{KEY} = {raw!r} — ожидается auto/on/off (bool или строка); "
-        "запуск отменён"
-    )
-
-
 def is_managed(config: dict | None) -> bool:
     """Managed opt-in (D4): env ``AWF_OPENCODE_MANAGED`` or the config key."""
     env = os.environ.get(MANAGED_ENV, "").strip().lower()
@@ -182,41 +151,21 @@ def is_managed(config: dict | None) -> bool:
     return _opencode_section(config).get("managed") is True
 
 
-def resolve_standalone(
+def resolve_plan(
     config: dict | None,
     probe: Probe,
     managed: bool | None = None,
 ) -> Plan:
-    """Mode + whether ``--standalone`` belongs in argv (K2)."""
-    mode, refusal = standalone_mode(config)
-    if refusal:
-        return Plan("", add_flag=False, refusal=refusal)
+    """Whether ``--standalone`` belongs in argv (R2, awf 3).
+
+    There is no mode to choose: 2.x always runs with the flag, and the only
+    exception is the managed server (the operator owns the policy there).
+    """
     if managed is None:
         managed = is_managed(config)
     if managed:
-        return Plan(mode, add_flag=False, warning=MANAGED_WARNING)
-    if (
-        probe.status == "ok"
-        and probe.version is not None
-        and probe.version[0] >= 2
-        and mode in ("auto", "on")
-    ):
-        return Plan(mode, add_flag=True)
-    if (
-        mode == "on"
-        and probe.status == "ok"
-        and probe.version is not None
-        and probe.version[0] < 2
-    ):
-        return Plan(
-            mode,
-            add_flag=False,
-            warning=(
-                "--standalone не поддерживается версией opencode "
-                f"{probe.text} — флаг не передан"
-            ),
-        )
-    return Plan(mode, add_flag=False)
+        return Plan(add_flag=False, warning=MANAGED_WARNING)
+    return Plan(add_flag=True)
 
 
 def apply_standalone(argv: list[str], plan: Plan) -> list[str]:
@@ -231,11 +180,11 @@ def launch_plan(
     config: dict | None = None,
     probe: Probe | None = None,
 ) -> tuple[Probe, Plan, Refusal | None]:
-    """Compose K1 + K2 + D4 into the preflight answer (K3).
+    """Compose R1 + R2 + managed into the preflight answer (R1).
 
-    Returns ``(probe, plan, refusal)``. ``refusal`` is None when the launch
-    may proceed; ``plan.warning`` still carries the 1.x-``on`` and managed
-    warnings.
+    awf 3 supports opencode 2.x only: an older binary and an undetermined
+    version are refusals (fail-closed), each with its own text and rc, and
+    both fire before the first side effect of any entry point.
     """
     if config is None:
         from . import config as cfg_mod
@@ -244,9 +193,7 @@ def launch_plan(
     if probe is None:
         probe = probe_version()
     managed = is_managed(config)
-    plan = resolve_standalone(config, probe, managed)
-    if plan.refusal:
-        return probe, plan, Refusal(plan.refusal, rc=1)
+    plan = resolve_plan(config, probe, managed)
     if probe.status == "missing":
         return probe, plan, Refusal(
             f"opencode не найден: бинарь {BINARY!r} отсутствует в PATH — "
@@ -254,21 +201,20 @@ def launch_plan(
             rc=1,
         )
     if managed:
-        # K4: the operator owns the server policy — no version refusal.
+        # The operator owns the server policy — no version refusal.
         return probe, plan, None
-    if probe.status != "ok":
+    if probe.status != "ok" or probe.version is None:
         return probe, plan, Refusal(
             "opencode: версия не определена (--version не ответил или вернул "
-            f"мусор) — запуск без изоляции запрещён. Проверьте установку "
-            f"opencode и ключ {KEY}",
+            "мусор) — awf 3 требует opencode 2.x, запуск запрещён. "
+            "Проверьте установку opencode",
             rc=0,
         )
-    if probe.version is not None and probe.version[0] >= 2 and not plan.add_flag:
+    if probe.version[0] < 2:
         return probe, plan, Refusal(
-            f"opencode {probe.text}: {KEY} = off — без изоляции kill оставит "
-            "сессию на общем сервере. Включите auto/on или управляемый режим "
-            f"({MANAGED_KEY})",
-            rc=0,
+            f"awf 3 требует opencode 2.x — найден opencode {probe.text}. "
+            "Обновите opencode до 2.x (awf 2.x остаётся на прежнем теге)",
+            rc=1,
         )
     return probe, plan, None
 
@@ -295,7 +241,6 @@ def gate(project_dir: str | Path, config: dict | None = None) -> tuple[str, int,
 
 __all__ = [
     "BINARY",
-    "KEY",
     "MANAGED_ENV",
     "MANAGED_KEY",
     "MANAGED_WARNING",
@@ -310,6 +255,5 @@ __all__ = [
     "prime_probe",
     "probe_version",
     "reset_version_cache",
-    "resolve_standalone",
-    "standalone_mode",
+    "resolve_plan",
 ]

@@ -115,11 +115,18 @@ def _build_parser():
     """
     # REVIEW W5: the variant names are the one registry in awf.api.setup —
     # a new starter must appear here without a second hardcoded list.
+    from . import __version__
     from .api.setup import BUILTIN_PIPELINES
 
     parser = argparse.ArgumentParser(
         prog="awf",
         description="Agentic Workflow Framework",
+    )
+    # R12/AC37: `awf --version` is the one place a user reads the version.
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"awf {__version__}",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

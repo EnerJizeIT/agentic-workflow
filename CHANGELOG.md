@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-11-01
+
+### Breaking
+
+- opencode 2.x only: no 1.x launcher, no v1 metrics, no v1 config.
+
+- awf 3 requires opencode 2.x. A launch on an older binary is refused with a
+  typed message before any side effect; there is no 1.x compatibility layer.
+- the launch mode key `opencode.standalone` is gone: `--standalone` is always
+  passed (managed mode is the only exception).
+- metrics read only the 2.x schema (`session_v2` + `session_message`). A 1.x
+  database answers `n/a` with a reason; 1.x history is no longer reported.
+- the opencode config is read and written in the 2.x form only
+  (`providers.<p>.settings.baseURL`, `agents`, `mcp.servers`, `permissions`).
+  A file with 1.x keys is left untouched and `awf doctor` asks to convert it.
+- network markers keep only the 2.x wordings; the 1.x phrases are gone.
+
+### Added
+
+- `tests/unit/test_opencode2_only_guard.py`: a guard that fails when 1.x code
+  (v1 table reads, the old baseURL form, `--attach`, `--port`, the removed
+  key) comes back.
+
+### Fixed (the 31.10 launch session)
+
+- `awf start` honours the TODO's `pipeline:` key; an explicit flag still wins.
+- a unit's frozen pipeline snapshot refuses an explicit request for another
+  pipeline instead of silently running the old definition.
+- the plan stage no longer re-authors a pinned, already-dispatched unit.
+- a pinned runner behind this awf is a refusal naming the exact sync command.
+- the canonical suite can run detached (`--background` / `--status`), so QA
+  stops blocking on the full run.
+- `awf status` cuts the append-only log at the last run banner.
+
 ## [2.3.0] - 2026-10-30
 
 ### Added

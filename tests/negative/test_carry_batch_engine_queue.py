@@ -687,7 +687,14 @@ def test_execute_worker_keeps_only_allowed_mcp_servers(tmp_path, monkeypatch):
     config_file = tmp_path / "opencode.json"
     config_file.write_text(
         json.dumps(
-            {"mcp": {"agent-workflow-ui": {"enabled": True}, "heavy": {"enabled": True}}}
+            {
+                "mcp": {
+                    "servers": {
+                        "agent-workflow-ui": {"type": "local"},
+                        "heavy": {"type": "local"},
+                    }
+                }
+            }
         ),
         encoding="utf-8",
     )
@@ -696,8 +703,8 @@ def test_execute_worker_keeps_only_allowed_mcp_servers(tmp_path, monkeypatch):
         role="worker", project_dir=project, isolate_mcp=True
     )
     payload = json.loads(env["OPENCODE_CONFIG_CONTENT"])
-    assert payload["mcp"]["heavy"]["enabled"] is False
-    assert "agent-workflow-ui" not in payload["mcp"]
+    assert payload["mcp"]["servers"]["heavy"]["disabled"] is True
+    assert "agent-workflow-ui" not in payload["mcp"]["servers"]
 
 
 def test_unknown_worker_mcp_name_is_a_warning_not_a_failure(tmp_path, monkeypatch):
@@ -710,7 +717,7 @@ def test_unknown_worker_mcp_name_is_a_warning_not_a_failure(tmp_path, monkeypatc
     )
     config_file = tmp_path / "opencode.json"
     config_file.write_text(
-        json.dumps({"mcp": {"agent-workflow-ui": {"enabled": True}}}),
+        json.dumps({"mcp": {"servers": {"agent-workflow-ui": {"type": "local"}}}}),
         encoding="utf-8",
     )
     monkeypatch.setattr(xdg, "opencode_config_file", lambda: config_file)
@@ -726,8 +733,10 @@ def test_worker_config_without_the_new_keys_stays_workspace_wide(tmp_path, monke
 
     project = _project(tmp_path)
     config_file = tmp_path / "opencode.json"
-    config_file.write_text(json.dumps({"mcp": {"heavy": {"enabled": True}}}),
-                           encoding="utf-8")
+    config_file.write_text(
+        json.dumps({"mcp": {"servers": {"heavy": {"type": "local"}}}}),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(xdg, "opencode_config_file", lambda: config_file)
     env = _env.awf_subprocess_env(role="worker", project_dir=project)
     assert "mcp" not in json.loads(env["OPENCODE_CONFIG_CONTENT"])
@@ -749,8 +758,14 @@ def test_empty_worker_mcp_list_means_no_servers(tmp_path, monkeypatch):
     config_file = tmp_path / "opencode.json"
     config_file.write_text(
         json.dumps(
-            {"mcp": {"agent-workflow-ui": {"enabled": True},
-                     "heavy": {"enabled": True}}}
+            {
+                "mcp": {
+                    "servers": {
+                        "agent-workflow-ui": {"type": "local"},
+                        "heavy": {"type": "local"},
+                    }
+                }
+            }
         ),
         encoding="utf-8",
     )
@@ -759,8 +774,8 @@ def test_empty_worker_mcp_list_means_no_servers(tmp_path, monkeypatch):
         role="worker", project_dir=project, isolate_mcp=True
     )
     payload = json.loads(env["OPENCODE_CONFIG_CONTENT"])
-    assert payload["mcp"]["agent-workflow-ui"]["enabled"] is False
-    assert payload["mcp"]["heavy"]["enabled"] is False
+    assert payload["mcp"]["servers"]["agent-workflow-ui"]["disabled"] is True
+    assert payload["mcp"]["servers"]["heavy"]["disabled"] is True
 
 
 # ─── (P0d) old configs keep working ────────────────────────────────────
@@ -993,10 +1008,11 @@ def test_isolation_reads_the_project_mcp_config(tmp_path, monkeypatch):
     project = _project(tmp_path)
     config_file = tmp_path / "opencode.json"
     config_file.write_text(
-        json.dumps({"mcp": {"heavy": {"enabled": True}}}), encoding="utf-8"
+        json.dumps({"mcp": {"servers": {"heavy": {"type": "local"}}}}),
+        encoding="utf-8",
     )
     (project / "opencode.json").write_text(
-        json.dumps({"mcp": {"project-heavy": {"enabled": True}}}),
+        json.dumps({"mcp": {"servers": {"project-heavy": {"type": "local"}}}}),
         encoding="utf-8",
     )
     monkeypatch.setattr(xdg, "opencode_config_file", lambda: config_file)
@@ -1004,8 +1020,8 @@ def test_isolation_reads_the_project_mcp_config(tmp_path, monkeypatch):
         role="worker", project_dir=project, isolate_mcp=True
     )
     payload = json.loads(env["OPENCODE_CONFIG_CONTENT"])
-    assert payload["mcp"]["heavy"]["enabled"] is False
-    assert payload["mcp"]["project-heavy"]["enabled"] is False
+    assert payload["mcp"]["servers"]["heavy"]["disabled"] is True
+    assert payload["mcp"]["servers"]["project-heavy"]["disabled"] is True
 
 
 def test_unreadable_project_mcp_config_warns_not_fails(tmp_path, monkeypatch):
@@ -1015,7 +1031,8 @@ def test_unreadable_project_mcp_config_warns_not_fails(tmp_path, monkeypatch):
     project = _project(tmp_path)
     config_file = tmp_path / "opencode.json"
     config_file.write_text(
-        json.dumps({"mcp": {"heavy": {"enabled": True}}}), encoding="utf-8"
+        json.dumps({"mcp": {"servers": {"heavy": {"type": "local"}}}}),
+        encoding="utf-8",
     )
     (project / "opencode.json").write_text("{not json", encoding="utf-8")
     monkeypatch.setattr(xdg, "opencode_config_file", lambda: config_file)

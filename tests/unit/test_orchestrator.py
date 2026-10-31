@@ -848,7 +848,8 @@ class TestSupervisorViaSubprocess:
         cmd = _FakePopen._last_cmds[0]
         assert cmd[0] == "opencode"
         assert "--auto" in cmd
-        assert "--agent" in cmd
+        # A13: this config names no agent for the supervisor — no flag.
+        assert "--agent" not in cmd
         assert any("supervisor.md" in c for c in cmd)
         assert any("plan.md" in c for c in cmd)
         out = capsys.readouterr().out
@@ -1186,9 +1187,9 @@ class TestRunSubprocessUntilSignal:
         env = _awf_subprocess_env()
         assert "OPENCODE_CONFIG_CONTENT" in env
         cfg = json.loads(env["OPENCODE_CONFIG_CONTENT"])
-        assert cfg["permission"]["edit"] == "allow"
-        assert cfg["permission"]["bash"] == "allow"
-        assert cfg["permission"]["write"] == "allow"
+        rules = cfg["permissions"]
+        assert {"action": "edit", "resource": "*", "effect": "allow"} in rules
+        assert {"action": "shell", "resource": "*", "effect": "allow"} in rules
 
     def test_popen_receives_awf_env_bd22(self, tmp_path, monkeypatch) -> None:
         """BD-22: Popen is called with env containing permission override."""

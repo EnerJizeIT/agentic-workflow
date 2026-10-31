@@ -68,6 +68,41 @@ def _stage_names(stages: list) -> str:
     return ", ".join(str(s.name) for s in stages) or "(none)"
 
 
+def _declared_pipeline_name(project_dir: Path, todo_id: str) -> str:
+    """The pinned unit's own ``pipeline:`` key, or ``""`` for the default.
+
+    ``awf_run_next`` already reads this key (RUN3 #2); ``awf start`` did not,
+    so a spec unit launched by hand started the project's dev pipeline. The
+    same parser gives the key one meaning; a missing file, a broken block or
+    an empty value degrades to ``""`` — the launch falls back to the config
+    default exactly as before.
+    """
+    from . import todos as _todos
+    from .unit_contract import parse_todo_contract
+
+    unit = (todo_id or "").strip()
+    if not unit:
+        try:
+            unit = _todos.newest_active(project_dir) or ""
+        except OSError:
+            return ""
+    if not unit:
+        return ""
+    todo_md = paths.inbox(project_dir) / f"{unit}.md"
+    try:
+        text = todo_md.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    try:
+        contract, _unknown = parse_todo_contract(text)
+    except ValueError:
+        return ""
+    if not contract:
+        return ""
+    value = contract.get("pipeline", "")
+    return str(value or "").strip()
+
+
 def _report_unknown_stage(
     project_dir: Path,
     todo_id: str,
@@ -139,7 +174,7 @@ def _apply_pipeline_snapshot(
     todo_id: str,
     resuming: bool,
     logs_dir: Path,
-) -> list:
+) -> list | None:
     """ORCH M3.3: read the unit's pipeline snapshot (or capture it).
 
     Snapshot present → the run resumes the definition it started with,
@@ -150,6 +185,14 @@ def _apply_pipeline_snapshot(
     set) without a snapshot is an old unit or a manual launch and gets a
     warning. A snapshot that fails to load degrades the same way — a unit
     must not die on its own shadow file.
+
+    A12b (incident 31.10): the snapshot used to win over an EXPLICIT
+    pipeline request — ``awf start --pipeline spec`` ran the unit's dev
+    snapshot and printed the spec file's name, so the operator saw one
+    pipeline in the banner and another in the stages. A request that names
+    a DIFFERENT pipeline than the snapshot is now a refusal (``None``),
+    with both names and the way out; the pinned definition still wins for
+    every plain resume, which is the stability the snapshot exists for.
     """
     if not re.fullmatch(r"TODO-\d{4,}", todo_id or ""):
         return stages
@@ -158,7 +201,29 @@ def _apply_pipeline_snapshot(
     from ._errors import AwfApiError
 
     snap = _pipeline_snapshot_file(project_dir, todo_id)
+    requested = pipeline_file.stem
     if snap.is_file():
+        from .pipeline import snapshot_pipeline_name
+
+        snapped = snapshot_pipeline_name(project_dir, todo_id)
+        if snapped and requested and snapped != requested:
+            print(
+                f"ERROR: {todo_id} is pinned to pipeline '{snapped}' "
+                f"({snap.name}); this launch asked for '{requested}'.",
+                file=sys.stderr,
+            )
+            print(
+                "  The unit runs the definition it started with. To switch: "
+                f"delete {snap} and relaunch, or issue a new TODO id.",
+                file=sys.stderr,
+            )
+            _log(
+                logs_dir,
+                f"Launch refused: {todo_id} snapshot pipeline '{snapped}' "
+                f"≠ requested '{requested}' ({snap.name})",
+            )
+            return None
+
         try:
             snap_stages = load_stages(snap)
         except AwfApiError as e:
@@ -256,6 +321,12 @@ def _run_pipeline_impl(args: Any, liveness: Any = None) -> int:
     pipeline_name = getattr(args, "pipeline", None)
     from_stage = getattr(args, "from_stage", None)
     auto = getattr(args, "auto", False)
+    # RUN3 #2 at launch: a unit that names its pipeline starts on it — the
+    # explicit flag still wins, and a missing key keeps the project default.
+    if not pipeline_name:
+        pipeline_name = _declared_pipeline_name(
+            project_dir, str(getattr(args, "todo_id", "") or "")
+        ) or None
     # KAUD-4 / OPS IMP1 (R1): read --timeout from CLI args, pass to agent
     # stages. ``None`` = "not given" (the stage/project/default chain
     # decides); anything else must be a positive integer — the old silent
@@ -317,6 +388,8 @@ def _run_pipeline_impl(args: Any, liveness: Any = None) -> int:
         str(getattr(args, "todo_id", "") or ""),
         bool(from_stage), logs_dir,
     )
+    if stages is None:
+        return 1
 
     total = len(stages)
     print("=== Agentic Workflow: Starting Pipeline ===")

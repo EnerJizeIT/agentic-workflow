@@ -18,9 +18,12 @@ class TestAwfSubprocessEnv:
         assert "OPENCODE_CONFIG_CONTENT" in env
         import json
         cfg = json.loads(env["OPENCODE_CONFIG_CONTENT"])
-        assert cfg["permission"]["edit"] == "allow"
-        assert cfg["permission"]["bash"] == "allow"
-        assert cfg["permission"]["write"] == "allow"
+        # 2.x form: an ordered rule list, last match wins (R5, K5).
+        rules = cfg["permissions"]
+        assert {"action": "edit", "resource": "*", "effect": "allow"} in rules
+        assert {"action": "shell", "resource": "*", "effect": "allow"} in rules
+        assert "permission" not in cfg
+        assert "agent" not in cfg
 
     def test_strips_opencode_server_env(self, monkeypatch):
         monkeypatch.setenv("OPENCODE_SERVER", "http://localhost:8080")

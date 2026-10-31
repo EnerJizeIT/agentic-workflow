@@ -457,7 +457,7 @@ def run_start(
             budget_minutes=0,
             stop_flags={},
             message=message,
-            next_action="Fix opencode.standalone / install opencode, then retry.",
+            next_action="Install opencode 2.x / fix the version probe, then retry.",
         )
     items = _validate_queue(queue)
     ids = [i["todo_id"] for i in items]
@@ -1523,7 +1523,7 @@ def _run_next(
             action="refused",
             todo_id="",
             message=message,
-            next_action="Fix opencode.standalone / install opencode, then retry.",
+            next_action="Install opencode 2.x / fix the version probe, then retry.",
         )
     # OPS IMP1 (R1/INV8): validate the cap BEFORE the reservation and the
     # first file — caller by raise, project key as a refusal.
@@ -3790,7 +3790,7 @@ def run_service_start(
             message=message,
             slug=str(slug or ""),
             main_active=False,
-            next_action="Fix opencode.standalone / install opencode, then retry.",
+            next_action="Install opencode 2.x / fix the version probe, then retry.",
         )
 
     slug_clean = _validate_draft_slug(slug)

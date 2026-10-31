@@ -34,17 +34,15 @@ NET_RETRY_BACKOFFS: tuple[float, ...] = (30, 60, 120)
 # worker (opencode) log tail. Any ONE match classifies the death as
 # network — these strings come from opencode's own error output.
 NETWORK_MARKERS: tuple[str, ...] = (
-    "Cannot connect to API",
+    # libuv codes: version-neutral, 2.2.3 prints them verbatim.
     "ECONNREFUSED",
-    "fetch failed",
-    "Connection reset",
-    "ETIMEDOUT",
-    # IMP1 probe (opencode 2.2.3, 2026-10-30) on a dead endpoint and a
-    # blackholed host: "ECONNRESET: The socket connection was closed
-    # unexpectedly" and "ECONNREFUSED: Unable to connect. Is the computer
-    # able to access the url?" — the v2 wording the v1 list did not name.
-    "Unable to connect",
     "ECONNRESET",
+    "ETIMEDOUT",
+    # Measured on 2.2.3 against a dead endpoint. The 1.x wordings
+    # ("Cannot connect to API", "Connection reset", "fetch failed") are
+    # gone: ``_NETWORK_RE`` still catches the first two, and "fetch failed"
+    # is undici-era — it must NOT classify (R7/AC25).
+    "Unable to connect",
 )
 
 # CARRY IMP1 (R12/K12): connect/reset/timeout are network even without the
@@ -191,20 +189,16 @@ def model_endpoint_url(model_spec: str, opencode_path: Path) -> str | None:
     from .api.model_check import _load_opencode_root
 
     root = _load_opencode_root(Path(opencode_path))
-    # K7: v1 form first — when both exist, v1 wins (AC29).
-    provider_cfg = (root.get("provider") or {}).get(provider_name)
-    base_url = _base_url(provider_cfg)
-    if base_url:
-        return base_url
-    # v2-native form: providers.<p>.settings.baseURL.
+    # R4: the V2 form is the only form awf 3 reads —
+    # ``providers.<p>.settings.baseURL``.
     provider_cfg = (root.get("providers") or {}).get(provider_name)
-    return _base_url(provider_cfg, settings=True)
+    return _base_url(provider_cfg)
 
 
-def _base_url(provider_cfg: object, *, settings: bool = False) -> str | None:
+def _base_url(provider_cfg: object) -> str | None:
     if not isinstance(provider_cfg, dict):
         return None
-    section = provider_cfg.get("settings" if settings else "options")
+    section = provider_cfg.get("settings")
     if not isinstance(section, dict):
         return None
     base_url = section.get("baseURL")

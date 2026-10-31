@@ -75,8 +75,9 @@ def _load_cli_models() -> set[str]:
 def _load_recent_models(db_path: Path, limit: int | None = None) -> set[str]:
     """Model IDs from opencode.db history — same reader as the plugin (D8).
 
-    One SQL copy for both consumers (AC24); v1 and v2 schemas are handled
-    inside ``awf.opencode_db.recent_models``.
+    One SQL copy for both consumers (AC12). The shared reader knows one
+    schema, v2 (``session_v2``); a v1 or empty base gives an empty set and
+    a "моделей не найдено" line on stderr, never an exception (K3).
     """
     from .. import opencode_db
 

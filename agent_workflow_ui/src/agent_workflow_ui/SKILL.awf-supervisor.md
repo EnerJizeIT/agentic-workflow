@@ -49,7 +49,7 @@ dispatch_todo → start → [idle] → verify → approve/reject → (run_next) 
   `done` → `awf_run_next` (`git log` не нужен).
 - **run close:** `awf_run_finish` — RUN-REPORT в outbox.
 - **инцидент:** инфраструктура первой
-  (`opencode run --auto --agent <role> -- 'say hello'`) → `awf_retry_stage`
+  (`opencode run --auto -- 'say hello'`) → `awf_retry_stage`
   / `awf_continue --from-stage <stage>`.
 - **hygiene:** `awf_unblock` (старое закрытие), `awf_todo_remove` (не
   стартовал), `awf_restore` (архивирован без работы), `awf_todo_retire`
@@ -135,8 +135,9 @@ Stop-flag не перескакивать.
 Ситуация: воркер умер без сигнала (краш, сеть, гибель сессии); событие
 `salvage` / `salvage_stage` в state.
 
-1. Инфраструктура первой (bash): `opencode run --auto --agent <role> --
-   'say hello'` — докажи, что агент/транспорт живы.
+1. Инфраструктура первой (bash): `opencode run --auto -- 'say hello'`
+   (агент — из `models.<role>.agent_name`, иначе дефолтный) — докажи, что
+   транспорт и модель живы.
 2. `awf_retry_stage(project_dir)` — kill + очистка salvage-сигналов +
    рестарт с salvage-стадии. Альтернатива —
    `awf_continue(project_dir, from_stage="<stage>")`.
