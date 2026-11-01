@@ -178,7 +178,8 @@ def mock_oc_env(monkeypatch, tmp_path):
     oc_dir = tmp_path / "oc"
     oc_dir.mkdir()
     (oc_dir / "opencode.json").write_text(json.dumps({
-        "provider": {"vllm": {"models": {"llm": {"name": "LLM"}}}},
+        # R5/R8: awf 3 reads the 2.x roots only.
+        "providers": {"vllm": {"models": {"llm": {"name": "LLM"}}}},
     }))
     import awf.xdg as xdg_mod
 

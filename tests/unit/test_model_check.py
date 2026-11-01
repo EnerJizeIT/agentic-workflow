@@ -331,7 +331,8 @@ class TestCheckModelConfigEdgeCases:
         oc_dir = fake_home / ".config" / "opencode"
         oc_dir.mkdir(parents=True)
         (oc_dir / "opencode.json").write_text(json.dumps({
-            "provider": {"custom": {"models": ["model-a", "model-b"]}},
+            # R5/R8: awf 3 reads the 2.x roots only.
+            "providers": {"custom": {"models": ["model-a", "model-b"]}},
         }))
         monkeypatch.setattr(Path, "home", lambda: fake_home)
         _set_models(awf_project, {
