@@ -105,7 +105,11 @@ digest of the file set the commit gate will apply. If the run is
 restarted or revised after the approve, the stale approval no longer
 unlocks the commit — the gate refuses with a clear message, nothing is
 committed, and a fresh `awf_approve` on the current run is required.
-Outside a run the signal stays an empty marker as before.
+Outside a run the signal carries no generation but names the attempt it
+approved — the verified fingerprint and the baseline; the verify wait
+accepts it while `VERIFIED-<todo-id>.sha`, the baseline and the tree
+still match, so approving before the wait starts no longer needs a
+manual `touch` (A23).
 
 **`awf mutations [--list] [--file PATH] [--timeout N]`** — mutation smoke
 over `scripts/mutations.txt` (the same base list the CI test job runs as
