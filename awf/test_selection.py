@@ -86,14 +86,15 @@ class Selection:
 
 
 def _git(project: Path, *args: str) -> str:
-    done = subprocess.run(
-        ["git", *args],
-        cwd=project,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return done.stdout if done.returncode == 0 else ""
+    """One owner for git access: ``git_utils`` (the M4 guard's rule)."""
+    from .git_utils import git_stdout
+
+    try:
+        # surrogateescape: `-z` output is raw bytes; a non-UTF-8 name must not
+        # raise here (the M4 invariant: read paths with the NUL protocol).
+        return git_stdout(project, *args, check=False, errors="surrogateescape")
+    except (OSError, subprocess.SubprocessError):
+        return ""
 
 
 def changed_files(project: Path, base: str = "") -> list[str]:
@@ -104,11 +105,16 @@ def changed_files(project: Path, base: str = "") -> list[str]:
     """
     names: set[str] = set()
     if base:
-        out = _git(project, "diff", "--name-only", "--diff-filter=ACMR", base)
-        names.update(line.strip() for line in out.splitlines() if line.strip())
-    out = _git(project, "status", "--porcelain")
-    for line in out.splitlines():
-        path = line[3:].strip()
+        # -z: the NUL protocol — a non-UTF-8 path never breaks the listing
+        # (M4's rule for every printed git path read).
+        out = _git(project, "diff", "--name-only", "--diff-filter=ACMR", "-z", base)
+        names.update(part for part in out.split("\0") if part)
+    out = _git(project, "status", "--porcelain", "-z")
+    for entry in out.split("\0"):
+        entry = entry.rstrip("\n")
+        if not entry:
+            continue
+        path = entry[3:].strip()
         if " -> " in path:  # rename: take the destination
             path = path.split(" -> ", 1)[1]
         if path:
