@@ -30,7 +30,11 @@ V2_MODEL_FIELD: tuple[str, str] | None = ("session_v2", "model")
 SCHEMA_V2 = "v2"
 SCHEMA_NONE = "none"
 
-_MODELS_TIMEOUT = 10.0
+# ``opencode models`` is a SERVER call in 2.x: on a cold start the CLI
+# spends seconds bringing the server up before it prints a line. Ten
+# seconds measured a timeout on a healthy machine (01.11), so the budget
+# is wide enough for the first call and still bounded.
+_MODELS_TIMEOUT = 30.0
 
 
 def table_names(con: sqlite3.Connection) -> set[str]:

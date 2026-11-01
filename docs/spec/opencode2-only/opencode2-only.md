@@ -1,14 +1,14 @@
 # Требования: awf 3.0 — только opencode 2.x
 
 Статус: REVIEW
-Ревизия: req-3
-Входы: opencode2-only.context.md@ctx-1; opencode2-only.requirements-review.md@reqrev-2; opencode2-only.readiness.md@ready-1
+Ревизия: req-4
+Входы: opencode2-only.context.md@ctx-1; opencode2-only.requirements-review.md@reqrev-3; opencode2-only.readiness.md@ready-2
 База кода: commit 0384ba35ffc97ce370e6dc94bee098277d775860
-Основание: TODO-0316 (replan после BLOCKED ready-1); решение владельца 31.10.2026 («awf 3.0 работает только на opencode ≥ 2»); CTX1–CTX13.
+Основание: TODO-0315; решение владельца 31.10.2026 («awf 3.0 работает только на opencode ≥ 2»); CTX1–CTX13.
 
-## Изменения в req-3
+## Изменения
 
-FR1 → AC19; FR2 → R6, AC21; FR4 → AC25; FR5 → AC31; FR6 → Q1–Q3; FR7 → R1, AC2. Остальное — req-2.
+req-4 (находки ready-2): INV7 согласован с AC19; `provider` добавлен в V1-ключи R5; AC19 ссылается на арх. D5; R1 называет отсутствующую в коде ветку отказа на major < 2.
 
 ## Цель и scope
 
@@ -20,7 +20,7 @@ awf — внутренний инструмент, обязательств пе
 
 - Режим выбирается по версии: `awf/opencode_version.py:150-232`; вызовы — `awf/agent_stage.py:250-258`, `awf/supervisor.py:1199-1208`; preflight — `awf/api/pipeline.py:1922-1945`, `awf/api/run.py:401-413`.
 - Две схемы базы и две формы конфига: `awf/metrics.py` (`V1`/`BOTH`), `awf/opencode_db.py:36-68`, `awf/session_store.py:48,246-260` (`session` первой), `awf/_net.py:172-212`, `awf/_env.py:265-294,371-446`, `awf/opencode_agents.py:63-160`, `awf/doctor.py:293-325`.
-- Конфиг ищет `awf/xdg.py:31-33`; `.agentic/config.yaml` — конфиг awf, `awf init` правит файл агентов после подтверждения. На 2.2.3 V1-ключи нормализуются в памяти без перезаписи файла (CTX3); двойники отвечают `1.19.4` (CTX1); пакет 2.3.0.
+- Конфиг ищет `awf/xdg.py:31-33`; `awf init` правит файл агентов после подтверждения. V1-ключи нормализуются в памяти без перезаписи файла (CTX3); двойники отвечают `1.19.4` (CTX1); пакет 2.3.0.
 
 ## Требования
 
@@ -28,7 +28,7 @@ awf — внутренний инструмент, обязательств пе
 
 MUST. В итерации. C1. TODO п.1; CTX1; D1, D2.
 
-Перед первым побочным эффектом любого входа (`start`, `continue`, `run-next`, `run-service-start`, foreground, background, MCP) awf читает `opencode --version` и требует major ≥ 2. Major < 2 — отказ «awf 3 требует opencode 2.x» с найденной версией и rc 1; нет бинаря — «opencode не найден», rc 1; версия не определена (пусто, мусор, rc≠0, таймаут) — отдельный текст и rc 0 (D1), поэтому вызывающий читает текст, а не только rc. Отказ одинаков для всех входов, включая managed, и стоит до TODO, baseline, `.ready`, `current`, dispatch, lease, PID.
+Перед первым побочным эффектом любого входа (`start`, `continue`, `run-next`, `run-service-start`, foreground, background, MCP) awf читает `opencode --version` и требует major ≥ 2. Ветки «major < 2 → отказ» в коде нет — она добавляется (CTX1). Major < 2 — отказ «awf 3 требует opencode 2.x» с найденной версией и rc 1; нет бинаря — «opencode не найден», rc 1; версия не определена (пусто, мусор, rc≠0, таймаут) — отдельный текст и rc 0 (D1). Отказ одинаков для всех входов, включая managed, и стоит до TODO, baseline, `.ready`, `current`, dispatch, lease, PID.
 
 AC1 — сид (1,19,4): каждый вход отказывает, текст содержит «требует opencode 2.x» и «1.19.4».
 AC2 — версия не определена: отказ с отдельным текстом и rc 0, без исключения.
@@ -40,7 +40,7 @@ AC5 — `--version` один раз на процесс.
 
 MUST. В итерации. C2. TODO п.1; CTX9; D3; RR11.
 
-Флаг стоит в argv обоих спавнов и `opencode models` при любом конфиге. Ключ не читается: нет домена `auto/on/off`, отказа на небулево, предупреждения «`on` на 1.x». Managed (INV3) — исключение: флага нет, предупреждение прежнее.
+Флаг стоит в argv обоих спавнов и `opencode models` при любом конфиге. Ключ не читается: домена `auto/on/off`, отказа на небулево и предупреждения про 1.x больше нет. Managed (INV3) — исключение: флага нет, предупреждение прежнее.
 
 AC6 — `--standalone` в argv обоих спавнов и `opencode models` при отсутствии ключа и при `auto`, `on`, `off`, `maybe`, `true`; прочие флаги и порядок прежние.
 AC7 — `standalone: maybe` больше не отказ: старт идёт, флаг передан.
@@ -50,7 +50,7 @@ AC8 — `awf doctor` печатает WARN про неизвестный клю�
 
 MUST. В итерации. C3. TODO п.2; CTX4, CTX5, CTX12; A2, D5.
 
-Единственная читаемая схема — `session_v2` + `session_message`. Чтение `session`, `part`, `message`, «both» и «v2 в форме v1» удаляется у метрик, recent models (`awf/api/model_check.py`, плагин) и захвата сессии. V1-схема, пустая база или база без таблиц — `n/a` с причиной; захват молча не пишет id. На смешанной базе захват читает `session_v2`. v1-тесты удаляются.
+Единственная читаемая схема — `session_v2` + `session_message`. Чтение `session`, `part`, `message`, «both» и «v2 в форме v1» удаляется у метрик, recent models (`awf/api/model_check.py`, плагин) и захвата сессии. V1-схема, пустая база или база без таблиц — `n/a` с причиной; захват молча не пишет id. На смешанной базе захват читает `session_v2`; v1-тесты удаляются.
 
 AC9 — синтетическая V2-база: те же числа и формат, что на текущем v2-пути.
 AC10 — V1-база, пустая база и база без таблиц: `n/a` с причиной, rc 0; захват id не пишет, ошибки нет.
@@ -71,21 +71,21 @@ AC15 — обе формы: побеждает V2.
 
 MUST. В итерации. C4. TODO п.3; CTX2, CTX8; D1, D3 (арх.); RR1, RR2.
 
-`awf/_env.py` собирает `OPENCODE_CONFIG_CONTENT` в форме V2: `agents`, `mcp.servers`, `permissions` — упорядоченный список правил. Правила стадии и `locked_deny` идут последними и потому сильнее хостовых: побеждает последнее совпадение. Имена инструментов — 2.x (`bash`→`shell`, `write`→`edit`, маппинг — арх. D2).
+`awf/_env.py` собирает `OPENCODE_CONFIG_CONTENT` в форме V2: `agents`, `mcp.servers`, `permissions` — упорядоченный список правил. Правила стадии и `locked_deny` идут последними: побеждает последнее совпадение. Имена инструментов — 2.x (`bash`→`shell`, `write`→`edit`, маппинг — арх. D2).
 
-Файл агентов: `awf init` правит лишь отсутствующий или уже V2-файл — после подтверждения, существующий бэкапит. Файл с V1-ключами (`agent`, `permission`, `mcp.<имя>`) остаётся байт-в-байт с WARN «сконвертируй по R11».
+Файл агентов: `awf init` правит лишь отсутствующий или уже V2-файл — после подтверждения, существующий бэкапит. Файл с V1-ключами (`provider`, `agent`, `permission`, `mcp.<имя>`) остаётся байт-в-байт с WARN «сконвертируй по R11».
 
 AC16 — верхнеуровневые ключи env: нет `agent`, `permission`, `mcp.<имя>`; есть `agents`, `mcp.servers`, `permissions`.
 AC17 — профиль стадии запрещает инструмент, разрешённый хостом: правило стадии последнее, проба `opencode run` 2.2.3 показывает отказ (арх. D1).
 AC18 — `locked_deny` остаётся запретом при любом хостовом правиле.
-AC19 — `awf init` без файла: пишет V2-форму, бэкапа нет (нечего терять, D5), doctor молчит; на V2-файле: дописывает недостающее, бэкап до записи, doctor молчит.
+AC19 — `awf init` без файла: пишет V2-форму, бэкапа нет (нечего терять, арх. D5), doctor молчит; на V2-файле: дописывает недостающее, бэкап до записи, doctor молчит.
 AC20 — файл с V1-ключами: байты до и после совпадают, WARN «сконвертируй по R11», ключи не выдумываются, падения нет.
 
 ### R6 — `awf doctor`: формат конфига и мёртвые ключи
 
 MUST. В итерации. C5. TODO п.3; CTX6, CTX9, CTX10; RR5.
 
-Строка формата читает файл `opencode_config_file()`: V2-ключи (`providers`, `agents`, `mcp.servers`, `permissions`) — ok; V1-ключи (`provider`, `agent`, `permission`, `mcp.<имя>`) — WARN «сконвертируй в V2» с перечнем. Строковый `model` — валидный V2: WARN не даёт и записи не мешает. Строки режима уходят вместе с `MODELS_STANDALONE_SUPPORTED`. `opencode.standalone` в `.agentic/config.yaml` — неизвестный ключ.
+Строка формата читает файл `opencode_config_file()`: V2-ключи (`providers`, `agents`, `mcp.servers`, `permissions`) — ok; V1-ключи (`provider`, `agent`, `permission`, `mcp.<имя>`) — WARN «сконвертируй в V2» с перечнем. Строковый `model` валиден: WARN нет. Строки режима уходят вместе с `MODELS_STANDALONE_SUPPORTED`. `opencode.standalone` в `.agentic/config.yaml` — неизвестный ключ.
 
 AC21 — V2-файл, в том числе со строковым `model`: ok, WARN нет; V1-файл: WARN «сконвертируй» с перечнем ключей, хеш до и после совпадает.
 AC22 — строк про режим нет; `MODELS_STANDALONE_SUPPORTED` отсутствует.
@@ -95,7 +95,7 @@ AC23 — `opencode.standalone` в `.agentic/config.yaml` запуск не бл�
 
 MUST. В итерации. C6. TODO п.4; CTX7; K9 (арх.).
 
-`NETWORK_MARKERS` содержит только строки opencode 2.x; строки только 1.x удаляются поимённо (K9). Классы `network/auth/transient` и правило «одно совпадение — network» не меняются.
+`NETWORK_MARKERS` содержит только строки opencode 2.x; набор только 1.x удаляется поимённо (K9). Классы `network/auth/transient` и правило «одно совпадение — network» не меняются.
 
 AC24 — образец вывода 2.2.3 на мёртвом эндпоинте классифицируется как network.
 AC25 — `fetch failed` (единственный свидетель) network не даёт: его не ловят ни маркер, ни `_NETWORK_RE`; `Cannot connect to API` и `Connection reset` остаются network через `_NETWORK_RE`; посторонний текст — не network; тесты `auth` и `transient` без правок.
@@ -211,7 +211,7 @@ AC38 — в этих трёх местах нет 2.3.0.
 
 INV1 — guard `proc.pid > 1` и tripwire `_forbid_session_kill` не тронуты (grep, тесты).
 
-INV2 — отказ до побочных эффектов: TODO, baseline, `.ready`, `current`, dispatch, lease, PID (AC3).
+INV2 — отказ до побочных эффектов, перечень мест — R1 (AC3).
 
 INV3 — managed остаётся opt-in и не передаёт `--standalone` (AC8).
 
@@ -221,7 +221,7 @@ INV5 — классы `network/auth/transient` сохраняют смысл, м
 
 INV6 — формат `.agentic/state|inbox|outbox` и сигналы DONE/BLOCKED прежние (e2e).
 
-INV7 — чтение не пишет конфиг opencode; запись — только `awf init` с бэкапом (AC19–AC21).
+INV7 — чтение не пишет конфиг opencode; запись — только `awf init`, с бэкапом, если файл существовал (AC19–AC21).
 
 INV8 — пустая или чужая база даёт `n/a` с причиной, не нули (AC10).
 
@@ -244,7 +244,7 @@ A3 — `opencode debug config` не доказывает применение en
 
 A4 — умолчание двойников — 2.2.3 в том же IMP-юните, что и R1 (CTX1).
 
-A5 — файл с V1-ключами awf не трогает: правка чужого конфига дороже WARN (RR2).
+A5 — файл с V1-ключами awf не трогает: правка дороже WARN (RR2).
 
 D1 — отказ версии — результат с текстом, не исключение (доктрина 03).
 

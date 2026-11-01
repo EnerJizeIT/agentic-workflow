@@ -1,13 +1,13 @@
 # Тестовая спецификация: awf 3.0 — только opencode 2.x
 
 Статус: REVIEW
-Ревизия: ts-2
-Входы: opencode2-only.md@req-3; opencode2-only.requirements-review.md@reqrev-3; opencode2-only.architecture.md@arch-2; opencode2-only.context.md@ctx-1
+Ревизия: ts-3
+Входы: opencode2-only.md@req-4; opencode2-only.requirements-review.md@reqrev-4; opencode2-only.architecture.md@arch-3; opencode2-only.context.md@ctx-1
 База кода: 0384ba35ffc97ce370e6dc94bee098277d775860
 
 ## Scope и статус
 
-Проверки **спроектированы, не пройдены**. Scope — R1–R12, AC1–AC38, INV1–INV9 на базе `0384ba3`. Ожидание выведено из R#/AC#; K# даёт только точку входа. Уровни: unit для правил, integration для БД и argv, e2e для сигналов, ручная — файл владельца. TDD применим к T1–T25 и T27–T30; проба T14 и шаг T26 — измерения.
+Проверки **спроектированы, не пройдены**. Scope — R1–R12, AC1–AC38, INV1–INV9 на базе `0384ba3`. Ожидание выведено из R#/AC#; K# даёт только точку входа. Уровни: unit для правил, integration для БД и argv, e2e для сигналов, ручная — файл владельца. TDD применим к T1–T25 и T27–T30; T14 и T26 — измерения.
 
 ## Карта покрытия
 
@@ -228,7 +228,7 @@
 
 ## Среда и команды
 
-Существующие: `pytest tests/unit/test_opencode_version.py test_preflight_standalone.py test_agent_argv.py test_opencode_db.py test_metrics_v2.py test_doctor.py test_env_validation.py test_opencode_agents_permissions.py -q`; `pytest tests/e2e/test_init.py test_signals.py -q`; `bash scripts/check-contracts.sh`; полный сьют — `scripts/suite-canonical.sh --background`. Планируемые: `test_opencode2_only_guard.py` (T19, T20), кейсы baseURL и формата. Прогонов не было: на `0384ba3` часть ожиданий красная по замыслу TDD. Фикстуры — sqlite в `tmp_path`, фейки 2.2.3/1.19.4 из `tests/infra`, `prime_probe`.
+Существующие: `pytest tests/unit/test_opencode_version.py test_preflight_standalone.py test_agent_argv.py test_opencode_db.py test_metrics_v2.py test_doctor.py test_env_validation.py test_opencode_agents_permissions.py -q`; `pytest tests/e2e/test_init.py test_signals.py -q`; `bash scripts/check-contracts.sh`; полный сьют — `scripts/suite-canonical.sh --background`. Планируемые: `test_opencode2_only_guard.py` (T19, T20), кейсы baseURL и формата. Прогонов не было: на `0384ba3` часть ожиданий красная по замыслу TDD. Фикстуры — sqlite в `tmp_path`, фейки из `tests/infra`, `prime_probe`.
 
 ## Условия приёмки реализации
 
@@ -238,10 +238,7 @@
 
 | ID | Важность | Находка | Владелец | Состояние |
 |---|---|---|---|---|
-| QA1 | MINOR | AC8 про doctor, INV3 — managed; покрыто T6 и T7 | аналитик | закрыт в req-3 |
-| QA2 | MINOR | R1 фиксирует rc 0/1; T3 сверяет | аналитик | закрыт в req-3 |
 | QA3 | MAJOR | AC17/AC18 без живой пробы; изоляцию доказывает T14 | QA/IMP3 | открыт |
-| QA4 | MINOR | AC25 и T22 сходятся на `fetch failed` | архитектор | закрыт в req-3 |
 | QA5 | MINOR | AC29 машинно не проверить: T25 плюс ревью IMP4 | ревьюер IMP4 | открыт |
 
-Статус REVIEW: критерии и инварианты покрыты, ожидания выведены из R#/AC#, негативные пути разобраны (V1-файл, чужая база, мусор версии, повтор запуска). READY — за финальным ревью.
+QA1, QA2, QA4 закрыты в req-3. Статус REVIEW: критерии и инварианты покрыты, ожидания выведены из R#/AC#, негативные пути разобраны (V1-файл, чужая база, мусор версии, повтор запуска). READY — за финальным ревью.

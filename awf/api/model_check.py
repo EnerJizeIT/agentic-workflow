@@ -52,11 +52,17 @@ def _load_opencode_root(oc_path: Path) -> dict[str, Any]:
 def _load_opencode_config(
     oc_path: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Parse opencode.json → (providers, agents); ({}, {}) when unreadable."""
+    """Parse opencode.json → (providers, agents); ({}, {}) when unreadable.
+
+    awf 3 reads the 2.x form only: ``providers`` / ``agents``. The 1.x
+    roots (``provider`` / ``agent``) are not a fallback — a file still in
+    that shape is reported by ``awf doctor`` and ignored here, so the model
+    check never validates a role against a provider the launch won't use.
+    """
     oc_data = _load_opencode_root(oc_path)
     return (
-        oc_data.get("provider", {}) or {},
-        oc_data.get("agent", {}) or {},
+        oc_data.get("providers", {}) or {},
+        oc_data.get("agents", {}) or {},
     )
 
 
