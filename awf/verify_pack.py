@@ -1141,6 +1141,112 @@ def _prove_red_pin_section(
     )
 
 
+# ─── A8: DONE.json claims are checked, not trusted ──────────────────────
+
+#: How many claimed commands one check runs. A report lists a handful; a
+#: pathological list must not turn verify into a second full suite.
+CLAIM_MAX_COMMANDS = 5
+#: Per-command budget for a claim check (the worker's own budget is 600).
+CLAIM_TIMEOUT = 300
+
+_SHELL_OPERATORS = ("&&", "||", ";", "|", ">", "<", "`", "$(")
+
+
+def _claimed_green(result: str) -> bool | None:
+    """Did the worker claim a GREEN run? ``None`` when the text is unclear."""
+    text = (result or "").strip().lower()
+    if not text:
+        return None
+    if any(word in text for word in ("fail", "error", "traceback", "rc=1", "rc 1")):
+        return False
+    if any(
+        word in text
+        for word in ("passed", "pass", "ok", "green", "rc=0", "success")
+    ):
+        return True
+    return None
+
+
+def check_done_claims(
+    project_dir: str | Path,
+    todo_id: str,
+    *,
+    timeout: int = CLAIM_TIMEOUT,
+    limit: int = CLAIM_MAX_COMMANDS,
+) -> list[str]:
+    """A8: rerun the commands ``DONE-<todo>.json`` says the worker ran.
+
+    Returns one line per CONTRADICTION — a claimed green whose command now
+    fails (or times out). Nothing else: a red claim, an unclear claim, a
+    shell command (argv only), an unreadable file and an absent file are
+    not contradictions, and silence there keeps today's behaviour.
+
+    The point is narrow: a report may not say "12 passed" about a command
+    that does not pass. Everything a worker asserts beyond that stays a
+    declaration — verify-pack renders it as such.
+    """
+    from . import paths
+    from .unit_contract import parse_done_json
+
+    project = Path(project_dir).resolve()
+    path = paths.outbox(project) / f"DONE-{todo_id}.json"
+    try:
+        data = parse_done_json(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return []
+    if not isinstance(data, dict):
+        return []
+
+    mismatches: list[str] = []
+    for entry in (data.get("tests_run") or [])[:limit]:
+        if not isinstance(entry, dict):
+            continue
+        cmd = str(entry.get("cmd") or "").strip()
+        claimed = _claimed_green(str(entry.get("result") or ""))
+        if not cmd or claimed is not True:
+            continue
+        try:
+            argv = shlex.split(cmd)
+        except ValueError:
+            continue
+        if not argv:
+            continue
+        # argv only: a bare operator TOKEN means a shell line. A `;` inside
+        # quotes (`python3 -c 'import sys; sys.exit(1)'`) is one argument,
+        # not a pipeline — the split already removed the quotes.
+        if any(token in _SHELL_OPERATORS for token in argv):
+            continue
+        try:
+            done = subprocess.run(
+                argv,
+                cwd=project,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+            rc = done.returncode
+        except subprocess.TimeoutExpired:
+            mismatches.append(
+                f"claimed {entry.get('result')!r} but the command did not "
+                f"finish in {timeout}s: {cmd}"
+            )
+            continue
+        except (OSError, subprocess.SubprocessError) as e:
+            mismatches.append(
+                f"claimed {entry.get('result')!r} but the command could not "
+                f"run ({type(e).__name__}: {e}): {cmd}"
+            )
+            continue
+        if rc != 0:
+            tail = (done.stderr or done.stdout or "").strip().splitlines()
+            extra = f" — {tail[-1][:160]}" if tail else ""
+            mismatches.append(
+                f"claimed {entry.get('result')!r} but rc={rc}: {cmd}{extra}"
+            )
+    return mismatches
+
+
 def _done_json_section(project: Path, todo_id: str, logs_dir: Path) -> Section:
     path = paths.outbox(project) / f"DONE-{todo_id}.json"
     if not path.is_file():
@@ -1167,14 +1273,26 @@ def _done_json_section(project: Path, todo_id: str, logs_dir: Path) -> Section:
             status="skipped",
             lines=[f"skipped — {path.name} is broken or violates the schema"],
         )
-    lines = ["executor data (unverified — what the implementer declared):"]
+    lines = ["executor data (declared by the implementer):"]
     lines.extend(render_done_json(data))
+    contradictions = check_done_claims(project, todo_id)
+    if contradictions:
+        lines.append("")
+        lines.append("A8: the claims below do not survive a rerun:")
+        lines.extend(f"  - {line}" for line in contradictions)
+        return Section(
+            name="done_json",
+            status="fail",
+            lines=lines,
+            measured=True,
+            detail="claimed green run does not reproduce",
+        )
     return Section(
         name="done_json",
         status="pass",
         lines=lines,
         measured=False,
-        detail="executor facts included",
+        detail="executor facts included; claimed green commands reproduce",
     )
 
 
