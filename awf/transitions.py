@@ -30,6 +30,11 @@ def resolve_transition(stage: Stage, sig_type: str) -> tuple[str, str]:
 
     if sig_type == "rejected":
         policy = stage.on_rejected
+        # A7: `fix_round:<stage>` rewinds to the fixing stage AND appends the
+        # findings to the unit — the reviewer's verdict becomes the worker's
+        # next instruction instead of a supervisor replan.
+        if policy.startswith("fix_round:"):
+            return ("fix_round", policy.split(":", 1)[1])
         if policy.startswith("rollback_to:"):
             return ("rollback", policy.split(":", 1)[1])
         # Both 'replan' and 'escalate' (default) escalate to supervisor

@@ -409,6 +409,12 @@ the middle. Stage keys:
 `on_rejected`, `max_retries`, `max_rollbacks`. `kind` (plan / execute /
 verify) is computed from the stage's position — do not write it.
 
+`on_rejected` takes three shapes: `escalate` (default — the supervisor writes
+the next TODO), `rollback_to:<stage>` (rewind only) and
+`fix_round:<stage>` — the engine appends the reviewer's own report to the
+unit as a `## REVIEW-фикс` section and rewinds to the fixing stage, so a
+review round runs without a supervisor. The rollback budget still caps it.
+
 **Single worker (fast, for small fixes):**
 ```yaml
 # .agentic/pipelines/default.yaml
