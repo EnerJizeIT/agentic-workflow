@@ -517,7 +517,21 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
                         f"string policy, got {value!r}. Expected one of: "
                         f"{', '.join(sorted(_POLICY_ALLOWED[pk]))}."
                     )
-                if value.startswith("rollback_to:"):
+                if value.startswith("fix_round:"):
+                    # A7: the reviewer's report becomes the next fix round.
+                    if pk != "on_rejected":
+                        raise AwfApiError(
+                            f"Pipeline {source}: stage '{label}' {pk}="
+                            f"{value!r} — fix_round:<stage> is only "
+                            f"supported for on_rejected (it is a review "
+                            f"verdict, not a failure policy)."
+                        )
+                    if not value.split(":", 1)[1].strip():
+                        raise AwfApiError(
+                            f"Pipeline {source}: stage '{label}' {pk}="
+                            f"{value!r} — fix_round needs a stage name."
+                        )
+                elif value.startswith("rollback_to:"):
                     if pk not in _ROLLBACK_TO_KEYS:
                         raise AwfApiError(
                             f"Pipeline {source}: stage '{label}' {pk}="

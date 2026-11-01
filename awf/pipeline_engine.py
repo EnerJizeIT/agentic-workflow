@@ -760,6 +760,114 @@ def _rollback_budget_allow(
     return True, rb_count + 1, limit
 
 
+#: A7: how much of a reviewer's report becomes the worker's instruction.
+FIX_ROUND_MAX_CHARS = 6000
+
+
+def _fix_round_text(project_dir: Path, todo_id: str, source_stage: str) -> str:
+    """The findings that become the next fix round — reviewer's own words.
+
+    Order: the stage's REVIEW-<todo>.md (the worker's verdict artifact), then
+    the stage handoff (engine facts + the role's report). A missing pair is
+    an honest empty body: the caller then declines the round instead of
+    rewinding a worker with no instruction.
+    """
+    from .signals import find_signal_file
+
+    candidates = []
+    review = find_signal_file(
+        paths.outbox(project_dir), "REVIEW", todo_id, ".md"
+    )
+    if review is not None:
+        candidates.append(review)
+    handoff = paths.handoff_dir(project_dir) / f"{source_stage}-{todo_id}.md"
+    if handoff.is_file():
+        candidates.append(handoff)
+    for path in candidates:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+        if text:
+            return text[:FIX_ROUND_MAX_CHARS]
+    return ""
+
+
+def _handle_fix_round(
+    project_dir: Path,
+    logs_dir: Path,
+    config: dict,
+    stages: list[Stage],
+    current_todo: str,
+    target: str,
+    source: str = "",
+) -> tuple[int, str, int]:
+    """A7: reviewer's findings → an appended section → the same unit again.
+
+    The manual loop (supervisor writes ``## REVIEW-фикс`` and restarts the
+    stage) is the expensive part of a review round. With
+    ``on_rejected: fix_round:<stage>`` the engine does it:
+
+    1. the findings are appended to the TODO as one REVIEW-fix section
+       (the same writer the supervisor uses, one round number);
+    2. the unit rewinds to the fixing stage — no replan, no new TODO;
+    3. the shared rollback budget still caps the loop.
+
+    Refusals are clean: a missing target, an empty findings body or an
+    exhausted budget stops the stage with a log line, never a half-loop.
+    """
+    target_idx = _find_stage_index(stages, target)
+    if target_idx < 0:
+        print(f"ERROR: fix_round target '{target}' not found in pipeline")
+        _log(logs_dir, f"A7: fix_round target {target!r} not found")
+        return -1, current_todo, 1
+
+    allowed, count, limit = _rollback_budget_allow(
+        project_dir, logs_dir, stages, current_todo, target, target_idx, source
+    )
+    if not allowed:
+        return -1, current_todo, 1
+
+    findings = _fix_round_text(project_dir, current_todo, source)
+    if not findings:
+        print(
+            "ERROR: fix_round has no findings to hand back — the stage "
+            "reported a rejection without a report.",
+            file=sys.stderr,
+        )
+        _log(logs_dir, f"A7: fix_round {source}->{target} without findings")
+        return -1, current_todo, 1
+
+    try:
+        from .api.hygiene import _review_append_impl
+
+        appended = _review_append_impl(
+            project_dir,
+            current_todo,
+            findings,
+            reason=f"engine fix round after {source}",
+            _lock_held=True,
+        )
+    except Exception as e:  # noqa: BLE001 — a refused append stops the loop cleanly
+        print(
+            f"ERROR: fix_round could not append the findings: {e}",
+            file=sys.stderr,
+        )
+        _log(logs_dir, f"A7: fix_round append refused for {current_todo}: {e}")
+        return -1, current_todo, 1
+
+    print(
+        f"A7: fix round {count}/{limit} — findings appended "
+        f"({appended.section}); rewinding to {stages[target_idx].name}"
+    )
+    _log(
+        logs_dir,
+        f"A7: fix_round {source}->{target} ({count}/{limit}): "
+        f"appended {appended.section!r}",
+    )
+    return target_idx, current_todo, 0
+
+
 def _handle_direct_rollback(
     project_dir: Path,
     logs_dir: Path,
@@ -2963,6 +3071,13 @@ def execute_agent_stage(
         new_idx, new_todo, exit_code = _handle_escalate(
             project_dir, logs_dir, s_name, current_todo, auto, stage, retry_counts, stage_idx,
             pipeline_name,
+        )
+        return new_todo, new_idx, exit_code
+
+    elif action == "fix_round":
+        new_idx, new_todo, exit_code = _handle_fix_round(
+            project_dir, logs_dir, config, stages, current_todo, target,
+            source=s_name,
         )
         return new_todo, new_idx, exit_code
 
