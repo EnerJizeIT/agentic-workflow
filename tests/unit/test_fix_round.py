@@ -95,6 +95,62 @@ def test_without_findings_the_round_is_refused(tmp_path):
     ).read_text(encoding="utf-8")
 
 
+def test_a_refused_round_does_not_spend_the_rollback_budget(tmp_path):
+    """No findings → no round → the budget is not charged.
+
+    Charging it made a reviewer that rejects without a report exhaust the
+    shared budget, and the pipeline then stopped with "budget exhausted"
+    instead of the real reason.
+    """
+    project = _project(tmp_path)
+    idx, todo, rc = pipeline_engine._handle_fix_round(
+        project,
+        project / ".agentic" / "logs",
+        {},
+        _stages(),
+        "TODO-0001",
+        "implement",
+        source="review",
+    )
+
+    assert (idx, rc) == (-1, 1)
+    state_file = project / ".agentic" / "state" / "current.yaml"
+    state = state_file.read_text(encoding="utf-8") if state_file.is_file() else ""
+    assert "rollback_counts" not in state or "TODO-0001" not in state
+
+
+def test_the_budget_caps_the_loop_and_the_refusal_appends_nothing(tmp_path):
+    """Three rounds, then a refusal — the loop is bounded (default 3).
+
+    The fourth call must stop BEFORE the append: a section in the TODO with
+    no rewind is the half-loop the handler forbids, and a reviewer would
+    read the same findings again with no new work behind them.
+    """
+    project = _project(tmp_path)
+    (project / ".agentic" / "outbox" / "REVIEW-TODO-0001.md").write_text(
+        "findings\n", encoding="utf-8"
+    )
+
+    outcomes = [
+        pipeline_engine._handle_fix_round(
+            project,
+            project / ".agentic" / "logs",
+            {},
+            _stages(),
+            "TODO-0001",
+            "implement",
+            source="review",
+        )
+        for _ in range(4)
+    ]
+
+    assert [rc for _idx, _todo, rc in outcomes] == [0, 0, 0, 1]
+    todo_text = (project / ".agentic" / "inbox" / "TODO-0001.md").read_text(
+        encoding="utf-8"
+    )
+    assert todo_text.count("## REVIEW-фикс") == 3
+
+
 def test_a_missing_target_is_refused(tmp_path):
     project = _project(tmp_path)
     (project / ".agentic" / "outbox" / "REVIEW-TODO-0001.md").write_text(

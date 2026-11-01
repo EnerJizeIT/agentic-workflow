@@ -84,6 +84,90 @@ class TestBuildPipelineContext:
         assert ctx == ""
 
 
+class TestPriorCompletedTodos:
+    """R1/AC1–AC4 (IMP1): the last eight units, never the whole archive."""
+
+    @staticmethod
+    def _done(project: Path, names: list[str]) -> None:
+        done = project / ".agentic" / "done"
+        done.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            (done / name).mkdir()
+
+    @staticmethod
+    def _fragment(ctx: str) -> str:
+        """The completed-units fragment: from its line to the end."""
+        return ctx[ctx.index("Prior completed TODOs:"):]
+
+    def test_last_eight_by_number(self, project):
+        _write_state(project, "agent-implementer", 2)
+        self._done(project, [f"TODO-{n:04d}" for n in range(1, 13)])
+
+        ctx = _build_pipeline_context(project, "TODO-0013")
+        fragment = self._fragment(ctx)
+
+        assert "TODO-0004" not in fragment
+        assert "TODO-0001" not in fragment
+        listed = fragment.split("Prior completed TODOs: ")[1].split("\n")[0]
+        # K1/T1: newest first, exactly eight — the line, not just the set.
+        expected = ", ".join(f"TODO-{n:04d}" for n in range(12, 4, -1))
+        assert listed == expected
+
+    def test_current_unit_is_not_listed(self, project):
+        _write_state(project, "agent-implementer", 2)
+        self._done(project, ["TODO-0001", "TODO-0002", "TODO-0003"])
+
+        fragment = self._fragment(_build_pipeline_context(project, "TODO-0003"))
+
+        assert "TODO-0002" in fragment
+        assert "TODO-0003" not in fragment
+
+    def test_order_is_the_number_not_the_name(self, project):
+        _write_state(project, "agent-implementer", 2)
+        self._done(project, ["TODO-9", "TODO-10", "TODO-10000"])
+
+        line = self._fragment(_build_pipeline_context(project, "TODO-20000"))
+        line = line.split("\n")[0]
+
+        # K1: descending by number, so TODO-9 sorts AFTER TODO-10 (name
+        # sorting would put it first) and TODO-10000 comes first.
+        assert line.index("TODO-10000") < line.index("TODO-10,") < line.index("TODO-9")
+
+    def test_hint_names_the_report_and_the_archive(self, project):
+        _write_state(project, "agent-implementer", 2)
+        self._done(project, ["TODO-0001"])
+
+        ctx = _build_pipeline_context(project, "TODO-0002")
+
+        assert "awf report" in ctx
+        assert ".agentic/done/" in ctx
+
+    def test_fragment_does_not_grow_with_the_archive(self, project):
+        """CTX5: 297 ids were 3 288 characters of a 5 654-character prompt."""
+        _write_state(project, "agent-implementer", 2)
+        names = [f"TODO-{n:04d}" for n in range(1, 1001)]
+        self._done(project, names)
+        big = self._fragment(_build_pipeline_context(project, "TODO-9000"))
+
+        for name in names[:-8]:
+            (project / ".agentic" / "done" / name).rmdir()
+        small = self._fragment(_build_pipeline_context(project, "TODO-9000"))
+
+        assert big == small
+        assert len(big) <= 300
+
+    def test_the_other_context_blocks_are_unchanged(self, project):
+        _write_state(project, "agent-implementer", 2)
+        self._done(project, ["TODO-0001"])
+
+        ctx = _build_pipeline_context(project, "TODO-0002")
+
+        assert "## Pipeline context" in ctx
+        assert "Before you:" in ctx
+        assert "After you:" in ctx
+        assert "Your scope: implementation" in ctx
+
+
 class TestBuildPromptPipelineContext:
     """build_prompt injects pipeline context for execute stages."""
 

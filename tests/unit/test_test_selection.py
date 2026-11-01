@@ -79,6 +79,53 @@ def test_a_module_change_pulls_importers_mentions_and_guards(tmp_path):
     assert "tests/unit/test_unrelated.py" not in result.files
 
 
+def test_package_form_import_pulls_the_submodule_test(tmp_path):
+    """`from awf.api import bar` imports awf.api.bar — the selector must see it.
+
+    A file that imports the submodule only through its package used to be
+    missed: no import edge, no literal mention of the module path.
+    """
+    project = _project(tmp_path)
+    (project / "tests" / "unit" / "test_package_form.py").write_text(
+        "from awf.api import bar as bar_mod\n\n\ndef test_p():\n    assert bar_mod.VALUE\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "-A"], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-qm", "package form"], cwd=project, check=True)
+
+    (project / "awf" / "api" / "bar.py").write_text("VALUE = 3\n", encoding="utf-8")
+
+    result = test_selection.select(project)
+    assert "tests/unit/test_package_form.py" in result.files
+
+
+def test_package_form_imports_behind_a_comment_still_count(tmp_path):
+    """`from awf.api import bar  # noqa` keeps its edge; a lost edge is a
+    missed test, which the selector must never do silently.
+
+    Both comment shapes real tests use: end of line, and inside the
+    parentheses of a multi-line import.
+    """
+    project = _project(tmp_path)
+    (project / "tests" / "unit" / "test_comment_single.py").write_text(
+        "from awf.api import bar  # noqa: F401\n\n\ndef test_s():\n    assert bar.VALUE\n",
+        encoding="utf-8",
+    )
+    (project / "tests" / "unit" / "test_comment_paren.py").write_text(
+        "from awf.api import (\n    baz,  # noqa: F401\n)\n\n\ndef test_p():\n    assert baz.VALUE\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "-A"], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-qm", "comment forms"], cwd=project, check=True)
+
+    (project / "awf" / "api" / "bar.py").write_text("VALUE = 3\n", encoding="utf-8")
+    (project / "awf" / "api" / "baz.py").write_text("VALUE = 4\n", encoding="utf-8")
+
+    result = test_selection.select(project)
+    assert "tests/unit/test_comment_single.py" in result.files
+    assert "tests/unit/test_comment_paren.py" in result.files
+
+
 def test_a_literal_mention_selects_its_test(tmp_path):
     project = _project(tmp_path)
     (project / "tests" / "unit" / "test_name_match.py").write_text(
