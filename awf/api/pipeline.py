@@ -752,9 +752,9 @@ def approve_commit(
     # side effect — no evidence file, no fingerprint, no signal.
     from .. import verify_pack as _verify_pack
 
-    contradictions = _verify_pack.check_done_claims(project_dir, todo_id)
-    if contradictions:
-        detail = "; ".join(contradictions)
+    report = _verify_pack.check_done_claims(project_dir, todo_id)
+    if report.mismatches:
+        detail = "; ".join(report.mismatches)
         return ApproveResult(
             todo_id=todo_id,
             signal_file="",
@@ -1009,8 +1009,9 @@ def approve_commit(
         # applies (plan_files on the gate's own baseline input). The
         # gate enforces the binding (commit_plan.binding_refusal): a
         # force-restarted run refuses the stale approval instead of
-        # committing on it. Outside a run the signal stays an empty
-        # marker (legacy behavior).
+        # committing on it. Outside a run there is no cycle to pin; the
+        # signal carries the verified fingerprint and the baseline instead
+        # (A23, see the else-branch below).
         from .. import run_state as _run_state
 
         gen = approved_generation[0]
@@ -1047,10 +1048,29 @@ def approve_commit(
             operation="write approve signal",
         )
     else:
-        # K9: the marker is written no-follow too — a symlink swapped onto
-        # the leaf between the preflight and the write is replaced, never
-        # followed (the preflight already refused an existing one).
-        managed_write_api_text(signal, "", operation="write approve signal")
+        # A23: outside a run a bare marker carried no binding, so a signal
+        # written before the verify wait started was always stale and the
+        # supervisor had to `touch` it by hand. With a verified fingerprint
+        # the approve publishes the attempt it approved — the fingerprint
+        # and the baseline it was dispatched from — the exact facts the
+        # wait re-checks (commit_plan.verified_fingerprint_refusal). No
+        # file-set digest here: outside a run nothing validates it, and the
+        # set follows from (baseline, tree) that are both pinned.
+        if verified_fp:
+            binding = {
+                "baseline_sha": baseline_sha,
+                "verified_sha": verified_fp,
+            }
+            managed_write_api_text(  # A23 binding outside a run
+                signal,
+                json.dumps(binding, sort_keys=True) + "\n",
+                operation="write approve signal",
+            )
+        else:
+            # K9: the marker is written no-follow too — a symlink swapped onto
+            # the leaf between the preflight and the write is replaced, never
+            # followed (the preflight already refused an existing one).
+            managed_write_api_text(signal, "", operation="write approve signal")
 
     # RUN5 #1 (Part B): failsafe — list rejected-attempt files that would be
     # SILENTLY excluded from this commit (still untracked AND in the

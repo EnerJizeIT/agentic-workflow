@@ -45,29 +45,18 @@ from typing import Any
 
 import yaml
 
-from . import config_keys, paths, versions, xdg
+from . import command_parse, config_keys, paths, versions, xdg
+from . import config as cfg_mod
 from .supervisor import argv_agent_flag
 
 OK = "ok"
 WARN = "WARN"
 NA = "n/a"
 
-# A11: opencode 2.x uses Bun's fetch, which rejects the socks scheme. A socks
-# proxy in the worker environment is a real network death, not a preference.
-PROXY_VARS = (
-    "http_proxy", "https_proxy", "all_proxy",
-    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
-)
-
-
-def socks_proxy_var(environ: dict[str, str] | None = None) -> str:
-    """The first proxy variable whose URL uses a socks scheme (name only)."""
-    env = os.environ if environ is None else environ
-    for name in PROXY_VARS:
-        value = (env.get(name) or "").strip().lower()
-        if value.startswith(("socks4", "socks5", "socks")):
-            return name
-    return ""
+# A11: opencode 2.x uses Bun's fetch, which rejects the socks scheme. The
+# proxy inventory and the scheme test live in ``awf._env`` (the module that
+# rewrites the worker env); doctor only reports what that module does. A
+# second copy here would be a second answer to "is this a socks proxy".
 
 
 @dataclass(frozen=True)
@@ -376,13 +365,57 @@ def _check_opencode(config: dict[str, Any], config_problem: str, out: _Lines) ->
         out.ok("opencode", f"{probe.text}{flag}")
     if managed:
         out.warn("managed", opencode_version.MANAGED_WARNING)
-    proxy_var = socks_proxy_var()
-    if proxy_var:
+
+
+def _check_proxy(config: dict[str, Any], config_problem: str, out: _Lines) -> None:
+    """A22: say what the worker will get, not that socks might break it.
+
+    The worker env strips socks variables by itself (``awf._env``), so the
+    row reports the fact: the scheme and the variable names, never a
+    credential, host or port. A config that names a socks proxy is still a
+    WARN: the worker ignores that value, and the user should know.
+    """
+    from ._env import (
+        apply_worker_proxy,
+        is_socks_proxy,
+        proxy_setting_from_config,
+    )
+
+    setting = "" if config_problem else proxy_setting_from_config(config)
+    if is_socks_proxy(setting):
         out.warn(
             "proxy",
-            f"{proxy_var} uses a socks scheme — opencode 2.x fetch does not "
-            "support it; workers will fail network calls",
+            "worker.network.proxy uses a socks scheme — opencode 2.x fetch "
+            "does not support it; the worker ignores the value. Set "
+            "http://host:port or none",
         )
+        return
+    fact = apply_worker_proxy(os.environ.copy(), setting)
+    if fact:
+        out.ok("proxy", fact)
+
+
+def _check_verification(config: dict[str, Any], out: _Lines) -> None:
+    """AUD10: a pytest option repeated with another value picks the last one.
+
+    The duplicate `--timeout` in ``verification.test_cmd`` already cost six
+    red runs and was invisible; the doctor names it before the launch.
+    """
+    test_cmd = cfg_mod.get(config, "verification.test_cmd")
+    if not isinstance(test_cmd, str) or not test_cmd.strip():
+        return
+    conflicts = command_parse.duplicate_option_values(test_cmd)
+    if not conflicts:
+        out.ok("verification", "no pytest option is repeated with two values")
+        return
+    facts = "; ".join(
+        f"{option} appears with {', '.join(values)}"
+        for option, values in conflicts.items()
+    )
+    out.warn(
+        "verification",
+        f"{facts} — pytest keeps only one value; keep a single {', '.join(conflicts)}",
+    )
 
 
 def _check_config_keys(config: dict[str, Any], out: _Lines) -> None:
@@ -440,6 +473,7 @@ def run_doctor(project_dir: str | Path = ".") -> DoctorReport:
     out = _Lines()
     _check_versions(root, config, config_problem, out)
     _check_opencode(config, config_problem, out)
+    _check_proxy(config, config_problem, out)
     _check_config_format(out)
     _check_dashboard(root, config, config_problem, out)
     _check_models(root, config_problem, out)
@@ -447,6 +481,7 @@ def run_doctor(project_dir: str | Path = ".") -> DoctorReport:
     if config_problem:
         out.warn("config keys", f"{config_problem} — nothing to check")
     else:
+        _check_verification(config, out)
         _check_config_keys(config, out)
     return DoctorReport(
         rc=1 if out.warnings else 0,
@@ -455,4 +490,4 @@ def run_doctor(project_dir: str | Path = ".") -> DoctorReport:
     )
 
 
-__all__ = ["DoctorReport", "run_doctor", "socks_proxy_var"]
+__all__ = ["DoctorReport", "run_doctor"]

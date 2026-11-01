@@ -522,9 +522,12 @@ def read_approval_binding(project_dir: Path, todo_id: str) -> dict | None:
     ``{"generation": int, "verified_sha": 64-hex, "files_digest": 64-hex}``
     — the run generation the decision was made in, the verified-tree
     fingerprint, and the digest of the file set the gate will apply.
-    Outside a run the signal stays an empty marker. An empty or
-    unparseable file (legacy approve, a hand-made signal) yields None —
-    the gate fail-closes it inside a run.
+    Outside a run it carries no generation (there is no cycle to pin) but
+    names the attempt it approved: ``{"baseline_sha", "verified_sha"}``
+    (A23 — a bare marker could not survive the wait's freshness gate). A
+    legacy ``awf approve`` without ``--verified-sha`` still publishes the
+    empty marker. An empty or unparseable file (legacy approve, a
+    hand-made signal) yields None — the gate fail-closes it inside a run.
     """
     signal = paths.inbox(project_dir) / f"APPROVE-{todo_id}.ready"
     try:
@@ -718,6 +721,98 @@ def candidate_refusal(plan: CommitPlan, project_dir: Path) -> str:
     )
 
 
+def verified_fingerprint_refusal(
+    project_dir: Path,
+    todo_id: str,
+    binding: dict,
+) -> str:
+    """A23: the fingerprint-only rule for a PRE-EXISTING approval.
+
+    The mtime gate (AUD04-04) exists so a dead cycle's decision cannot
+    re-open the commit gate. But a signal that names the tree it approved
+    is a live decision for THIS attempt as long as that tree is still the
+    tree on disk: the signal's ``verified_sha`` must equal the recorded
+    ``VERIFIED-{todo_id}.sha``, the current tree fingerprint and the
+    baseline the unit was dispatched from. Then the wait may consume it
+    even though it was written before the wait started (outside a run the
+    approve used to publish an empty marker, so the supervisor had to
+    ``touch`` the file).
+
+    Only the outside-run shape qualifies: ``{baseline_sha, verified_sha}``.
+    A binding that names a run ``generation`` is a dead cycle's decision
+    outside an active run and stays stale, exactly as before A23.
+
+    Returns "" when the rule holds, else the reason the signal is stale.
+    """
+    fp = binding.get("verified_sha")
+    if not isinstance(fp, str) or not re.fullmatch(r"[0-9a-f]{64}", fp):
+        return (
+            "the APPROVE signal carries no verified fingerprint — "
+            "re-approve with awf_approve(verified_sha=...)"
+        )
+    # QA (TODO-0324): this rule is for the OUTSIDE-RUN shape only. A signal
+    # written inside a run names its generation, and without an active run
+    # there is nothing to check that generation against — its approval
+    # belonged to a cycle that is gone. Before A23 such a binding was stale
+    # outside a run ("only honored inside an active run"); letting the
+    # fingerprint alone revive it would consume a dead cycle's decision.
+    if "generation" in binding:
+        return (
+            "the APPROVE signal was written inside a run (it names a run "
+            "generation) and no run is active now — a dead cycle's approval "
+            "cannot be revalidated; re-approve outside the run with "
+            "awf_approve(verified_sha=...)"
+        )
+    # The attempt, not just the tree: inside a run the generation pins the
+    # cycle (binding_refusal); outside one the baseline is the only attempt
+    # identity a signal can carry, and it decides WHICH file set the gate
+    # applies. Same tree + a re-taken baseline = a different diff scope, so
+    # a fingerprint-only match must not consume that approval.
+    approved_baseline = binding.get("baseline_sha")
+    if not isinstance(approved_baseline, str):
+        return (
+            "the APPROVE signal names no baseline — the approved diff scope "
+            "cannot be reproduced; re-approve with awf_approve(verified_sha=...)"
+        )
+    current_baseline = read_baseline_sha(project_dir, todo_id)
+    if approved_baseline != current_baseline:
+        return (
+            f"the approve pinned baseline {approved_baseline[:12] or '(none)'}… "
+            f"but the unit's baseline is now "
+            f"{current_baseline[:12] + '…' if current_baseline else 'absent'} — "
+            "the approved diff scope is not the one the gate would apply. "
+            "Re-verify and re-approve on the current baseline."
+        )
+    stored = read_verified_sha(project_dir, todo_id)
+    if stored is None:
+        return (
+            "the recorded VERIFIED fingerprint could not be read — "
+            "re-verify and re-approve with the fresh fingerprint"
+        )
+    if stored != fp:
+        return (
+            f"the signal's verified fingerprint {fp[:12]}… does not match "
+            f"the recorded VERIFIED file "
+            f"({'none' if not stored else stored[:12] + '…'}) — "
+            "re-verify and re-approve with the fresh fingerprint"
+        )
+    try:
+        current = git_utils.tree_fingerprint(project_dir)
+    except RuntimeError:
+        return (
+            "the verified fingerprint exists but the tree fingerprint could "
+            "not be recomputed — refuse to consume an unverified approval "
+            "(fail closed)"
+        )
+    if current != fp:
+        return (
+            f"the tree moved after verification (verified {fp[:12]}…, now "
+            f"{current[:12]}…) — re-verify on the current tree and "
+            "re-approve with the fresh fingerprint"
+        )
+    return ""
+
+
 def preexisting_approval_status(
     project_dir: Path,
     todo_id: str,
@@ -748,9 +843,12 @@ def preexisting_approval_status(
       supervisor's hint.
     - ``("absent", "")`` — no APPROVE signal file.
 
-    Outside a run the signal is an empty marker (no binding to validate —
-    legacy approve), so a pre-existing approval is always ``stale`` there:
-    the AUD04-04 mtime gate keeps its old behavior.
+    Outside a run the signal used to be an empty marker (no binding to
+    validate — legacy approve), so a pre-existing approval was always
+    ``stale`` there. A23: an approve that carried ``verified_sha`` now
+    publishes the fingerprint outside a run too, and
+    :func:`verified_fingerprint_refusal` accepts it while the verified tree
+    is unchanged.
     """
     signal = paths.inbox(project_dir) / f"APPROVE-{todo_id}.ready"
     if not signal.is_file():
@@ -762,15 +860,19 @@ def preexisting_approval_status(
             "(legacy or hand-made) — a pre-existing approval cannot be "
             "validated against the current attempt"
         )
+    # A23: outside a run a signal that names its verified tree is a live
+    # decision while that tree is still the tree on disk — no mtime
+    # requirement (the approve publishes the fingerprint instead of a bare
+    # marker). Inside an active run the full binding (generation, file set,
+    # candidate) stays authoritative — the fingerprint alone must not
+    # resurrect a dead generation.
     try:
         state = run_state.read_run(project_dir)
     except Exception:
         state = None
     if not (state and state.get("active")):
-        return "stale", (
-            f"the APPROVE-{todo_id}.ready binding is only honored inside an "
-            "active run — no run is active now"
-        )
+        reason = verified_fingerprint_refusal(project_dir, todo_id, binding)
+        return ("stale", reason) if reason else ("valid", "")
     plan = build_commit_plan(project_dir, todo_id, baseline_sha)
     if plan.refusal:
         # M5 (REVIEW виток 10): report the build refusal FIRST — passing

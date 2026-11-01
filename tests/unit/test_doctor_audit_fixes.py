@@ -304,14 +304,16 @@ def test_process_without_a_commit_names_the_missing_evidence(project, env, monke
     assert "process has no commit evidence" in awf_lines[0], awf_lines[0]
     assert report.rc == 0, _lines(report)
 
-def test_socks_proxy_is_a_warn_without_the_value(project, env, monkeypatch):
-    """A11: opencode 2.x fetch rejects socks; doctor names the variable only."""
+def test_socks_proxy_is_stripped_and_named_as_a_fact(project, env, monkeypatch):
+    """A22: opencode 2.x fetch rejects socks; the worker env strips it, so the
+    doctor reports the fact (scheme + variable name, no value) instead of a
+    WARN about a failure the launch already prevents."""
     _versions(monkeypatch)
     monkeypatch.setenv("HTTPS_PROXY", "socks5h://127.0.0.1:10808")
 
     report = run_doctor(project)
-    assert report.rc == 1
-    warns = [line for line in report.warnings if line.startswith("WARN  proxy:")]
-    assert len(warns) == 1, _lines(report)
-    assert "HTTPS_PROXY" in warns[0]
+    assert report.rc == 0, _lines(report)
+    facts = [line for line in report.lines if line.startswith("ok  proxy:")]
+    assert len(facts) == 1, _lines(report)
+    assert "HTTPS_PROXY" in facts[0]
     assert "10808" not in "\n".join(report.lines)

@@ -575,6 +575,33 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
                 f"(stages: {', '.join(labels)}) — each stage id must be "
                 "unique within a pipeline."
             )
+
+    # AUD7: a fix round rewinds INTO a stage that does work. Rewinding to a
+    # supervisor stage (plan/verify) would loop without an agent — that is a
+    # pipeline definition error, caught here instead of on the first reject.
+    kinds = {
+        str(stage.get("id") or stage.get("name") or f"#{i}"): _compute_kind(
+            i, len(result)
+        )
+        for i, stage in enumerate(result)
+    }
+    for i, stage in enumerate(result):
+        policy = stage.get("on_rejected")
+        if not isinstance(policy, str) or not policy.startswith("fix_round:"):
+            continue
+        target = policy.split(":", 1)[1].strip()
+        label = str(stage.get("id") or stage.get("name") or f"#{i}")
+        if target not in kinds:
+            raise AwfApiError(
+                f"Pipeline {source}: stage '{label}' on_rejected={policy!r} — "
+                f"fix_round target '{target}' not found in the pipeline."
+            )
+        if kinds[target] != "execute":
+            raise AwfApiError(
+                f"Pipeline {source}: stage '{label}' on_rejected={policy!r} — "
+                f"fix_round targets must be an execute (agent) stage; "
+                f"'{target}' is a {kinds[target]} stage."
+            )
     return result
 
 

@@ -142,6 +142,34 @@ def test_artifact_has_facts_and_foreign_sha_reruns(tmp_git_repo: Path, tmp_path:
     assert len(shas) == 2, "изменённое дерево обязано дать другой sha"
 
 
+def test_a_failure_keeps_its_reason_next_to_the_artifact(
+    tmp_git_repo: Path, tmp_path: Path
+):
+    """AUD5: the artifact keeps 20 lines; the reason can be far above them."""
+    stub = tmp_path / "pytest"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'echo "reason: the database is gone"\n'
+        "for i in $(seq 1 40); do echo filler-$i; done\n"
+        "echo '1 failed, 3 passed in 0.1s'\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+
+    result = _run_script(tmp_git_repo, str(stub))
+
+    assert result.returncode == 1, result.stderr
+    artifacts = _artifacts(tmp_git_repo)
+    assert len(artifacts) == 1
+    payload = json.loads(artifacts[0].read_text(encoding="utf-8"))
+    assert "the database is gone" not in payload["tail"], "причина выше 20 строк"
+    sidecar = Path(str(artifacts[0]) + ".err")
+    assert sidecar.is_file(), result.stderr
+    assert "the database is gone" in sidecar.read_text(encoding="utf-8")
+    assert sidecar.name in result.stderr
+
+
 def _project_with_contract(
     tmp_path: Path, verify: str = TEST_CMD, front_extra: str = ""
 ) -> Path:

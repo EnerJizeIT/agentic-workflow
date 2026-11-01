@@ -89,6 +89,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1147,9 +1148,76 @@ def _prove_red_pin_section(
 #: pathological list must not turn verify into a second full suite.
 CLAIM_MAX_COMMANDS = 5
 #: Per-command budget for a claim check (the worker's own budget is 600).
-CLAIM_TIMEOUT = 300
+#: Owner decision (TODO-0321, A8): 120 s per command and 600 s for the whole
+#: check — five claims at 300 s each kept verify blocked for 25 minutes.
+CLAIM_TIMEOUT = 120
+#: The whole check, all commands together. A claim that does not fit is
+#: "not checked", never a contradiction.
+CLAIM_TOTAL_TIMEOUT = 600
 
 _SHELL_OPERATORS = ("&&", "||", ";", "|", ">", "<", "`", "$(")
+
+
+def _counted(count: int, one: str, many: str) -> str:
+    return f"{count} {one if count == 1 else many}"
+
+
+#: The closed set of skip reasons, each with its wording: ``skip()`` refuses a
+#: reason missing here, so a new call site cannot reach the report unworded.
+_SKIP_WORDS: dict[str, tuple[str, str]] = {
+    "limit": ("claim beyond the limit", "claims beyond the limit"),
+    "shell": ("shell line", "shell lines"),
+    "claim": ("claim that is not green", "claims that are not green"),
+    "malformed": ("malformed entry", "malformed entries"),
+    "empty": ("entry without a command", "entries without a command"),
+    "budget": ("claim beyond the time budget", "claims beyond the time budget"),
+}
+
+
+@dataclass
+class ClaimsReport:
+    """A8 result: contradictions, rerun count and what stayed unchecked.
+
+    AUD4: a claim that outlived ``timeout`` is ``unverified`` — an honest
+    "not checked in time", never a contradiction. AUD6: the counts make the
+    unchecked half visible instead of silent.
+
+    ``checked`` counts every claim the rerun actually answered (green or
+    red); a contradicted claim is checked too, it just also lands in
+    ``mismatches``. A claim the check never ran stays out of the count.
+    """
+
+    mismatches: list[str] = field(default_factory=list)
+    checked: int = 0
+    unverified: list[str] = field(default_factory=list)
+    #: reason → count, in the order the check names them.
+    skipped: dict[str, int] = field(default_factory=dict)
+
+    def skip(self, reason: str) -> None:
+        """Count one unchecked claim; ``reason`` must have a wording above."""
+        if reason not in _SKIP_WORDS:
+            raise KeyError(f"no wording for the skip reason {reason!r}")
+        self.skipped[reason] = self.skipped.get(reason, 0) + 1
+
+    def summary(self) -> str:
+        parts = [f"checked {self.checked}"]
+        if self.skipped:
+            parts.append(
+                "skipped: "
+                + ", ".join(
+                    _counted(count, *_SKIP_WORDS[reason])
+                    for reason, count in self.skipped.items()
+                )
+            )
+        if self.unverified:
+            parts.append(_counted(len(self.unverified), "claim not verified in time",
+                                  "claims not verified in time"))
+        return "claims — " + "; ".join(parts)
+
+    def lines(self) -> list[str]:
+        out = [f"A8: {self.summary()}"]
+        out.extend(f"  - {line}" for line in self.unverified)
+        return out
 
 
 def _claimed_green(result: str) -> bool | None:
@@ -1173,13 +1241,15 @@ def check_done_claims(
     *,
     timeout: int = CLAIM_TIMEOUT,
     limit: int = CLAIM_MAX_COMMANDS,
-) -> list[str]:
+    total_timeout: int = CLAIM_TOTAL_TIMEOUT,
+) -> ClaimsReport:
     """A8: rerun the commands ``DONE-<todo>.json`` says the worker ran.
 
-    Returns one line per CONTRADICTION — a claimed green whose command now
-    fails (or times out). Nothing else: a red claim, an unclear claim, a
-    shell command (argv only), an unreadable file and an absent file are
-    not contradictions, and silence there keeps today's behaviour.
+    Returns a report: one line per CONTRADICTION (a claimed green whose
+    command now fails), the number of claims rerun, the ones that outlived
+    the budget (``unverified`` — AUD4: not a contradiction) and the ones
+    that stayed unchecked, by reason (AUD6: the counts are part of the
+    result, not silent).
 
     The point is narrow: a report may not say "12 passed" about a command
     that does not pass. Everything a worker asserts beyond that stays a
@@ -1188,63 +1258,91 @@ def check_done_claims(
     from . import paths
     from .unit_contract import parse_done_json
 
+    report = ClaimsReport()
     project = Path(project_dir).resolve()
     path = paths.outbox(project) / f"DONE-{todo_id}.json"
     try:
         data = parse_done_json(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError):
-        return []
+        return report
     if not isinstance(data, dict):
-        return []
+        return report
 
-    mismatches: list[str] = []
-    for entry in (data.get("tests_run") or [])[:limit]:
+    entries = data.get("tests_run") or []
+    if not isinstance(entries, list):
+        return report
+    beyond = max(0, len(entries) - limit)
+    for _ in range(beyond):
+        report.skip("limit")
+
+    # AUD4 (owner decision): the total budget belongs to the check, not to
+    # the worker. A command that no longer fits is not run at all — the
+    # report says so instead of spending the last seconds on a doomed try.
+    deadline = time.monotonic() + total_timeout
+
+    for entry in entries[:limit]:
         if not isinstance(entry, dict):
+            report.skip("malformed")
             continue
         cmd = str(entry.get("cmd") or "").strip()
         claimed = _claimed_green(str(entry.get("result") or ""))
-        if not cmd or claimed is not True:
+        if not cmd:
+            report.skip("empty")
+            continue
+        if claimed is not True:
+            report.skip("claim")
             continue
         try:
             argv = shlex.split(cmd)
         except ValueError:
+            report.skip("malformed")
             continue
         if not argv:
+            report.skip("empty")
             continue
         # argv only: a bare operator TOKEN means a shell line. A `;` inside
         # quotes (`python3 -c 'import sys; sys.exit(1)'`) is one argument,
         # not a pipeline — the split already removed the quotes.
         if any(token in _SHELL_OPERATORS for token in argv):
+            report.skip("shell")
             continue
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            report.skip("budget")
+            continue
+        # The smaller of the two: one claim may not eat the whole check.
+        budget = min(timeout, remaining)
         try:
             done = subprocess.run(
                 argv,
                 cwd=project,
                 capture_output=True,
                 text=True,
-                timeout=timeout,
+                timeout=budget,
                 check=False,
             )
             rc = done.returncode
         except subprocess.TimeoutExpired:
-            mismatches.append(
-                f"claimed {entry.get('result')!r} but the command did not "
-                f"finish in {timeout}s: {cmd}"
+            # AUD4: the budget is the check's, not the worker's — a claim
+            # that did not fit says so and stays out of the failure count.
+            report.unverified.append(
+                f"not verified in {budget:g}s: {cmd}"
             )
             continue
         except (OSError, subprocess.SubprocessError) as e:
-            mismatches.append(
+            report.mismatches.append(
                 f"claimed {entry.get('result')!r} but the command could not "
                 f"run ({type(e).__name__}: {e}): {cmd}"
             )
             continue
+        report.checked += 1
         if rc != 0:
             tail = (done.stderr or done.stdout or "").strip().splitlines()
             extra = f" — {tail[-1][:160]}" if tail else ""
-            mismatches.append(
+            report.mismatches.append(
                 f"claimed {entry.get('result')!r} but rc={rc}: {cmd}{extra}"
             )
-    return mismatches
+    return report
 
 
 def _done_json_section(project: Path, todo_id: str, logs_dir: Path) -> Section:
@@ -1275,11 +1373,13 @@ def _done_json_section(project: Path, todo_id: str, logs_dir: Path) -> Section:
         )
     lines = ["executor data (declared by the implementer):"]
     lines.extend(render_done_json(data))
-    contradictions = check_done_claims(project, todo_id)
-    if contradictions:
+    report = check_done_claims(project, todo_id)
+    if report.mismatches or report.checked or report.skipped or report.unverified:
         lines.append("")
+        lines.extend(report.lines())
+    if report.mismatches:
         lines.append("A8: the claims below do not survive a rerun:")
-        lines.extend(f"  - {line}" for line in contradictions)
+        lines.extend(f"  - {line}" for line in report.mismatches)
         return Section(
             name="done_json",
             status="fail",

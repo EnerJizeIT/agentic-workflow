@@ -346,5 +346,17 @@ tmp.replace(artifact)
 PY
 
 echo "suite-canonical: exit $rc (tree-sha $sha) — $artifact"
+
+# AUD5: the artifact keeps 20 lines for the counts; the reason a run failed
+# can sit far above them. On a red run the longer tail goes next to it.
+if [ "$rc" -ne 0 ]; then
+  err_file="$artifact.err"
+  if tail -n 120 "$log" >"$err_file" 2>/dev/null; then
+    echo "suite-canonical: failure tail — $err_file" >&2
+  else
+    echo "suite-canonical: WARNING — could not write $err_file" >&2
+  fi
+fi
+
 tail -n 20 "$log"
 exit "$rc"

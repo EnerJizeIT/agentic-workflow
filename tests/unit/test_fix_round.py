@@ -11,6 +11,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from awf import pipeline_engine
 from awf.pipeline import Stage
 from awf.transitions import resolve_transition
@@ -52,6 +54,38 @@ def _stages() -> list[Stage]:
 def test_the_policy_resolves_to_a_fix_round():
     action, target = resolve_transition(_stages()[1], "rejected")
     assert (action, target) == ("fix_round", "implement")
+
+
+def test_a_fix_round_target_must_be_an_execute_stage():
+    """AUD7: rewinding to a supervisor stage is a load error, not a loop."""
+    from awf.api._errors import AwfApiError
+    from awf.pipeline import validate_pipeline_stages
+
+    stages = [
+        {"name": "plan", "role": "supervisor"},
+        {"name": "implement", "role": "agent-implementer"},
+        {"name": "review", "role": "agent-architect-review",
+         "on_rejected": "fix_round:plan"},
+        {"name": "verify", "role": "supervisor"},
+    ]
+
+    with pytest.raises(AwfApiError, match="execute"):
+        validate_pipeline_stages(stages, "test")
+
+
+def test_a_fix_round_target_must_exist():
+    from awf.api._errors import AwfApiError
+    from awf.pipeline import validate_pipeline_stages
+
+    stages = [
+        {"name": "plan", "role": "supervisor"},
+        {"name": "review", "role": "agent-architect-review",
+         "on_rejected": "fix_round:implement"},
+        {"name": "verify", "role": "supervisor"},
+    ]
+
+    with pytest.raises(AwfApiError, match="not found"):
+        validate_pipeline_stages(stages, "test")
 
 
 def test_the_engine_appends_the_findings_and_rewinds(tmp_path):
@@ -166,3 +200,36 @@ def test_a_missing_target_is_refused(tmp_path):
         source="review",
     )
     assert rc == 1
+
+
+def test_an_explicit_id_is_what_the_fix_round_targets(tmp_path):
+    """AUD7: the validator and the runtime must address a stage the same way.
+
+    An explicit ``id`` becomes the stage name (``load_stages``), and the
+    validator keys stages by ``id or name`` — if the two ever drift, a
+    pipeline loads clean and then fails mid-run with "target not found".
+    """
+    from awf.pipeline import load_stages, validate_pipeline_stages
+
+    stages = [
+        {"id": "plan", "role": "supervisor"},
+        {"id": "implement", "role": "agent-implementer"},
+        {"id": "review", "role": "agent-architect-review",
+         "on_rejected": "fix_round:implement"},
+        {"id": "verify", "role": "supervisor"},
+    ]
+    validate_pipeline_stages(stages, "test")
+
+    path = tmp_path / "ids.yaml"
+    path.write_text(
+        "name: ids\nstages:\n"
+        "  - id: plan\n    role: supervisor\n"
+        "  - id: implement\n    role: agent-implementer\n"
+        "  - id: review\n    role: agent-architect-review\n"
+        "    on_rejected: fix_round:implement\n"
+        "  - id: verify\n    role: supervisor\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_stages(path)
+    assert [stage.name for stage in loaded] == ["plan", "implement", "review", "verify"]

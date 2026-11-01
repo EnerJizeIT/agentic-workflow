@@ -15,8 +15,9 @@ APPROVE без привязки — ручной touch / старая верси
 Инварианты:
 1. APPROVE в активном забеге несёт привязку в сигнальном файле:
    поколение + ``verified_sha`` + ``files_digest`` (дайджест того же
-   набора файлов, который применяет гейт). Вне забега — сигнал пустой,
-   как раньше.
+   набора файлов, который применяет гейт). Вне забега поколения нет:
+   approve с ``verified_sha`` пишет ``{baseline_sha, verified_sha}``
+   (A23), без него — прежний пустой маркер.
 2. Одобрение устаревшего поколения не разблокирует коммит: гейт отказывает
    с внятным текстом, ничего не коммитится и не стейджится, состояние не
    теряется.
@@ -240,21 +241,20 @@ def test_files_digest_mismatch_refused(tmp_git_repo):
     _assert_tree_intact(proj, baseline_sha)
 
 
-def test_outside_run_signal_stays_empty_and_commits(tmp_git_repo):
-    """(регрессия) Вне забега: сигнал остаётся пустым (touch), гейт
-    коммитит — legacy-поведение не тронуто."""
+def test_outside_run_signal_carries_verified_binding_and_commits(tmp_git_repo):
+    """A23: вне забега approve с verified_sha публикует привязку (отпечаток
+    дерева), а не пустой маркер, и гейт по-прежнему коммитит."""
     proj = _project(tmp_git_repo)
     baseline_sha = _verify_state(proj)
 
-    api.approve_commit(
-        proj, TODO,
-        verified_sha=git_utils.tree_fingerprint(proj),
-    )
+    fp = git_utils.tree_fingerprint(proj)
+    api.approve_commit(proj, TODO, verified_sha=fp)
 
     signal = proj / ".agentic" / "inbox" / f"APPROVE-{TODO}.ready"
     assert signal.is_file()
-    assert signal.read_text(encoding="utf-8").strip() == "", (
-        "outside a run the APPROVE signal must stay an empty marker"
+    binding = json.loads(signal.read_text(encoding="utf-8"))
+    assert binding.get("verified_sha") == fp, (
+        "outside a run the APPROVE signal must carry the verified fingerprint"
     )
 
     ok = _gate(proj, baseline_sha)

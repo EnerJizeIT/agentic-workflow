@@ -149,6 +149,49 @@ def test_the_changed_test_file_itself_is_selected(tmp_path):
     assert "tests/unit/test_unrelated.py" in result.files
 
 
+def test_a_non_python_change_uses_the_name_and_mention_rules(tmp_path):
+    """AUD2: a script/config change must apply name + mention, not only .py."""
+    project = _project(tmp_path)
+    (project / "scripts").mkdir(parents=True, exist_ok=True)
+    (project / "scripts" / "affected-tests.sh").write_text("echo ok\n", encoding="utf-8")
+    (project / "tests" / "unit" / "test_affected_tests_script.py").write_text(
+        "ROOT = '.'\n"
+        "SCRIPT = ROOT + '/scripts' + '/affected-tests.sh'\n\n\n"
+        "def test_s():\n    assert SCRIPT\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "-A"], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-qm", "script"], cwd=project, check=True)
+
+    (project / "scripts" / "affected-tests.sh").write_text("echo changed\n", encoding="utf-8")
+
+    result = test_selection.select(project)
+    assert result.full is False
+    assert "tests/unit/test_affected_tests_script.py" in result.files
+
+
+def test_a_relative_import_pulls_the_sibling_test(tmp_path):
+    """AUD3: ``from .test_x import y`` resolves from the test's package."""
+    project = _project(tmp_path)
+    (project / "tests" / "unit" / "__init__.py").write_text("", encoding="utf-8")
+    (project / "tests" / "unit" / "test_reject_files.py").write_text(
+        "VALUE = 1\n\n\ndef test_r():\n    assert VALUE\n", encoding="utf-8"
+    )
+    (project / "tests" / "unit" / "test_reject_files_carry.py").write_text(
+        "from .test_reject_files import VALUE\n\n\ndef test_c():\n    assert VALUE\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "-A"], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-qm", "relative import"], cwd=project, check=True)
+
+    (project / "tests" / "unit" / "test_reject_files.py").write_text(
+        "VALUE = 2\n\n\ndef test_r():\n    assert VALUE\n", encoding="utf-8"
+    )
+
+    result = test_selection.select(project)
+    assert "tests/unit/test_reject_files_carry.py" in result.files
+
+
 def test_a_too_large_selection_becomes_the_full_suite(tmp_path):
     project = _project(tmp_path)
     (project / "awf" / "foo.py").write_text("VALUE = 2\n", encoding="utf-8")
