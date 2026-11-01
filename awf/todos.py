@@ -7,6 +7,7 @@ from pathlib import Path
 from . import paths
 from ._names import unique_name
 from .paths import handoff_dir
+from .signals import REVIEW_REPORT_PREFIXES
 from .signals import short_id as _short_id
 
 #: A ``## REVIEW-фикс`` section heading. Two spellings exist in the archive:
@@ -178,6 +179,8 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
     - outbox/TEST-RESULTS-{id}.log → done/{id}/TEST-RESULTS-{id}.log (AUD15-07)
     - outbox/BLOCKED-{id}.{md,json} → done/{id}/ (H2: dead-attempt report)
     - outbox/REVIEW-{id}.{md,json}  → done/{id}/ (H2: rejected-attempt report)
+    - outbox/REVIEW-REJECTED-{id}.{md,json} → done/{id}/ (same report,
+      canonical signal name — one vocabulary with ``signals.find_review_report``)
     - outbox/BUDGET-{id}.{md,json}  → done/{id}/ (TODO-0262: budget stop note)
     - outbox/BLOCKED-{id}.ready     → deleted (signal consumed)
 
@@ -270,7 +273,7 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
     # TODO-0262 REVIEW (CTX3): a BUDGET note belongs to the unit it stopped —
     # archive it with the BLOCKED/REVIEW reports instead of leaving it in the
     # outbox after the unit closes.
-    for prefix in ("BLOCKED", "REVIEW", "BUDGET"):
+    for prefix in ("BLOCKED", *REVIEW_REPORT_PREFIXES, "BUDGET"):
         for tid_variant in (todo_id, _short_id(todo_id)):
             for ext in (".md", ".json"):
                 src = outbox_p / f"{prefix}-{tid_variant}{ext}"
@@ -319,7 +322,13 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
             moved_anything = True
 
     # .ready signals from outbox are consumed, not archived.
-    for prefix in ("PROGRESS", "DONE", "BLOCKED"):
+    for prefix in (
+        "PROGRESS",
+        "DONE",
+        "BLOCKED",
+        *REVIEW_REPORT_PREFIXES,
+        "REVIEW-APPROVED",
+    ):
         for tid_variant in (todo_id, _short_id(todo_id)):
             for name in (f"{prefix}-{tid_variant}.ready", f"{prefix}-{tid_variant}.md.ready"):
                 src = outbox_p / name

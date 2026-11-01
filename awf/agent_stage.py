@@ -20,6 +20,7 @@ from .pipeline_state import bump_stage_attempt, write_state
 from .signals import (
     clean_stage_signals,
     expected_signal_prefixes,
+    find_review_report,
     read_signal_for_todo,
     stage_signal_paths,
 )
@@ -576,7 +577,7 @@ def collect_handoff(
     run_facts += [
         f"- signals: DONE={_signal('DONE', '.ready')}, "
         f"BLOCKED={_signal('BLOCKED', '.ready')}, "
-        f"REVIEW={'yes' if (outbox / f'REVIEW-{todo_id}.md').is_file() else 'no'}",
+        f"REVIEW={'yes' if find_review_report(outbox, todo_id) else 'no'}",
         f"- worker notes: PROGRESS={'present' if progress_body else 'absent'}, "
         f"DONE-report={'present' if done_body else 'absent'}{done_json_fact}",
         changes_fact,

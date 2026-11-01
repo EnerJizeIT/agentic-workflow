@@ -52,7 +52,7 @@ from ..checklists import (
 )
 from ..infra import managed_fs
 from ..pipeline_state import read_state
-from ..signals import short_id
+from ..signals import REVIEW_REPORT_PREFIXES, short_id
 from ._background import check_pipeline_running
 from ._errors import AwfApiError
 from ._helpers import (
@@ -773,9 +773,16 @@ def retire_todo(project_dir: Path, todo_id: str, reason: str) -> RetireTodoResul
                 p = outbox / f"DONE-{tid}{ext}"
                 if p.is_file():
                     candidates.append((p, p.name))
-            candidates.extend(
-                (p, p.name) for p in sorted(outbox.glob(f"REVIEW-{tid}.*")) if p.is_file()
-            )
+            # A32: a worker's rejection report has two spellings in the tree
+            # (``REVIEW-`` and ``REVIEW-REJECTED-``) — retire files both with
+            # the unit, exactly like ``todos.archive_todo``. A closer that
+            # knows one name leaves the findings behind.
+            for prefix in REVIEW_REPORT_PREFIXES:
+                candidates.extend(
+                    (p, p.name)
+                    for p in sorted(outbox.glob(f"{prefix}-{tid}.*"))
+                    if p.is_file()
+                )
 
         managed_mkdir_api(done_dir, operation=f"retire {todo_id}")
         moved: list[str] = []
@@ -1143,8 +1150,15 @@ def _review_append_impl(
     reason: str = "",
     *,
     _lock_held: bool = False,
+    _engine_owned: bool = False,
 ) -> ReviewAppendResult:
-    """The review append itself; the durable wrapper calls it under its lock."""
+    """The review append itself; the durable wrapper calls it under its lock.
+
+    ``_engine_owned`` marks the ONE caller that IS the live pipeline: the
+    engine's fix round writes the same unit it is running, so the "the
+    engine owns the file" refusal (meant for outside writers) must not
+    stop it. Every other caller keeps that refusal.
+    """
     _validate_id(todo_id)
     body = (text or "").strip()
     if not body:
@@ -1156,11 +1170,15 @@ def _review_append_impl(
     require_agentic(project_dir)
 
     if _lock_held:
-        return _review_append_locked(project_dir, todo_id, body, reason)
+        return _review_append_locked(
+            project_dir, todo_id, body, reason, engine_owned=_engine_owned
+        )
     from .._lock import locked
 
     with locked(project_dir):
-        return _review_append_locked(project_dir, todo_id, body, reason)
+        return _review_append_locked(
+            project_dir, todo_id, body, reason, engine_owned=_engine_owned
+        )
 
 
 def _review_append_locked(
@@ -1168,6 +1186,8 @@ def _review_append_locked(
     todo_id: str,
     body: str,
     reason: str,
+    *,
+    engine_owned: bool = False,
 ) -> ReviewAppendResult:
     """The append body — the caller holds the project lock."""
     inbox = paths.inbox(project_dir)
@@ -1187,7 +1207,7 @@ def _review_append_locked(
             "review section to."
         )
     facts = unit_readiness(project_dir, todo_id)
-    if facts.live:
+    if facts.live and not engine_owned:
         raise AwfApiError(
             f"a live pipeline is running on {todo_id} (pid {facts.pid}) — "
             "the engine owns the file right now; awf kill first, "

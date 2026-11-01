@@ -190,10 +190,11 @@ class TestHandleRollback:
         )
         assert exit_code == 1
 
-    def test_replan_timeout_stops_cleanly(self, tmp_path, monkeypatch):
-        """AUD04-05: a supervisor replan timeout on the rollback path must
-        stop the pipeline (rc=1, logged) — not escape as an uncaught
-        TimeoutError traceback."""
+    def test_replan_timeout_continues_the_run(self, tmp_path, monkeypatch):
+        """A34: a supervisor replan timeout on the rollback path must NOT
+        stop the run — the unit continues at the rollback target and the
+        failure is recorded (log, state, PROGRESS). The pre-A34 behaviour
+        (stop) is exactly what turned one HTTP 400 into a dead run."""
         def boom(*a, **kw):
             raise TimeoutError("Supervisor replan signal not received within 5s")
 
@@ -208,7 +209,10 @@ class TestHandleRollback:
             stages=stages, current_todo="TODO-0001",
             auto=False, target="implement",
         )
-        assert exit_code == 1, "rollback replan timeout must stop, not crash"
+        assert exit_code == 0, "a failed replan must not stop the run"
+        assert (idx, todo) == (1, "TODO-0001")
+        log = (tmp_path / "orchestrator.log").read_text(encoding="utf-8")
+        assert "A34:" in log and "continuing at implement" in log
 
 
 class TestPipelineEngineUnpacking:
@@ -272,7 +276,12 @@ class TestPipelineEngineUnpacking:
         assert isinstance(idx, int)
 
     def test_rollback_return_order(self, tmp_path, monkeypatch):
-        """execute_agent_stage passes rollback return in correct order."""
+        """execute_agent_stage passes rollback return in correct order.
+
+        A32: a *rejection* with ``rollback_to:`` now rewinds the same unit
+        (``_handle_rejected``) — the ``_handle_rollback`` unpacking path is
+        reached by a BLOCKED stage with the same policy.
+        """
         from awf import pipeline_engine
 
         monkeypatch.setattr(
@@ -283,11 +292,11 @@ class TestPipelineEngineUnpacking:
         )
         monkeypatch.setattr(pipeline_engine, "_run_agent_stage", lambda *a, **kw: None)
 
-        # Write REVIEW-REJECTED signal (triggers rollback)
+        # Write BLOCKED signal (triggers rollback)
         outbox = tmp_path / ".agentic" / "outbox"
         outbox.mkdir(parents=True)
-        (outbox / "REVIEW-REJECTED-TODO-0001.md").write_text("# Rejected\nBad code\n")
-        (outbox / "REVIEW-REJECTED-TODO-0001.ready").touch()
+        (outbox / "BLOCKED-TODO-0001.md").write_text("# Blocked\nBad code\n")
+        (outbox / "BLOCKED-TODO-0001.ready").touch()
 
         monkeypatch.setattr(
             pipeline_engine,
@@ -297,7 +306,7 @@ class TestPipelineEngineUnpacking:
 
         stage = Stage(
             name="implement", role="worker", kind="execute",
-            on_rejected="rollback_to:implement",
+            on_blocked="rollback_to:implement",
         )
         stages = [
             Stage(name="plan", role="supervisor", kind="plan"),

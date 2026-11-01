@@ -119,6 +119,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `pipeline_state.py` | `.agentic/state/current.yaml` persistence |
 | `orchestrator.py` | Pipeline dispatch loop (thin entry: setup → stage loop → complete) |
 | `pipeline_engine.py` | Stage handlers + transition logic |
+| `rejection.py` | A32/A34: решения отказа — остаться в юните или отдать replan, куда возвращать (политика, владелец отчёта, ближайший автор), ограниченный контекст и бюджет replan-промпта, заметка о снятом юните и `PROGRESS` |
 | `spec_package.py` | Пакет спецификации (K1/K2): шапки, матрица покрытия, отпечаток, предикат готовности |
 | `stage_manifest.py` | Границы записи стадии (K5): снимок дерева до/после, запись нарушений allowlist; чтение и классификацию держит `violations.py` |
 | `violations.py` | Чтение и классификация записей нарушений стадии (CTX5, TODO-0281): один разбор открытых путей для merge и гейта, fail-closed на не-64-hex `after`; пишет запись `stage_manifest.py` |

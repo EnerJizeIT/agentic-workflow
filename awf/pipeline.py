@@ -110,9 +110,9 @@ _DEFAULTS: dict[str, Any] = {
     # fixed stage name that form-generated pipelines never have (their stages
     # are role-named, e.g. ``agent-implementer``). Any rejection then hit
     # "Rollback target 'implement' not found" and hard-stopped the pipeline.
-    # Escalating is the safe default: the supervisor gets the rejection and
-    # replans. Authors who want a rollback set ``rollback_to:<stage-name>``
-    # explicitly (validated with a warning at load).
+    # A32: the safe default is a rewind of the SAME unit — a refusal appends
+    # the report and returns to the author, and only the explicit ``replan``
+    # value spawns the supervisor replan (a new unit).
     "on_rejected": "escalate",
     # AUD16-03: reserved — accepted from pipeline.yaml (files still carry it),
     # but no signal drives it: TEST-FAILED no longer exists, so the resolver
@@ -696,10 +696,18 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
             if policy.startswith("rollback_to:"):
                 rb_target = policy.split(":", 1)[1]
                 if rb_target not in stage_names:
+                    # A32: a rejection with a phantom target rewinds to the
+                    # nearest earlier author (escalating only when there is
+                    # none); a blocked stage keeps the supervisor fallback.
+                    fallback = (
+                        "a rejection will rewind to the nearest earlier author "
+                        "stage instead (to the supervisor when there is none)"
+                        if pk == "on_rejected"
+                        else "a block will escalate to the supervisor instead"
+                    )
                     print(
                         f"WARNING: stage '{st.name}' rolls back to '{rb_target}' which "
-                        f"is not a stage in this pipeline — a rejection will escalate "
-                        f"to the supervisor instead.",
+                        f"is not a stage in this pipeline — {fallback}.",
                         file=sys.stderr,
                     )
 

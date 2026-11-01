@@ -2,9 +2,16 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 from .infra import managed_fs
+
+#: A32: the two file spellings of a reviewer's rejection report — older runs
+#: and the worker's own signal name. One vocabulary for the readers
+#: (``find_review_report``) and for the closers that file a report with the
+#: unit it belongs to.
+REVIEW_REPORT_PREFIXES = ("REVIEW", "REVIEW-REJECTED")
 
 
 def signal_type(signal_filename: str) -> str:
@@ -23,6 +30,19 @@ def signal_type(signal_filename: str) -> str:
     if signal_filename.startswith("REVIEW-REJECTED-"):
         return "rejected"
     return "unknown"
+
+
+def is_review_decision(signal: str) -> bool:
+    """True only for the verify stage's own ``REVIEW-<id>`` decision signal.
+
+    A worker's ``REVIEW-APPROVED-<id>`` / ``REVIEW-REJECTED-<id>`` shares the
+    ``REVIEW-`` prefix but is a stage signal, not a verify decision. Reading
+    one as a decision sends the owner to the "write a new TODO" advice after
+    a refusal — the same queue growth A32 removed from the engine. The
+    classification comes from :func:`signal_type` so the two vocabularies
+    cannot drift.
+    """
+    return bool(signal) and signal.startswith("REVIEW-") and signal_type(signal) == "unknown"
 
 
 def short_id(todo_id: str) -> str:
@@ -49,6 +69,41 @@ def find_signal_file(directory: Path, prefix: str, todo_id: str, suffix: str = "
         if path.exists():
             return path
     return None
+
+
+def iter_review_reports(directory: Path, todo_id: str) -> Iterator[Path]:
+    """Every spelled report for a unit, canonical first — one enumeration.
+
+    The order IS the rule: ``REVIEW_REPORT_PREFIXES`` names the spellings,
+    and the canonical ``REVIEW-<id>.md`` wins over the worker's
+    ``REVIEW-REJECTED-<id>.md`` when both lie in the outbox. Callers that
+    cannot accept an empty file (the replan prompt) walk on; callers that
+    only need "is there a report" stop at the first.
+
+    Two readers share this list instead of re-spelling the two names: a
+    reader that knows only one spelling silently loses the findings.
+    """
+    for prefix in REVIEW_REPORT_PREFIXES:
+        found = find_signal_file(directory, prefix, todo_id, ".md")
+        if found is not None:
+            yield found
+
+
+def find_review_report(directory: Path, todo_id: str) -> Path | None:
+    """The reviewer's report for a unit — canonical name first, then legacy.
+
+    Two spellings exist in the tree (``REVIEW-<id>.md`` from older runs and
+    ``REVIEW-REJECTED-<id>.md`` next to the signal), so every reader of a
+    *rejection* report asks HERE instead of enumerating the names again.
+    Use :func:`iter_review_reports` when an empty first file must not mask
+    the other spelling.
+
+    Not for the verify decision: inside a verify stage ``REVIEW-<id>.md`` is
+    the supervisor's own decision file (``_detect_supervisor_signal``,
+    ``signal_type`` -> "unknown"). Those readers stay canonical-only — a
+    stray worker rejection must never be consumed as an acceptance.
+    """
+    return next(iter_review_reports(directory, todo_id), None)
 
 
 def expected_signal_prefixes(kind: str) -> list[str]:

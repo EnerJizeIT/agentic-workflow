@@ -97,7 +97,6 @@ def test_the_engine_appends_the_findings_and_rewinds(tmp_path):
     idx, todo, rc = pipeline_engine._handle_fix_round(
         project,
         project / ".agentic" / "logs",
-        {},
         _stages(),
         "TODO-0001",
         "implement",
@@ -117,7 +116,6 @@ def test_without_findings_the_round_is_refused(tmp_path):
     idx, todo, rc = pipeline_engine._handle_fix_round(
         project,
         project / ".agentic" / "logs",
-        {},
         _stages(),
         "TODO-0001",
         "implement",
@@ -140,7 +138,6 @@ def test_a_refused_round_does_not_spend_the_rollback_budget(tmp_path):
     idx, todo, rc = pipeline_engine._handle_fix_round(
         project,
         project / ".agentic" / "logs",
-        {},
         _stages(),
         "TODO-0001",
         "implement",
@@ -169,7 +166,6 @@ def test_the_budget_caps_the_loop_and_the_refusal_appends_nothing(tmp_path):
         pipeline_engine._handle_fix_round(
             project,
             project / ".agentic" / "logs",
-            {},
             _stages(),
             "TODO-0001",
             "implement",
@@ -193,7 +189,6 @@ def test_a_missing_target_is_refused(tmp_path):
     idx, todo, rc = pipeline_engine._handle_fix_round(
         project,
         project / ".agentic" / "logs",
-        {},
         _stages(),
         "TODO-0001",
         "nope",
