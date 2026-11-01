@@ -100,6 +100,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `api/brief.py` | `awf_brief` — карточка супервизора из живого состояния |
 | `api/dashboard.py` | Dashboard HTML generation + `generate_state_dict()` JSON API |
 | `api/dashboard_server.py` | HTTP server (ThreadingHTTPServer, live polling) |
+| `test_selection.py` | A21: какие тесты нужны изменению — ядро форсирует полный сьют, иначе импорт/имя/упоминание/соседи; выборка >40% сьюта деградирует в полный |
 | `reports_archive.py` | A2: архив отчётов стадий в `context/reports/` — имя уникально, копия до перезаписи, сбой не валит стадию |
 | `api/dashboard_open.py` | Открытие вкладки дашборда: маркер `context/dashboard_opened`, дедуп по URL (авто-путь — никогда второй вкладки; явный — окно 60 с), проверка графической сессии |
 | `api/model_check.py` | Валидация моделей config.yaml против opencode.json |
