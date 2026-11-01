@@ -10,6 +10,7 @@ Extracted from orchestrator.py (A6 refactor). Two execution paths:
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -23,6 +24,13 @@ from .todo_ids import is_valid_todo_id
 from .xdg import awf_roles_dir
 
 log = logging.getLogger(__name__)
+
+# R1/AC1: prompt names this many latest completed units, never the archive.
+_PRIOR_TODO_LIMIT = 8
+
+# Archive directory names, not public IDs: `TODO-9` is a legal directory
+# name here even though the public ID contract asks for four digits.
+_DONE_DIR_NAME_RE = re.compile(r"TODO-(\d+)")
 
 
 def get_agent_name(config: dict, role: str) -> str:
@@ -115,6 +123,27 @@ def _live_stage_names(
     return [(s.get("id") or s.get("name")) for s in stages]
 
 
+def _recent_completed_todos(done_dir: Path, current_todo_id: str) -> list[str]:
+    """R1/AC1, K1: the last eight completed units, newest first.
+
+    The order comes from the parsed number, not the name: plain name
+    sorting puts ``TODO-9`` before ``TODO-10`` and ``TODO-10000`` before
+    ``TODO-9999``. The prompt names the newest first (K1: ``TODO-0100, …
+    TODO-0093``), so the worker reads the closest units first. Entries that
+    are not TODO directories (retired units, strays) are skipped.
+    """
+    numbered: list[tuple[int, str]] = []
+    for entry in done_dir.iterdir():
+        if not entry.is_dir() or entry.name == current_todo_id:
+            continue
+        match = _DONE_DIR_NAME_RE.fullmatch(entry.name)
+        if match is None:
+            continue
+        numbered.append((int(match.group(1)), entry.name))
+    numbered.sort(reverse=True)
+    return [name for _, name in numbered[:_PRIOR_TODO_LIMIT]]
+
+
 def _build_pipeline_context(
     project_dir: Path,
     todo_id: str,
@@ -186,12 +215,15 @@ def _build_pipeline_context(
     elif "audit" in role_lower:
         parts.append("\nYour scope: project audit. Don't implement — assess overall quality.")
 
-    # 6. Prior completed work from done/
+    # 6. Prior completed work from done/ — R1/AC1: only the last eight
+    #    units, never the whole archive. The list must not grow with
+    #    history (CTX5: 297 ids were 3 288 of 5 654 prompt characters).
     done_dir = paths.done_dir(project_dir)
     if done_dir.is_dir():
-        completed = sorted(d.name for d in done_dir.iterdir() if d.is_dir())
+        completed = _recent_completed_todos(done_dir, todo_id)
         if completed:
             parts.append(f"\nPrior completed TODOs: {', '.join(completed)}")
+            parts.append("Full list: awf report, .agentic/done/")
             parts.append("Their output files already exist — review them, don't redo.")
 
     return "\n".join(parts)

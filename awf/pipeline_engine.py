@@ -822,12 +822,11 @@ def _handle_fix_round(
         _log(logs_dir, f"A7: fix_round target {target!r} not found")
         return -1, current_todo, 1
 
-    allowed, count, limit = _rollback_budget_allow(
-        project_dir, logs_dir, stages, current_todo, target, target_idx, source
-    )
-    if not allowed:
-        return -1, current_todo, 1
-
+    # The findings are read BEFORE the budget is charged: a reviewer that
+    # rejected without a report is refused without spending a round. The
+    # budget still runs before the append on purpose — a refusal after it
+    # would leave the section in the TODO with no rewind (the half-loop the
+    # docstring forbids).
     findings = _fix_round_text(project_dir, current_todo, source)
     if not findings:
         print(
@@ -836,6 +835,12 @@ def _handle_fix_round(
             file=sys.stderr,
         )
         _log(logs_dir, f"A7: fix_round {source}->{target} without findings")
+        return -1, current_todo, 1
+
+    allowed, count, limit = _rollback_budget_allow(
+        project_dir, logs_dir, stages, current_todo, target, target_idx, source
+    )
+    if not allowed:
         return -1, current_todo, 1
 
     try:

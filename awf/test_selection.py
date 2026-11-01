@@ -71,6 +71,37 @@ _IMPORT_RE = re.compile(
     r"^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))", re.MULTILINE
 )
 
+#: ``from awf.api import dispatch`` imports the MODULE ``awf.api.dispatch``
+#: but names only the package. Without this edge a change to
+#: ``awf/api/dispatch.py`` missed the test that imports it that way.
+_FROM_IMPORT_RE = re.compile(
+    r"^\s*from\s+([\w.]+)\s+import\s+(\([^)]*\)|[^\n]+)", re.MULTILINE
+)
+
+#: A trailing comment inside an import line, stripped before the name split.
+_IMPORT_COMMENT_RE = re.compile(r"#[^\n]*")
+
+
+def _from_import_targets(text: str) -> set[str]:
+    """``from awf.api import dispatch as d`` → ``{"awf.api.dispatch"}``.
+
+    Comments are stripped before the split: ``from awf import api  # noqa``
+    and the same comment inside a parenthesized import would otherwise leave
+    ``api  # noqa``, fail ``isidentifier()`` and lose the edge — quietly, as
+    a missed test rather than a failed one.
+
+    A name that is a function, not a submodule, adds a key nothing will
+    ever match — harmless, and the selector errs towards more tests.
+    """
+    targets: set[str] = set()
+    for package, body in _FROM_IMPORT_RE.findall(text):
+        names = _IMPORT_COMMENT_RE.sub("", body).strip().strip("()")
+        for item in names.split(","):
+            name = item.strip().split(" as ")[0].strip()
+            if name.isidentifier():
+                targets.add(f"{package}.{name}")
+    return targets
+
 
 @dataclass
 class Selection:
@@ -147,8 +178,8 @@ def build_import_index(project: Path) -> dict[str, set[str]]:
             if not module:
                 continue
             index.setdefault(module, set()).add(rel)
-            # `from awf.api import pipeline` imports awf.api.pipeline too.
-            index.setdefault(module + ".__init__", set()).add(rel)
+        for target in _from_import_targets(text):
+            index.setdefault(target, set()).add(rel)
     return index
 
 

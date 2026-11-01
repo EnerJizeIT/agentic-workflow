@@ -60,6 +60,27 @@ while [ "$#" -gt 0 ]; do
 done
 
 pybin=${AWF_PYTHON:-python3}
+# The interpreter is the project's, not the shell's: `verification.test_cmd`
+# names it (`awf suite-command` prints that command). `python3` is right only
+# for a project that never configured one — and it is often the wrong
+# interpreter for pytest plugins (`--timeout` lives in the venv). The
+# question is asked about $project, not the current directory: --project
+# exists precisely because they differ.
+if [ -z "${AWF_PYTHON:-}" ]; then
+  suite_cmd=$(python3 -m awf suite-command --project-dir "$project" 2>/dev/null || true)
+  read -r first second _rest <<<"${suite_cmd:-}"
+  if [ "${second:-}" = "-m" ] && [ -n "${first:-}" ]; then
+    case "$first" in
+      # A relative interpreter in test_cmd means "relative to the project":
+      # suite-canonical.sh runs that command from the project root, while
+      # this script may be invoked from anywhere. Without the prefix
+      # ``.venv/bin/python`` would be looked up in the caller's directory.
+      /*) pybin=$first ;;
+      */*) pybin="$project/$first" ;;
+      *) pybin=$first ;;
+    esac
+  fi
+fi
 mapfile -t files < <("$pybin" -m awf.test_selection \
   --project-dir "$project" ${base:+--base "$base"} $explain $full)
 
