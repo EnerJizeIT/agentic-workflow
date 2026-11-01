@@ -181,12 +181,13 @@ class TestDoneJson:
         repo = _proj(tmp_path)
         (repo / ".agentic" / "outbox" / f"DONE-{TODOS}.json").write_text(
             '{"files_changed": ["calc.py"], '
-            '"tests_run": [{"cmd": "pytest", "result": "1 passed"}], "notes": "ok"}'
+            '"tests_run": [{"cmd": "python3 -c \\"print(1)\\"", "result": "1 passed"}], '
+            '"notes": "ok"}'
         )
         res = _run(repo)
         assert res.sections["done_json"] == "pass"
         report = _report(repo)
-        assert "executor data" in report and "unverified" in report
+        assert "executor data" in report and "declared by the implementer" in report
         assert "calc.py" in report and "1 passed" in report
 
     def test_broken_json_not_crash(self, tmp_path: Path) -> None:

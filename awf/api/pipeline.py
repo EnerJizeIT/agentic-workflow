@@ -747,6 +747,24 @@ def approve_commit(
             message=_service_unit_refusal(todo_id),
         )
 
+    # A8: a claimed green run that does not reproduce is not approvable.
+    # The check is cheap (at most five short commands) and runs BEFORE any
+    # side effect — no evidence file, no fingerprint, no signal.
+    from .. import verify_pack as _verify_pack
+
+    contradictions = _verify_pack.check_done_claims(project_dir, todo_id)
+    if contradictions:
+        detail = "; ".join(contradictions)
+        return ApproveResult(
+            todo_id=todo_id,
+            signal_file="",
+            message=(
+                "approve refused: DONE.json claims a green run that does not "
+                f"reproduce — {detail}. Fix the work (or the claim) and "
+                "re-verify; `awf reject` sends it back."
+            ),
+        )
+
     from ..run_state import read_run
 
     run = read_run(project_dir)
