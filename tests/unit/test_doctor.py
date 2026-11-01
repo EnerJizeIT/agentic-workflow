@@ -278,6 +278,71 @@ def test_model_check_exception_degrades_to_unknown(project, env, monkeypatch):
     assert "provider exploded" not in _lines(report)
 
 
+def test_socks_proxy_is_a_fact_not_a_warn(project, env, monkeypatch):
+    """A22: the worker env strips socks itself — doctor says what it will do."""
+    _versions(monkeypatch)
+    monkeypatch.setenv("HTTPS_PROXY", "socks5h://127.0.0.1:10808")
+
+    report = run_doctor(project)
+
+    assert report.rc == 0, _lines(report)
+    proxy_lines = [line for line in report.lines if line.startswith("ok  proxy:")]
+    assert len(proxy_lines) == 1, _lines(report)
+    assert "strip socks (HTTPS_PROXY)" in proxy_lines[0]
+    assert "10808" not in "\n".join(report.lines)
+
+
+def test_no_proxy_variables_no_proxy_line(project, env, monkeypatch):
+    """A22: a clean env keeps the previous report (no proxy row at all)."""
+    from awf._env import PROXY_VARS
+
+    for name in PROXY_VARS:
+        monkeypatch.delenv(name, raising=False)
+    _versions(monkeypatch)
+
+    report = run_doctor(project)
+
+    assert not [line for line in report.lines if "proxy:" in line], _lines(report)
+
+
+def test_configured_socks_proxy_is_a_warn_without_the_value(project, env, monkeypatch):
+    """A22: an explicit socks setting would still kill the worker — WARN."""
+    _versions(monkeypatch)
+    config = dict(CLEAN_CONFIG)
+    config["worker"] = {"network": {"proxy": "socks5h://127.0.0.1:10808"}}
+    _write_config(project, config)
+
+    report = run_doctor(project)
+
+    assert report.rc == 1
+    warns = [line for line in report.warnings if line.startswith("WARN  proxy:")]
+    assert len(warns) == 1, _lines(report)
+    assert "worker.network.proxy" in warns[0]
+    assert "10808" not in "\n".join(report.lines)
+
+
+def test_a_proxy_value_without_a_scheme_is_not_echoed(project, env, monkeypatch):
+    """A22: the row names the scheme, so a value-shaped URL must not ride in.
+
+    ``host:port`` — and ``user:pass@host:port`` in particular — is a plausible
+    typo; echoing it would put a credential and a port into the report.
+    """
+    _versions(monkeypatch)
+    config = dict(CLEAN_CONFIG)
+    config["worker"] = {"network": {"proxy": "alice:s3cret@proxy:3128"}}
+    _write_config(project, config)
+
+    report = run_doctor(project)
+
+    text = "\n".join(report.lines)
+    assert "s3cret" not in text
+    assert "3128" not in text
+    facts = [line for line in report.lines if line.startswith("ok  proxy:")]
+    assert facts == [
+        "ok  proxy: value without a scheme (http_proxy, https_proxy)"
+    ], _lines(report)
+
+
 def test_cmd_doctor_prints_lines_and_returns_rc(project, env, monkeypatch, capsys):
     """``awf doctor`` prints the report and returns its rc (D8)."""
     _versions(monkeypatch)

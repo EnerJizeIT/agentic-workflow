@@ -302,24 +302,37 @@ def run_agent_stage(
     # K6: the window anchor is taken BEFORE Popen (2s of slack covers the
     # row landing late, 120s forward guards non-monotonic clocks).
     spawn_started_ms = int(time.time() * 1000)
+    # W7: role-aware env — a role listed in automation.readonly_roles
+    # gets no edit/write permission overrides.
+    # ORCH M2.2: execute stages hide the control MCP tools from the
+    # stage's agent (plan/verify keep the full set).
+    # ORCH M7.2: the stage's tools profile (tools: allow/deny)
+    # merges onto the base rules; absent → unchanged behavior.
+    # TODO-0323 (A22): the env builder reports what it did with the proxy
+    # through ``proxy_facts``; the stage log repeats THAT fact, so the line
+    # cannot disagree with the environment the worker actually gets.
+    proxy_facts: list[str] = []
+    worker_env = awf_subprocess_env(
+        role=role,
+        project_dir=project_dir,
+        agent_name=agent_name,
+        restrict_control_tools=(kind == "execute"),
+        tools_profile=stage.tools or None,
+        # TODO-0242 (P0-3): an execute worker sees the configured MCP
+        # servers only (default: the control server).
+        isolate_mcp=(kind == "execute"),
+        proxy_facts=proxy_facts,
+    )
+    # A silently rewritten environment is not allowed — scheme and variable
+    # names only, never a credential or a port.
+    _log(
+        logs_dir,
+        "proxy: "
+        + (proxy_facts[0] if proxy_facts else "inherited from the parent env"),
+    )
     result = run_subprocess_until_signal(
         cmd, cwd=project_dir, watch_paths=watch_paths, logs_dir=logs_dir,
-        # W7: role-aware env — a role listed in automation.readonly_roles
-        # gets no edit/write permission overrides.
-        # ORCH M2.2: execute stages hide the control MCP tools from the
-        # stage's agent (plan/verify keep the full set).
-        # ORCH M7.2: the stage's tools profile (tools: allow/deny)
-        # merges onto the base rules; absent → unchanged behavior.
-        env=awf_subprocess_env(
-            role=role,
-            project_dir=project_dir,
-            agent_name=agent_name,
-            restrict_control_tools=(kind == "execute"),
-            tools_profile=stage.tools or None,
-            # TODO-0242 (P0-3): an execute worker sees the configured MCP
-            # servers only (default: the control server).
-            isolate_mcp=(kind == "execute"),
-        ),
+        env=worker_env,
         hard_timeout=hard_timeout,
         log_holder=log_holder,
         on_spawn=_record_worker_pid,

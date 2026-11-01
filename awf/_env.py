@@ -362,6 +362,130 @@ def merge_tool_profile(
 
 
 
+# TODO-0323 (A22): opencode 2.x uses Bun's fetch, which rejects the socks
+# scheme — a socks proxy inherited by the worker is a dead network, not a
+# preference. The worker env therefore never keeps a socks variable, and
+# ``worker.network.proxy`` is the one explicit way to say what it should use:
+# empty = strip socks only (default), ``none`` = strip every proxy variable,
+# ``http://host:port`` = hand that proxy to the worker.
+PROXY_VARS: tuple[str, ...] = (
+    "http_proxy", "https_proxy", "all_proxy",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+)
+
+
+#: A scheme is the only part of the configured proxy URL that may reach the
+#: log: anything else can carry a credential, a host or a port.
+_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.\-]*$")
+
+
+def is_socks_proxy(value: str) -> bool:
+    """True when a proxy URL uses a socks scheme (the value is not returned)."""
+    return value.strip().lower().startswith("socks")
+
+
+def proxy_scheme(value: str) -> str:
+    """The scheme of a proxy URL, or ``""`` when the value carries none.
+
+    Only a bare scheme prefix is returned: ``http://user:pass@host:port``
+    gives ``"http"``, while ``user:pass@host:port`` (no scheme — a plausible
+    typo) gives nothing at all, so a credential can never ride into a log
+    line or into ``awf doctor`` output through this door.
+    """
+    if "://" not in value:
+        return ""
+    head = value.split("://", 1)[0].lower()
+    return head if _SCHEME_RE.match(head) else ""
+
+
+def strip_socks(env: dict[str, str]) -> list[str]:
+    """Remove every socks proxy variable from *env*; return their names."""
+    stripped = [
+        name for name in PROXY_VARS if is_socks_proxy(env.get(name) or "")
+    ]
+    for name in stripped:
+        env.pop(name, None)
+    return stripped
+
+
+def proxy_setting_from_config(config: dict | None) -> str:
+    """``worker.network.proxy`` out of an ALREADY loaded config, stripped.
+
+    One reader for both consumers — the spawn path below and ``awf doctor``
+    — so the two cannot drift on what the key says. A wrong value type
+    degrades to ``""`` (strip socks only).
+    """
+    from . import config as cfg_mod
+
+    value = cfg_mod.get(
+        config if isinstance(config, dict) else {}, "worker.network.proxy"
+    )
+    return value.strip() if isinstance(value, str) else ""
+
+
+def worker_proxy_setting(project_dir: str | Path | None) -> str:
+    """``worker.network.proxy`` as a stripped string (``""`` when absent).
+
+    Env assembly for a spawn must never raise: a read failure or a wrong
+    value type degrades to the empty default (strip socks only).
+    """
+    if project_dir is None:
+        return ""
+    try:
+        from . import config as cfg_mod
+
+        config = cfg_mod.load(project_dir)
+    except Exception:  # noqa: BLE001 — a spawn must not die on config
+        return ""
+    return proxy_setting_from_config(config)
+
+
+def apply_worker_proxy(env: dict[str, str], setting: str) -> str:
+    """Rewrite proxy variables in *env* per *setting*; return a fact line.
+
+    The fact carries only the scheme and the variable names — never a
+    credential, host or port: it goes to the stage log and to ``awf doctor``.
+    ``""`` means nothing was touched (the default with no socks to strip).
+
+    A socks value IN THE KEY is as unusable as an inherited one: Bun's fetch
+    rejects the scheme, so the value is dropped instead of being handed to
+    the worker and ``awf doctor`` names it as a WARN. Handing it over would
+    break the very invariant the key exists for.
+    """
+    setting = setting.strip()
+    if is_socks_proxy(setting):
+        stripped = strip_socks(env)
+        fact = "strip socks"
+        if stripped:
+            fact += f" ({', '.join(stripped)})"
+        return f"{fact}, worker.network.proxy socks value ignored"
+
+    present = [name for name in PROXY_VARS if (env.get(name) or "").strip()]
+    if setting.lower() == "none":
+        for name in PROXY_VARS:
+            env.pop(name, None)
+        return "none (all proxy variables removed)" if present else "none"
+    if setting:
+        socks = strip_socks(env)
+        for name in PROXY_VARS:
+            env.pop(name, None)
+        env["http_proxy"] = setting
+        env["https_proxy"] = setting
+        scheme = proxy_scheme(setting)
+        fact = (
+            f"{scheme} (http_proxy, https_proxy)" if scheme
+            # A value without a scheme is handed over as written (the user
+            # meant something), but it is never echoed: `host:port` and
+            # `user:pass@host:port` both hide a credential behind them.
+            else "value without a scheme (http_proxy, https_proxy)"
+        )
+        if socks:
+            fact += f", socks stripped ({', '.join(socks)})"
+        return fact
+    stripped = strip_socks(env)
+    return f"strip socks ({', '.join(stripped)})" if stripped else ""
+
+
 def awf_subprocess_env(
     *,
     role: str = "",
@@ -370,6 +494,7 @@ def awf_subprocess_env(
     restrict_control_tools: bool = False,
     tools_profile: dict[str, list[str]] | None = None,
     isolate_mcp: bool = False,
+    proxy_facts: list[str] | None = None,
 ) -> dict[str, str]:
     """BD-22/KAUD-5: env for opencode subprocess spawned by awf.
 
@@ -413,6 +538,12 @@ def awf_subprocess_env(
 
     BD-25: strip ``OPENCODE_SERVER_*`` env vars so the subprocess does NOT
     attach to a running ``opencode serve`` instance.
+
+    A22: the worker never inherits a socks proxy (Bun's fetch rejects the
+    scheme); ``worker.network.proxy`` is the one explicit way to say what it
+    gets. ``proxy_facts`` is an optional collector: the fact describing the
+    decision THIS call made is appended to it, so a caller (the stage log)
+    reports the env the worker actually receives instead of recomputing it.
     """
     env = os.environ.copy()
 
@@ -525,4 +656,12 @@ def awf_subprocess_env(
     for key in list(env.keys()):
         if key in strip_keys:
             env.pop(key, None)
+
+    # TODO-0323 (A22): the worker never inherits a socks proxy — Bun's fetch
+    # rejects the scheme, so the stage dies on its first network call. The
+    # fact is reported from THIS call (``proxy_facts``): a second pass over
+    # os.environ could legitimately disagree with the env the worker gets.
+    fact = apply_worker_proxy(env, worker_proxy_setting(project_dir))
+    if proxy_facts is not None and fact:
+        proxy_facts.append(fact)
     return env

@@ -85,6 +85,11 @@ READ_KEYS: frozenset[str] = frozenset({
     "spec.budget.package",
     # ── worker ───────────────────────────────────────────────────────────
     "worker.mcp_servers",
+    # TODO-0323 (A22): the one explicit proxy the worker gets. Empty (default)
+    # strips socks variables only; ``none`` strips every proxy variable;
+    # ``http://host:port`` hands that proxy to the worker through
+    # http_proxy/https_proxy (awf/_env.py::apply_worker_proxy).
+    "worker.network.proxy",
     # ── opencode 2.x (managed opt-in; the launch mode is gone in awf 3) ──
     "opencode.managed",
     # ── metrics (awf metrics) ────────────────────────────────────────────

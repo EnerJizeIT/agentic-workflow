@@ -342,6 +342,8 @@ engine:
   kill_with_parent: false        # true = the engine dies with its launcher
 worker:
   mcp_servers: [agent-workflow-ui]  # MCP servers an EXECUTE worker keeps
+  network:
+    proxy: ""                       # "" = strip socks, "none" = no proxy, http://host:port
 ```
 
 `kill_with_parent: false` is the durable-run default (TODO-0242): a restart
@@ -352,6 +354,15 @@ tool context to the control server; every other configured MCP server is
 switched off for that subprocess (a name the config does not define is a
 warning, never a failure). An explicit empty list (`mcp_servers: []`) is a
 value, not an absence: it turns every MCP server off for the worker.
+
+`worker.network.proxy` decides what the worker's environment says about the
+network. Empty (default) removes socks proxy variables only — opencode 2.x
+uses Bun's fetch, which rejects the scheme. `none` removes every proxy
+variable. `http://host:port` hands that proxy to the worker through
+`http_proxy`/`https_proxy`. A socks value in the key is ignored — the worker
+gets no proxy from it — and `awf doctor` warns about it. `awf doctor` prints
+the resulting scheme and variable names; the stage log carries the same
+one-line fact.
 
 A third block caps the unit's review rounds:
 
