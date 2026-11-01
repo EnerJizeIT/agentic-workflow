@@ -63,3 +63,26 @@ def test_without_a_snapshot_the_published_file_is_drawn(tmp_path):
     names = [s["name"] for s in state["stages"]]
     assert names == ["plan", "implement", "verify"]
     assert state["pipeline_note"] == ""
+
+
+def test_a_crashed_stage_badge_carries_the_reason(tmp_path):
+    """A11 + A20: the badge answers "why", not only "dead"."""
+    import os
+
+    from awf.api.dashboard import _determine_status
+
+    project = _project(tmp_path)
+    logs = project / ".agentic" / "logs"
+    (logs / "orchestrator.log").write_text(
+        "[2026-11-01T10:00:00Z] Agent stage agent-implementer failure reason: "
+        "Error: Agent not found: \"supervisor\"\n",
+        encoding="utf-8",
+    )
+    # A pid that cannot be alive: the current process's pid + a huge offset.
+    dead_pid = os.getpid() + 100000
+    state = {"pipeline_pid": dead_pid, "stage_name": "agent-implementer", "stage_idx": 1}
+
+    status, _cls, text, _icon, _label = _determine_status(state, project)
+
+    assert status == "dead"
+    assert "Agent not found" in text

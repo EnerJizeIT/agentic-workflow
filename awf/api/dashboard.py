@@ -345,7 +345,9 @@ def _determine_status(
 
         stale = detect_stale_stage(project_dir, state)
         if stale is not None:
-            return ("dead", "blocked", stale.line, "✕", "Stale")
+            reason = _failure_reason(project_dir)
+            text = stale.line if not reason else f"{stale.line} · {reason}"
+            return ("dead", "blocked", text, "✕", "Stale")
 
     # DF6-6: PID liveness check
     pid = state.get("pipeline_pid")
@@ -354,7 +356,11 @@ def _determine_status(
             import os as _os
             _os.kill(int(pid), 0)
         except (ProcessLookupError, PermissionError, ValueError, TypeError, OSError):
-            return ("dead", "blocked", "⚠️ Pipeline process dead", "✕", "Dead")
+            reason = _failure_reason(project_dir) if project_dir is not None else ""
+            text = "⚠️ Pipeline process dead"
+            if reason:
+                text = f"{text} · {reason}"
+            return ("dead", "blocked", text, "✕", "Dead")
         except Exception:
             # AUD-2026-08-09.5: unknown error checking PID liveness → treat
             # as dead rather than falling through to "running" (false green).
@@ -846,6 +852,28 @@ def _read_todo_summary(project_dir: Path, todo_id: str | None, limit: int = 400)
     if len(joined) > limit:
         joined = joined[: limit - 1].rstrip() + "…"
     return joined
+
+
+def _failure_reason(project_dir: Path) -> str:
+    """A11: the last ERROR line the engine wrote for a crashed stage.
+
+    The badge used to say "dead"/"stale" with the pid and nothing else; the
+    reason lived only in ``orchestrator.log`` (``Agent stage X failure
+    reason: …``). One line here makes the dashboard answer the first
+    question a reader has.
+    """
+    log_file = paths.logs_dir(project_dir) / "orchestrator.log"
+    try:
+        lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    for line in reversed(lines[-200:]):
+        marker = "failure reason:"
+        if marker in line:
+            return line.split(marker, 1)[1].strip()[:300]
+        if "Pipeline stopped at stage" in line:
+            return line.split(":", 1)[-1].strip()[:300]
+    return ""
 
 
 def _read_worker_last_line(project_dir: Path, todo_id: str | None = None) -> str:
