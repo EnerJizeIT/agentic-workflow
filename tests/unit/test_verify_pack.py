@@ -179,7 +179,6 @@ class TestProveRed:
 class TestDoneJson:
     def test_valid_facts(self, tmp_path: Path) -> None:
         repo = _proj(tmp_path)
-        # A8: a claimed green command is rerun — it must actually pass here.
         (repo / ".agentic" / "outbox" / f"DONE-{TODOS}.json").write_text(
             '{"files_changed": ["calc.py"], '
             '"tests_run": [{"cmd": "python3 -c \\"print(1)\\"", "result": "1 passed"}], '
