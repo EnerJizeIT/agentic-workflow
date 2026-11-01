@@ -64,6 +64,47 @@ def _write_pipeline_snapshot(
         _log(logs_dir, f"WARNING: pipeline snapshot capture failed: {e}")
 
 
+def _maybe_open_dashboard(project_dir: Path, config: dict, logs_dir: Path) -> None:
+    """A14: open the dashboard tab once per run, in the background.
+
+    Config ``dashboard.auto_open`` (default true) is the switch; a headless
+    box and CI are skipped (``gui_available``). The open itself is
+    idempotent per url (``dashboard_open.should_open``), so a reused port
+    does not produce a second tab.
+    """
+    import threading
+
+    from . import config as cfg_mod
+    from .api import dashboard_open
+
+    if not bool(cfg_mod.get(config, "dashboard.auto_open", True)):
+        return
+    if not dashboard_open.gui_available():
+        return
+    # Second belt: test scaffolding lives under `/tmp/pytest-*` and some
+    # tests pass a trimmed env (no PYTEST_CURRENT_TEST). A tab per spawned
+    # pipeline is never what such a run wants.
+    if "pytest-" in str(project_dir):
+        return
+
+    def _open() -> None:
+        try:
+            result = dashboard_open.open_dashboard(project_dir, explicit=False)
+            _log(
+                logs_dir,
+                "dashboard: "
+                + (
+                    f"opened {result.get('url')}"
+                    if result.get("opened")
+                    else f"not reopened ({result.get('url') or 'no page'})"
+                ),
+            )
+        except Exception as e:  # noqa: BLE001 — never break the launch
+            _log(logs_dir, f"dashboard open failed: {e}")
+
+    threading.Thread(target=_open, name="awf-dashboard-open", daemon=True).start()
+
+
 def _stage_names(stages: list) -> str:
     return ", ".join(str(s.name) for s in stages) or "(none)"
 
@@ -411,6 +452,12 @@ def _run_pipeline_impl(args: Any, liveness: Any = None) -> int:
 
         dashboard_port, _dashboard_server = start_dashboard_with_reuse(project_dir)
         _log(logs_dir, f"Dashboard server: http://127.0.0.1:{dashboard_port}")
+        # A14: the tab opens itself once per run. The port is reused across
+        # launches, so `should_open` refuses a second tab for the same url —
+        # the one already open keeps polling. A daemon thread, because a
+        # browser call on a headless box or a frozen `xdg-open` must never
+        # delay the first stage.
+        _maybe_open_dashboard(project_dir, config, logs_dir)
     except Exception as e:
         _log(logs_dir, f"Dashboard server failed to start: {e}")
 

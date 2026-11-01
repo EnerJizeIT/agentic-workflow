@@ -73,6 +73,7 @@ READ_KEYS: frozenset[str] = frozenset({
     # nothing reads them (that is what doctor reports).
     "retry.silent_work_attempts",
     "wait.cap_seconds",
+    "dashboard.auto_open",
     "run.stall_minutes",
     # ── phases / supervisor / context / feedback ─────────────────────────
     "phases.current",

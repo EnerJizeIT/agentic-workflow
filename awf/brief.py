@@ -91,9 +91,7 @@ RITUALS: list[str] = [
     "run loop: after approve the pipeline exits — `wait_for_event` returns "
     "`done` → `awf_run_next` (no `git log` needed)",
     "run close: `awf_run_finish` — RUN-REPORT to the outbox",
-    "incident: infrastructure first "
-    "(`opencode run --auto -- hi`) → "
-    "`awf_retry_stage` / `awf_continue --from-stage <stage>`",
+    "incident: `opencode run --auto -- hi` first → `awf_retry_stage`",
     "hygiene: `awf_unblock` (stale closure), `awf_todo_remove` (never "
     "started), `awf_restore` (archived without work), `awf_todo_retire`",
 ]

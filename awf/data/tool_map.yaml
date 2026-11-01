@@ -48,6 +48,8 @@ groups:
       - mcp: awf_doctor
         cli: doctor
         when: "preflight: versions, models, dead keys"
+      - cli: dashboard
+        when: "dashboard URL; --open opens it"
   - title: run
     tools:
       - mcp: awf_run_start
