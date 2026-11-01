@@ -157,6 +157,20 @@ def run_agent_stage(
     managed_root = managed_fs.agentic_root_for(outbox)
     for leaf in (*stage_signal_paths(outbox, todo_id, *prefixes), stale_progress):
         managed_fs.assert_no_symlink_escape(leaf, root=managed_root)
+    # A2: the previous stage's reports are archived BEFORE the next worker
+    # overwrites them. ``stage_signal_paths`` lists only the .ready wire, so
+    # the reports (.md/.json, canonical or legacy short name) are found here;
+    # the stale PROGRESS note is this stage's too.
+    from .reports_archive import archive_report as _archive_report
+    from .signals import find_signal_file as _find_signal
+
+    for prefix in prefixes:
+        for ext in (".md", ".json"):
+            report = _find_signal(outbox, prefix, todo_id, ext)
+            if report is not None:
+                _archive_report(project_dir, report, logs_dir=logs_dir)
+    _archive_report(project_dir, stale_progress, logs_dir=logs_dir)
+
     clean_stage_signals(outbox, todo_id, *prefixes)
 
     # DF5-5: clean stale PROGRESS from previous stage so collect_handoff
@@ -630,6 +644,13 @@ def collect_handoff(
     # share the role 'agent-qa-review' and used to overwrite each other's
     # handoff (and borrow the wrong stage duration in the chat).
     out_file = handoff_dir / f"{stage_name or role}-{todo_id}.md"
+    # A2: the previous handoff of this stage/stage-name is archived BEFORE
+    # the write — a retry must not be the only report a reader can find.
+    from .reports_archive import archive_report as _archive_report
+
+    _archive_report(
+        project_dir, out_file, stage=stage_name or role, logs_dir=logs_dir
+    )
     # QA-C: handoff write atomic (was direct write_text — inconsistent with
     # rest of codebase which uses atomic_write_text for crash safety).
     # The facts block carries RAW display identities (``display_path``):
