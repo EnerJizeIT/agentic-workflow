@@ -137,6 +137,21 @@ def _build_parser():
         help="Path to project root (default: current directory)",
     )
 
+    p_dashboard = sub.add_parser(
+        "dashboard",
+        help="Show the dashboard URL or open it (--open) in the browser",
+    )
+    p_dashboard.add_argument(
+        "--open",
+        action="store_true",
+        help="Open the tab (reopening is allowed after a minute)",
+    )
+    p_dashboard.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
     p_doctor = sub.add_parser(
         "doctor",
         help="Diagnose versions, models and dead config keys (rc 1 on WARN)",
@@ -1063,6 +1078,9 @@ def _run_command(args) -> int:
         if args.command == "restore":
             from . import cmd_restore
             return cmd_restore.run(args)
+        if args.command == "dashboard":
+            from . import cmd_dashboard
+            return cmd_dashboard.run(args)
         if args.command == "unblock":
             from . import cmd_unblock
             return cmd_unblock.run(args)

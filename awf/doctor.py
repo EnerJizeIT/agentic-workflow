@@ -246,6 +246,26 @@ def _opencode_json_problem() -> str:
     return _load_opencode_root()[1]
 
 
+def _check_dashboard(
+    project_dir: Path, config: dict[str, Any], config_problem: str, out: _Lines
+) -> None:
+    """A14: the tab opens on its own — say where it points and whether it will.
+
+    One line: the live port (or "not running") and the auto-open switch.
+    Information, never a WARN: a closed dashboard is not a defect.
+    """
+    if config_problem:
+        return
+    from . import config as cfg_mod
+    from .api import dashboard_open
+
+    auto = bool(cfg_mod.get(config, "dashboard.auto_open", True))
+    url = dashboard_open._live_url(project_dir)
+    where = url or "not running"
+    state = "on" if auto else "off"
+    out.ok("dashboard", f"{where} · auto-open {state}")
+
+
 def _check_config_format(out: _Lines) -> None:
     """K8: the opencode config is in the 2.x form, or says how to get there.
 
@@ -421,6 +441,7 @@ def run_doctor(project_dir: str | Path = ".") -> DoctorReport:
     _check_versions(root, config, config_problem, out)
     _check_opencode(config, config_problem, out)
     _check_config_format(out)
+    _check_dashboard(root, config, config_problem, out)
     _check_models(root, config_problem, out)
     _check_agent_names(config, config_problem, out)
     if config_problem:
