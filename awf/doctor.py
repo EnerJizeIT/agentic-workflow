@@ -45,7 +45,8 @@ from typing import Any
 
 import yaml
 
-from . import config_keys, paths, versions, xdg
+from . import command_parse, config_keys, paths, versions, xdg
+from . import config as cfg_mod
 from .supervisor import argv_agent_flag
 
 OK = "ok"
@@ -385,6 +386,29 @@ def _check_opencode(config: dict[str, Any], config_problem: str, out: _Lines) ->
         )
 
 
+def _check_verification(config: dict[str, Any], out: _Lines) -> None:
+    """AUD10: a pytest option repeated with another value picks the last one.
+
+    The duplicate `--timeout` in ``verification.test_cmd`` already cost six
+    red runs and was invisible; the doctor names it before the launch.
+    """
+    test_cmd = cfg_mod.get(config, "verification.test_cmd")
+    if not isinstance(test_cmd, str) or not test_cmd.strip():
+        return
+    conflicts = command_parse.duplicate_option_values(test_cmd)
+    if not conflicts:
+        out.ok("verification", "no pytest option is repeated with two values")
+        return
+    facts = "; ".join(
+        f"{option} appears with {', '.join(values)}"
+        for option, values in conflicts.items()
+    )
+    out.warn(
+        "verification",
+        f"{facts} — pytest keeps only one value; keep a single {', '.join(conflicts)}",
+    )
+
+
 def _check_config_keys(config: dict[str, Any], out: _Lines) -> None:
     """Config keys row: every key of the live config has a reader."""
     dead = config_keys.dead_keys(config)
@@ -447,6 +471,7 @@ def run_doctor(project_dir: str | Path = ".") -> DoctorReport:
     if config_problem:
         out.warn("config keys", f"{config_problem} — nothing to check")
     else:
+        _check_verification(config, out)
         _check_config_keys(config, out)
     return DoctorReport(
         rc=1 if out.warnings else 0,

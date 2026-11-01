@@ -10,6 +10,7 @@ policy and ``detect_runner`` owns the artifact's runner name (no fourth copy).
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -396,9 +397,52 @@ def _named_runner(names: list[str]) -> str | None:
     return None
 
 
+#: pytest options whose repeated value is silently resolved to the last one
+#: (AUD10): `--timeout=60 … --timeout=300` reads fine and turns runs red.
+DUPLICATE_VALUE_OPTIONS: tuple[str, ...] = ("--timeout", "-p")
+
+
+def duplicate_option_values(command: str) -> dict[str, list[str]]:
+    """pytest options given more than once with DIFFERENT values.
+
+    Returns ``option → distinct values`` for the options that conflict; an
+    option repeated with the same value is not a conflict, and a flag without
+    a value (``-q``) never is. A command that does not tokenize is silent —
+    the doctor is a report, not a gate.
+    """
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return {}
+    seen: dict[str, list[str]] = {}
+    i = 0
+    while i < len(words):
+        word = words[i]
+        option = ""
+        value = ""
+        for name in DUPLICATE_VALUE_OPTIONS:
+            if word == name:
+                option = name
+                value = words[i + 1] if i + 1 < len(words) else ""
+                i += 1
+                break
+            if word.startswith(name + "="):
+                option = name
+                value = word[len(name) + 1 :]
+                break
+        if option:
+            values = seen.setdefault(option, [])
+            if value and value not in values:
+                values.append(value)
+        i += 1
+    return {option: values for option, values in seen.items() if len(values) > 1}
+
+
 __all__ = [
+    "DUPLICATE_VALUE_OPTIONS",
     "Program",
     "detect_runner",
+    "duplicate_option_values",
     "parse_words",
     "shell_command_index",
     "split_segments",

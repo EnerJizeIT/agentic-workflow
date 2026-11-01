@@ -82,6 +82,39 @@ def test_healthy_project_is_ok(project, env, monkeypatch):
     assert all(line.startswith("ok  ") for line in report.lines), _lines(report)
 
 
+def test_a_duplicated_pytest_option_is_a_warn(project, env, monkeypatch):
+    """AUD10: `--timeout=60 … --timeout=300` silently picks the last one."""
+    _versions(monkeypatch)
+    config = dict(CLEAN_CONFIG)
+    config["verification"] = {
+        "test_cmd": "python -m pytest tests/ -q --timeout=60 --timeout=300",
+        "lint_cmd": "ruff check .",
+    }
+    _write_config(project, config)
+
+    report = run_doctor(project)
+
+    assert report.rc == 1
+    warns = [line for line in report.warnings if line.startswith("WARN  verification:")]
+    assert len(warns) == 1, _lines(report)
+    assert "--timeout" in warns[0]
+    assert "60" in warns[0] and "300" in warns[0]
+
+
+def test_one_value_per_pytest_option_is_ok(project, env, monkeypatch):
+    _versions(monkeypatch)
+    config = dict(CLEAN_CONFIG)
+    config["verification"] = {
+        "test_cmd": "python -m pytest tests/ -q --timeout=300 -p no:cacheprovider",
+        "lint_cmd": "ruff check .",
+    }
+    _write_config(project, config)
+
+    report = run_doctor(project)
+
+    assert report.rc == 0, _lines(report)
+
+
 def test_runner_version_drift_is_a_warn(project, env, monkeypatch):
     """AC14: a pinned checkout with another version → rc 1, WARN names both."""
     runner = project.parent / "runner"

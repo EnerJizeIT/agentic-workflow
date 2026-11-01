@@ -92,3 +92,150 @@ def test_an_absolute_interpreter_is_used_as_written(tmp_path):
     assert log.is_file(), result.stderr
     assert "-m awf.test_selection" in log.read_text(encoding="utf-8")
     assert result.returncode == 2
+
+
+def test_a_missing_interpreter_names_the_reason(tmp_path):
+    """AUD8: a missing interpreter is not an "empty selection"."""
+    project = _project_with_fake_interpreter(
+        tmp_path, "./bin/missing-python -m pytest tests/ -q"
+    )
+
+    result = _run(project, tmp_path, cwd=REPO_ROOT)
+
+    assert result.returncode == 2
+    assert "missing-python" in result.stderr
+    assert "не найден" in result.stderr
+    assert "empty selection" not in result.stderr
+
+
+def _project_with_tests(tmp_path: Path) -> Path:
+    """A real git project with one passing test — enough for `--run`."""
+    project = tmp_path / "runproj"
+    (project / ".agentic").mkdir(parents=True)
+    (project / "tests" / "unit").mkdir(parents=True)
+    (project / "tests" / "unit" / "test_ok.py").write_text(
+        "def test_ok():\n    assert True\n", encoding="utf-8"
+    )
+    (project / ".agentic" / "config.yaml").write_text(
+        "verification:\n  test_cmd: ./bin/fake-python -m pytest tests/ -q\n",
+        encoding="utf-8",
+    )
+    fake = project / "bin" / "fake-python"
+    fake.parent.mkdir(parents=True)
+    fake.write_text(
+        "#!/bin/sh\n"
+        'echo "$@" >> "$FAKE_PYTHON_LOG"\n'
+        f'exec "{sys.executable}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    subprocess.run(["git", "config", "user.email", "t@e"], cwd=project, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=project, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=project, check=True)
+    (project / "tests" / "unit" / "test_ok.py").write_text(
+        "def test_ok():\n    assert 1\n", encoding="utf-8"
+    )
+    return project
+
+
+def _run_with_args(project: Path, tmp_path: Path, args: list[str]) -> subprocess.CompletedProcess:
+    log = tmp_path / "fake.log"
+    shim = tmp_path / "shim"
+    shim.mkdir(exist_ok=True)
+    (shim / "python3").symlink_to(sys.executable)
+    return subprocess.run(
+        ["bash", str(SCRIPT), "--project", str(project), *args],
+        cwd=REPO_ROOT,
+        env={"PATH": f"{shim}:/usr/bin:/bin", "FAKE_PYTHON_LOG": str(log)},
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+def _pytest_line(log: Path) -> str:
+    lines = [ln for ln in log.read_text(encoding="utf-8").splitlines() if "-m pytest" in ln]
+    assert lines, log.read_text(encoding="utf-8")
+    return lines[-1]
+
+
+def test_run_adds_parallelism_when_the_caller_passed_none(tmp_path):
+    """A21: the full suite in one thread is 25 minutes and over budget."""
+    project = _project_with_tests(tmp_path)
+
+    result = _run_with_args(project, tmp_path, ["--run", "--", "-q"])
+
+    assert result.returncode == 0, result.stderr
+    assert "-n auto" in _pytest_line(tmp_path / "fake.log")
+
+
+def test_run_keeps_the_callers_parallelism(tmp_path):
+    project = _project_with_tests(tmp_path)
+
+    result = _run_with_args(project, tmp_path, ["--run", "--", "-q", "-n", "0"])
+
+    assert result.returncode == 0, result.stderr
+    line = _pytest_line(tmp_path / "fake.log")
+    assert "-n 0" in line
+    assert "auto" not in line
+
+
+def test_a_missing_awf_python_names_the_interpreter_not_the_cli(tmp_path):
+    """AUD8: a typo in AWF_PYTHON must not read as a missing `awf` CLI.
+
+    The CLI probe runs the interpreter too, so it has to come after the
+    interpreter check: otherwise the real reason (a bad path) hides behind
+    "awf CLI not found" and the caller fixes the wrong thing.
+    """
+    project = _project_with_fake_interpreter(
+        tmp_path, "./bin/fake-python -m pytest tests/ -q"
+    )
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "--project", str(project), "--explain"],
+        cwd=REPO_ROOT,
+        env={"PATH": "/usr/bin:/bin", "AWF_PYTHON": "./bin/missing-python"},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 2, result.stderr
+    assert "missing-python" in result.stderr
+    assert "AWF_PYTHON" in result.stderr
+    assert "не найден" in result.stderr
+    assert "CLI not found" not in result.stderr
+
+
+def test_run_leaves_no_selection_stderr_file_behind(tmp_path):
+    """AUD8 regression: ``--run`` execs pytest, so an EXIT trap never fires.
+
+    The selector's stderr scratch file exists to be read once; after the
+    exec it has no owner and no cleanup — one stray file per run in the
+    caller's TMPDIR.
+    """
+    project = _project_with_tests(tmp_path)
+    tmpdir = tmp_path / "tmpdir"
+    tmpdir.mkdir()
+    log = tmp_path / "fake.log"
+    shim = tmp_path / "shim"
+    shim.mkdir(exist_ok=True)
+    (shim / "python3").symlink_to(sys.executable)
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "--project", str(project), "--run", "--", "-q"],
+        cwd=REPO_ROOT,
+        env={
+            "PATH": f"{shim}:/usr/bin:/bin",
+            "FAKE_PYTHON_LOG": str(log),
+            "TMPDIR": str(tmpdir),
+        },
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert list(tmpdir.glob("awf-affected.*")) == []

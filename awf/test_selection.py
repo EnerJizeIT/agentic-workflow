@@ -75,14 +75,26 @@ _IMPORT_RE = re.compile(
 #: but names only the package. Without this edge a change to
 #: ``awf/api/dispatch.py`` missed the test that imports it that way.
 _FROM_IMPORT_RE = re.compile(
-    r"^\s*from\s+([\w.]+)\s+import\s+(\([^)]*\)|[^\n]+)", re.MULTILINE
+    r"^\s*from\s+(\.*[\w.]*)\s+import\s+(\([^)]*\)|[^\n]+)", re.MULTILINE
 )
 
 #: A trailing comment inside an import line, stripped before the name split.
 _IMPORT_COMMENT_RE = re.compile(r"#[^\n]*")
 
 
-def _from_import_targets(text: str) -> set[str]:
+def _relative_package(package: str, dots: int) -> str:
+    """``package`` of the importing file → the package ``dots`` dots name.
+
+    ``from .x`` (one dot) is the file's own package, ``from ..x`` its parent.
+    """
+    parts = [part for part in package.split(".") if part]
+    drop = dots - 1
+    if drop:
+        parts = parts[:-drop] if drop <= len(parts) else []
+    return ".".join(parts)
+
+
+def _from_import_targets(text: str, package: str = "") -> set[str]:
     """``from awf.api import dispatch as d`` → ``{"awf.api.dispatch"}``.
 
     Comments are stripped before the split: ``from awf import api  # noqa``
@@ -90,16 +102,30 @@ def _from_import_targets(text: str) -> set[str]:
     ``api  # noqa``, fail ``isidentifier()`` and lose the edge — quietly, as
     a missed test rather than a failed one.
 
+    AUD3: relative imports (``from .x import y``) resolve from ``package`` —
+    the importing test file's own package. Without it a sibling test that
+    only imports through the package edge is missed.
+
     A name that is a function, not a submodule, adds a key nothing will
     ever match — harmless, and the selector errs towards more tests.
     """
     targets: set[str] = set()
-    for package, body in _FROM_IMPORT_RE.findall(text):
+    for module, body in _FROM_IMPORT_RE.findall(text):
+        if not module:
+            continue
+        if module.startswith("."):
+            dots = len(module) - len(module.lstrip("."))
+            base = _relative_package(package, dots)
+            rest = module.lstrip(".")
+            module = ".".join(part for part in (base, rest) if part)
+            if not module:
+                continue
+        targets.add(module)
         names = _IMPORT_COMMENT_RE.sub("", body).strip().strip("()")
         for item in names.split(","):
             name = item.strip().split(" as ")[0].strip()
             if name.isidentifier():
-                targets.add(f"{package}.{name}")
+                targets.add(f"{module}.{name}")
     return targets
 
 
@@ -173,12 +199,13 @@ def build_import_index(project: Path) -> dict[str, set[str]]:
         except OSError:
             continue
         rel = str(test_file.relative_to(project))
+        package = ".".join(test_file.parent.relative_to(project).parts)
         for left, right in _IMPORT_RE.findall(text):
             module = left or right
             if not module:
                 continue
             index.setdefault(module, set()).add(rel)
-        for target in _from_import_targets(text):
+        for target in _from_import_targets(text, package):
             index.setdefault(target, set()).add(rel)
     return index
 
@@ -188,6 +215,19 @@ def _test_files(project: Path) -> list[str]:
         str(p.relative_to(project))
         for p in (project / "tests").rglob("test_*.py")
     )
+
+
+def _mention_needles(path: str) -> set[str]:
+    """The literal forms a test may mention: the path and its basename.
+
+    A test often assembles the path from parts (``ROOT / "scripts" / "x.sh"``
+    is how this repo's own wrapper test names it), so the full path alone
+    would miss the very test that exercises the script.
+    """
+    needles = {path, Path(path).name}
+    if path.endswith(".py"):
+        needles.add(path[: -len(".py")].replace("/", "."))
+    return needles
 
 
 def _mentions(project: Path, needles: set[str], candidates: list[str]) -> set[str]:
@@ -241,13 +281,15 @@ def select(
     candidates = all_tests
 
     for path in changed:
-        if not path.endswith(".py"):
-            continue
-        for module in _module_names(path):
-            selected |= index.get(module, set())
+        # AUD2: the import index only knows Python modules, but the name and
+        # mention rules are about the path itself — a script, a config or a
+        # doc must select its tests too.
+        if path.endswith(".py"):
+            for module in _module_names(path):
+                selected |= index.get(module, set())
         stem = Path(path).stem
         selected |= {rel for rel in candidates if Path(rel).stem == f"test_{stem}"}
-        selected |= _mentions(project, {path, path[: -len(".py")].replace("/", ".")}, candidates)
+        selected |= _mentions(project, _mention_needles(path), candidates)
 
     # Neighbours: a change inside a package usually has a sibling suite that
     # exercises the same surface (the name-based match alone misses it).

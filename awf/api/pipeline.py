@@ -752,9 +752,9 @@ def approve_commit(
     # side effect — no evidence file, no fingerprint, no signal.
     from .. import verify_pack as _verify_pack
 
-    contradictions = _verify_pack.check_done_claims(project_dir, todo_id)
-    if contradictions:
-        detail = "; ".join(contradictions)
+    report = _verify_pack.check_done_claims(project_dir, todo_id)
+    if report.mismatches:
+        detail = "; ".join(report.mismatches)
         return ApproveResult(
             todo_id=todo_id,
             signal_file="",
