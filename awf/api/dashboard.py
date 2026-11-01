@@ -1040,22 +1040,46 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
     # unresolvable name falls back to the default pipeline — never crash.
     stages_raw: list[dict[str, Any]] = []
     display_pipeline = ""
+    display_source = ""
     try:
-        from ..pipeline import resolve_pipeline_file
+        import yaml
 
-        want_pipeline = _display_pipeline_name(project_dir, state, todo_id)
-        try:
-            pipeline_file = resolve_pipeline_file(project_dir, want_pipeline or None)
-        except Exception:
-            pipeline_file = resolve_pipeline_file(project_dir)
-        if pipeline_file.is_file():
-            display_pipeline = pipeline_file.stem
-            import yaml
+        from .. import paths as _paths
+        from ..pipeline import resolve_pipeline_file, snapshot_pipeline_name
+        from ..todo_ids import is_valid_todo_id as _is_valid_todo_id
 
-            data = yaml.safe_load(pipeline_file.read_text(encoding="utf-8"))
-            stages_raw = (data or {}).get("stages", []) if isinstance(data, dict) else []
+        # A20 (the A12c lesson): a pinned unit runs its SNAPSHOT, not the
+        # published file. Drawing the published stages showed a pipeline the
+        # engine was not executing — the stage list and the highlight lied
+        # together. The snapshot wins whenever it exists.
+        snapshot_file = None
+        if todo_id and _is_valid_todo_id(str(todo_id)):
+            candidate = _paths.pipeline_snapshot_path(project_dir, str(todo_id))
+            if candidate.is_file():
+                snapshot_file = candidate
+        if snapshot_file is not None:
+            data = yaml.safe_load(snapshot_file.read_text(encoding="utf-8"))
+            staged = (data or {}).get("stages", []) if isinstance(data, dict) else []
+            if staged:
+                stages_raw = staged
+                display_pipeline = snapshot_pipeline_name(
+                    project_dir, str(todo_id)
+                ) or snapshot_file.stem
+                display_source = "snapshot"
+        if not stages_raw:
+            want_pipeline = _display_pipeline_name(project_dir, state, todo_id)
+            try:
+                pipeline_file = resolve_pipeline_file(project_dir, want_pipeline or None)
+            except Exception:
+                pipeline_file = resolve_pipeline_file(project_dir)
+            if pipeline_file.is_file():
+                display_pipeline = pipeline_file.stem
+                display_source = "file"
+                data = yaml.safe_load(pipeline_file.read_text(encoding="utf-8"))
+                stages_raw = (data or {}).get("stages", []) if isinstance(data, dict) else []
     except Exception:
         display_pipeline = ""
+        display_source = ""
         stages_raw = []
 
     # RUN6 #2: stage_idx belongs to the ACTUAL pipeline. When the
@@ -1064,6 +1088,11 @@ def generate_state_dict(project_dir: Path) -> dict[str, Any]:
     state_pipeline = str(state.get("pipeline", "") or "").strip() if state else ""
     pipeline_mismatch = bool(state_pipeline) and state_pipeline != display_pipeline
     pipeline_note = ""
+    if display_source == "snapshot":
+        pipeline_note = (
+            f"юнит выполняется по снимку {display_pipeline or 'PIPELINE'}: "
+            "стадии и подсветка — из него"
+        )
     if pipeline_mismatch:
         pipeline_note = (
             f"исполняемый пайплайн — {state_pipeline}, "
