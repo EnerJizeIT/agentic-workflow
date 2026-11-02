@@ -26,6 +26,7 @@ gate that delegates the commit to it.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -437,6 +438,10 @@ def _audit_record(
     record = {
         "todo_id": todo_id,
         "status": outcome.status,
+        # A8/AC43: the short reason of EVERY refusal (not only the silent
+        # plan skip) — the full text stays in the log, the artifact carries
+        # the first line. The brief reads this field as the commit verdict.
+        "reason": outcome.reason,
         "excluded": [[p, r] for p, r in excluded],
         "worker_staged": list(worker_staged),
         "skip_inconsistent": skip_inconsistent,
@@ -470,6 +475,26 @@ def _write_commit_audit_record(
         )
     except (OSError, managed_fs.ManagedPathError) as e:
         _log(logs_dir, f"TODO-0195: commit audit for {todo_id} not written: {e}")
+
+
+def read_commit_audit(project_dir: str | Path, todo_id: str) -> dict | None:
+    """K4/AC43: ``context/COMMIT-AUDIT-{todo}.json`` — the commit verdict.
+
+    The ONE reader of the audit artifact: the RUN-REPORT and the brief must
+    not each parse it (a second reader drifts on the new ``reason`` field).
+    ``None`` when the file is absent or unreadable — degrade, never crash;
+    the caller says "коммита ещё не было" / "missing".
+    """
+    if not todo_id:
+        return None
+    path = paths.context_dir(Path(project_dir)) / f"COMMIT-AUDIT-{todo_id}.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def maybe_commit(

@@ -39,11 +39,12 @@ from __future__ import annotations
 
 from ..brief import BriefResult
 from ..claim_changes import apply_claim_changes, plan_claim_changes, read_claim
+from ..commit_gate import read_commit_audit
 from ..feedback import FeedbackResult, feedback
 from ..metrics import MetricsResult, collect_metrics
 from ..prove_red import ProveRedResult, prove_red
 from ..run_state import run_is_active
-from ..verify_pack import VerifyPackResult, verify_pack
+from ..verify_pack import VerifyPackResult, read_gates_facts, verify_pack
 from ._destructive import (
     DestructivePreview,
     execute_destruction,
@@ -227,6 +228,9 @@ __all__ = [
     "rollback",
     "prove_red",
     "verify_pack",
+    # IMP3: facts of the verify pack and the commit gate (one reader each)
+    "read_gates_facts",
+    "read_commit_audit",
     "collect_metrics",
     "approve_commit",
     "reject_commit",

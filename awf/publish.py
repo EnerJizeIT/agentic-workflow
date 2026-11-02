@@ -708,7 +708,7 @@ def _write_json(path: Path, data: dict) -> None:
 def _read_json(path: Path) -> dict | None:
     """Read one publication fact. Absent, unreadable OR not a JSON object →
     ``None`` — the same "an uninterpretable fact is not a fact" degradation
-    the sibling reader (``api/run._read_commit_audit``) already uses. Valid
+    the sibling reader (``commit_gate.read_commit_audit``) already uses. Valid
     JSON of the wrong shape (a list/string, or an object written by another
     schema) used to raise ``KeyError``/``TypeError`` out of the commit gate
     while this reader's contract said "unreadable → None" (R2.5

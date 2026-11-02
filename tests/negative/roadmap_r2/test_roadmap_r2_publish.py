@@ -641,7 +641,7 @@ def test_corrupt_pending_intent_fact_does_not_crash_the_resume(tmp_path):
     A fact file holding valid JSON of the WRONG shape (a hand-edited or
     foreign-schema object) used to raise ``KeyError`` out of ``read_intent``
     — an untyped crash of the commit gate, while the sibling reader
-    (``_read_commit_audit``) already degrades to ``None``. The corrupt fact
+    (``commit_gate.read_commit_audit``) already degrades to ``None``. The corrupt fact
     is not a pending operation: the gate proceeds and the commit lands once.
     """
     publish = _publish()
