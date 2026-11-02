@@ -1,15 +1,18 @@
-"""ORCH M1.2: brief and load_supervisor_context — two views of one record.
+"""ORCH M1.2: brief and the shared run reader — two views of one record.
 
 The run (забег) state in `.agentic/state/run.yaml` is read by ONE shared
 reader (`awf/run_plan_read.read_run_record`); `awf_brief` renders the
 compact view (goal, position, budget, last decision in one line, links
-to sources) and `awf_load_supervisor_context` renders the full view (the
-same record plus all decisions and the vision/plan excerpts). Not
-parallel retellings (IMPLEMENTATION-STRATEGY §1.2). A broken run.yaml
-degrades both surfaces to "no run" with a warning — no traceback.
+to sources) and `read_run_record` gives the full view (the same record
+in full: every decision, with its reason and timestamp, plus the
+sources). The old one-shot bootstrap aggregate is gone — `awf_brief` is
+the single entry point.
+Not parallel retellings (IMPLEMENTATION-STRATEGY §1.2). A broken
+run.yaml degrades both surfaces to "no run" with a warning — no
+traceback.
 
 All tests go through the public API on a synthetic project (no mocks):
-run_start / reject_commit write the state, brief / load_supervisor_context
+run_start / reject_commit write the state, brief / read_run_record
 read it back.
 """
 from __future__ import annotations
@@ -19,6 +22,7 @@ from pathlib import Path
 import yaml
 
 from awf import api, run_state
+from awf.run_plan_read import decision_line, read_run_record
 
 T = "TODO-0001"
 T2 = "TODO-0002"
@@ -77,24 +81,24 @@ class TestContextFullView:
         api.reject_commit(proj, T, "diff too wide")
         api.reject_commit(proj, T2, "tests red")
 
-        c = api.load_supervisor_context(proj)
-        assert c.run_active is True
-        assert c.run_goal == "Unify the supervisor context"
-        assert c.run_criteria == ["one reader"]
-        assert c.run_position == "1/2"
-        assert [(d["kind"], d["todo_id"], d["reason"]) for d in c.run_decisions] == [
+        c = read_run_record(proj)
+        assert c.active is True
+        assert c.goal == "Unify the supervisor context"
+        assert c.criteria == ["one reader"]
+        assert c.position == "1/2"
+        assert [(d["kind"], d["todo_id"], d["reason"]) for d in c.decisions] == [
             ("reject", T, "diff too wide"),
             ("reject", T2, "tests red"),
         ]
-        assert all(d["ts"] for d in c.run_decisions)  # when
-        assert c.run_last_decision == f"reject {T2} — tests red"
-        assert ".agentic/state/run.yaml" in c.run_sources
-        assert f"outbox/REVIEW-{T2}.md" in c.run_sources
+        assert all(d["ts"] for d in c.decisions)  # when
+        assert decision_line(c.last_decision) == f"reject {T2} — tests red"
+        assert ".agentic/state/run.yaml" in c.sources
+        assert f"outbox/REVIEW-{T2}.md" in c.sources
         # two views of the SAME record: the card shows the same goal and
         # the same last decision line
         b = api.brief(proj)
-        assert b.run_goal == c.run_goal
-        assert b.run_last_decision == c.run_last_decision
+        assert b.run_goal == c.goal
+        assert b.run_last_decision == decision_line(c.last_decision)
 
     def test_card_clips_long_goal_context_keeps_full(self, tmp_git_repo: Path) -> None:
         """The card keeps its word budget: a long goal is clipped; the full
@@ -103,10 +107,10 @@ class TestContextFullView:
         proj = _project(tmp_git_repo)
         api.run_start(proj, queue=[T], goal=long_goal)
         b = api.brief(proj)
-        c = api.load_supervisor_context(proj)
+        c = read_run_record(proj)
         assert b.run_goal != long_goal
         assert len(b.run_goal.split()) <= 11  # 10 words + the ellipsis
-        assert c.run_goal == long_goal
+        assert c.goal == long_goal
 
 
 class TestRejectAgreement:
@@ -120,13 +124,11 @@ class TestRejectAgreement:
         api.reject_commit(proj, T, "missing regression test")
 
         b = api.brief(proj)
-        c = api.load_supervisor_context(proj)
-        assert b.run_last_decision == c.run_last_decision
+        c = read_run_record(proj)
+        assert b.run_last_decision == decision_line(c.last_decision)
         assert b.run_last_decision.startswith(f"reject {T}")
         assert "awf_run_next" in b.next_action
-        assert "awf_run_next" in c.next_action
         assert "awf_start" not in b.next_action
-        assert "awf_start" not in c.next_action
 
     def test_outside_run_behavior_unchanged(self, tmp_git_repo: Path) -> None:
         """No run: no run lines on the card, no run fields in the context,
@@ -134,7 +136,7 @@ class TestRejectAgreement:
         override)."""
         proj = _project(tmp_git_repo)
         b = api.brief(proj)
-        c = api.load_supervisor_context(proj)
+        c = read_run_record(proj)
         assert b.run_warning == ""
         assert b.run_goal == ""
         assert b.run_last_decision == ""
@@ -143,11 +145,11 @@ class TestRejectAgreement:
         assert "run last decision" not in b.text
         assert "run sources" not in b.text
         assert "run warning" not in b.text
-        assert c.run_active is False
-        assert c.run_goal == ""
-        assert c.run_decisions == []
-        assert c.run_sources == []
-        assert "awf_run_next" not in c.next_action
+        assert c.active is False
+        assert c.goal == ""
+        assert c.decisions == []
+        assert c.sources == []
+        assert "awf_run_next" not in b.next_action
 
 
 class TestBrokenRunYaml:
@@ -159,15 +161,15 @@ class TestBrokenRunYaml:
         _raw_write(proj, {"active": True, "queue": []})
 
         b = api.brief(proj)
-        c = api.load_supervisor_context(proj)
+        c = read_run_record(proj)
         assert b.run_warning
         assert "run.yaml" in b.run_warning
         assert b.run_warning in b.text
-        assert c.run_warning == b.run_warning
-        assert any("run.yaml" in w for w in c.warnings)
+        assert c.warning == b.run_warning
+        assert "run.yaml" in c.warning
         assert b.run is None
-        assert c.run_active is False
-        assert c.run_goal == ""
+        assert c.active is False
+        assert c.goal == ""
 
     def test_broken_yaml_degrades_with_warning(self, tmp_git_repo: Path) -> None:
         """(d) broken YAML in run.yaml: the same degradation — both
@@ -176,12 +178,12 @@ class TestBrokenRunYaml:
         _raw_write(proj, None, raw="active: [unclosed")
 
         b = api.brief(proj)
-        c = api.load_supervisor_context(proj)
+        c = read_run_record(proj)
         assert b.run_warning
-        assert c.run_warning
+        assert c.warning
         assert b.run is None
-        assert c.run_active is False
-        assert c.run_decisions == []
+        assert c.active is False
+        assert c.decisions == []
 
     def test_corrupt_budget_in_valid_shape_degrades(self, tmp_git_repo: Path) -> None:
         """(d, invariant 5) a run.yaml with a VALID shape but a corrupt
@@ -202,6 +204,6 @@ class TestBrokenRunYaml:
         )
 
         b = api.brief(proj)
-        c = api.load_supervisor_context(proj)
-        assert c.run_budget_minutes == 0
-        assert b.run_warning or c.run_warning
+        c = read_run_record(proj)
+        assert c.budget_minutes == 0
+        assert b.run_warning or c.warning

@@ -20,8 +20,10 @@ Layout:
 - ``setup``        — apply_project_setup (project-setup form materialization)
 - ``dispatch``     — dispatch_todo (atomic TODO + baseline + signal),
                      resume_dispatch (finish a killed dispatch)
-- ``context``      — load_supervisor_context (aggregate bootstrap payload),
-                     _extract_stage_info, _compute_expected_action
+- ``context``      — _extract_stage_info, _compute_expected_action,
+                     _compute_stage_kind (helpers of ``get_status``; the old
+                     bootstrap aggregate is gone — ``awf_brief`` is the
+                     single entry point)
 - ``planning``     — apply_increment_plan (increment variant persistence)
 - ``pipelines``    — write_pipeline, list_pipelines (RUN3 #1 named pipelines)
 - ``feedback``     — feedback (RUN4 #2 feedback contour: report to owner)
@@ -82,7 +84,6 @@ from ._results import (
     ServiceRunStatusResult,
     StartResult,
     StatusResult,
-    SupervisorContextResult,
     UnblockResult,
     UpdateTodoResult,
     WaitEventResult,
@@ -92,7 +93,6 @@ from ._results import (
 # Public functions — organized by submodule for clarity
 from ._stack import derive_project_name, detect_stack
 from .brief import brief
-from .context import load_supervisor_context
 from .dispatch import dispatch_todo, resume_dispatch
 from .hygiene import (
     blocked_draft,
@@ -189,7 +189,6 @@ __all__ = [
     "ApplyProjectSetupResult",
     "BlockedDraftResult",
     "DispatchTodoResult",
-    "SupervisorContextResult",
     "ApplyIncrementPlanResult",
     "WaitEventResult",
     "RunStartResult",
@@ -276,10 +275,9 @@ __all__ = [
     "PRESETS",
     # Project-setup materialization
     "apply_project_setup",
-    # TODO dispatch + supervisor context (dogfood-2 automation)
+    # TODO dispatch (dogfood-2 automation)
     "dispatch_todo",
     "resume_dispatch",
-    "load_supervisor_context",
     # R2.2 (roadmap R2): the CODE transfer of a rejected unit
     "plan_claim_changes",
     "apply_claim_changes",

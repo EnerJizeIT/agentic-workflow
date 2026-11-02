@@ -807,7 +807,7 @@ def test_supervisor_context_carries_engine_dead(tmp_path):
         project, stage_name="agent-implementer", todo_id=T1,
         pipeline_pid=_dead_pid(),
     )
-    context = api.load_supervisor_context(project)
+    context = api.brief(project)
     assert "dead" in context.engine_dead
     assert T1 in context.engine_dead_todo
     assert f"awf_continue(todo_id='{T1}')" in context.next_action

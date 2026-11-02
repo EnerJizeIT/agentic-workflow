@@ -2270,7 +2270,7 @@ async def awf_analyze_roles(
         )
     else:
         response["next_action"] = (
-            "Roles analyzed. Check awf_current_step for the phase and "
+            "Roles analyzed. Check awf_brief for the phase and "
             "the next step."
         )
     return response
@@ -2518,67 +2518,6 @@ async def awf_dispatch_todo(
     return response
 
 
-async def awf_load_supervisor_context(
-    project_dir: str | None = None,
-) -> dict[str, Any]:
-    """Aggregate everything a supervisor needs in one call.
-
-    Replaces 5-6 separate tool calls at session start or before writing
-    the next TODO. Returns in one payload:
-
-    - vision_excerpt (first 4000 chars of vision/README)
-    - plan_md content
-    - supervisor_md content (role instruction)
-    - active_todos + progress
-    - done/blocked counts
-    - pipeline_running + pid + log_tail
-    - current_stage_name (extracted from log)
-    - next_stage_role + its prohibitions excerpt (from pipeline.yaml)
-    - last_signal (DONE/BLOCKED/REVIEW from log)
-    - git_diff_stat
-
-    Use cases:
-    - Start of new supervisor session
-    - After long pause (rebuild mental model)
-    - Before writing next TODO (full context)
-
-    Args:
-        project_dir: Project root. Default is the MCP process cwd ($HOME) —
-            NOT your project; always pass it explicitly (AUD08-12).
-
-    Returns:
-        Dict with all fields of SupervisorContextResult.
-    """
-    try:
-        result = await asyncio.to_thread(
-            api.load_supervisor_context, _resolve_project_dir(project_dir)
-        )
-        response = _ok(result)
-        # SMO: next_action from detected phase
-        phase = result.phase if hasattr(result, 'phase') else 'unknown'
-        _PHASE_NEXT = {
-            "goal": "Ask user for goal → awf_set_goal.",
-            "form": "Open project-setup form → awf_open_project_setup_form.",
-            "normalize": "Run awf_analyze_roles → awf_confirm_normalized.",
-            "brief": "Write TODO-NNNN.md (awf_dispatch_todo) → .ready signal.",
-            "run": "Pipeline running. GO IDLE — wait for user.",
-            "verify": "Read handoffs + git diff → awf_approve.",
-            "done": "Pipeline complete. Ask user for next step.",
-        }
-        # ORCH M1.2: the run-aware action from the shared run record wins
-        # (e.g. after a reject in a run: awf_run_next); the phase hint
-        # stays the fallback when the record carries no action.
-        response["next_action"] = (
-            result.next_action
-            or _PHASE_NEXT.get(phase, f"Phase: {phase}. Check awf_current_step.")
-        )
-        return response
-    except api.AwfApiError as e:
-        return _err(e)
-    except Exception as e:
-        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
-
-
 # ─── Dogfood-5: shortcut tools (no more 'how do I fill the form?') ──────
 
 
@@ -2646,7 +2585,7 @@ async def awf_open_increment_planning_form(
     picks one. Submit persists via ``awf.api.apply_increment_plan``.
 
     When to call:
-    - After ``awf_load_supervisor_context`` revealed project state.
+    - After ``awf_brief`` revealed project state.
     - Before first ``awf_dispatch_todo`` — increment plan shapes the
       TODO sequence.
     - When MVP scope is large enough that decomposition matters (≥3
@@ -3362,45 +3301,7 @@ async def awf_kill(
         return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
 
 
-# ─── SMO: Phase-aware supervisor tools ─────────────────────────────────
-
-
-async def awf_current_step(
-    project_dir: str | None = None,
-) -> dict[str, Any]:
-    """Determine current supervisor phase and return compact prompt.
-
-    SMO: Replaces loading 600+ line supervisor.md. Detects phase from
-    project state (init/goal/form/normalize/brief/run/verify) and returns
-    only the relevant section + core invariants (~50-100 lines).
-
-    Call this at the START of every interaction to know what to do.
-
-    Args:
-        project_dir: Project root. Default is the MCP process cwd ($HOME) —
-            NOT your project; always pass it explicitly (AUD08-12).
-
-    Returns:
-        Dict with: phase (str), prompt (str), goal (str|None).
-    """
-    try:
-        from awf.phase import detect_phase, get_phase_prompt
-        from awf.pipeline_state import read_state
-
-        pd = _resolve_project_dir(project_dir)
-        phase = await asyncio.to_thread(detect_phase, pd)
-        prompt = await asyncio.to_thread(get_phase_prompt, phase, pd)
-        state = await asyncio.to_thread(read_state, pd)
-        goal = state.get("goal") if state else None
-
-        return {
-            "status": "ok",
-            "phase": phase,
-            "prompt": prompt,
-            "goal": goal,
-        }
-    except Exception as e:
-        return {"status": "error", "error": f"Unexpected {type(e).__name__}: {e}"}
+# ─── RUN4 #1: supervisor onboarding/recovery card ───────────────────────
 
 
 async def awf_brief(project_dir: str | None = None) -> dict[str, Any]:
