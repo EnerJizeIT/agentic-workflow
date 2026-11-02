@@ -25,11 +25,14 @@ YOU are the reviewer. Read the TODO (contract), check the work, decide.
 ## Do NOT
 - Do NOT relay "pipeline waits for your decision" — that's YOUR call.
 - Do NOT ask user "should I approve?" — decide yourself.
-- Do NOT git commit manually WHEN the verify stage auto-commits: check
-  `on_approved` in `.agentic/pipelines/*.yaml` — `commit_and_next` /
-  `commit_and_report` means the engine commits after ACK. With the default
-  policy (`next`) the commit is YOUR step (see supervisor.md Step 7).
-  `git push` is always yours.
+- Do NOT run `git add`, `git commit` or `git push` — ever. Committing is
+  the engine's commit gate (`on_approved: commit_and_next` /
+  `commit_and_report` commits after your ACK/APPROVE); publication is the
+  engine's step too. Your deliverable at verify is the verdict + reason.
+- Do NOT "help" a refused gate with a manual commit. If the gate refused
+  (`plan-skip-inconsistent`, moved HEAD, binding/fingerprint mismatch),
+  write `.agentic/outbox/REVIEW-{todo_id}.md` with the refusal reason and
+  stop. The engine replans; the role never commits.
 
 ## Salvage in verify
 If salvage triggered during verify stage:

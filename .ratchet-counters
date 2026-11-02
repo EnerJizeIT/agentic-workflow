@@ -1945,7 +1945,7 @@ todos	DEBT='TODO[[:space:]]*(\([^)]*\))?[[:space:]]*:|FIXME[[:space:]]*(\([^)]*\
 # carries no TODO token. Negative-test catalogue, same class as the
 # test_roadmap_r1_no_bypass.py raise above: test identifiers, not debt.
 # R2.1 (TODO-0220, git-модель без печатных строк): files_over_400 raised
-# 85 -> 86 — the new awf/infra/git_model.py (@lines awf/infra/git_model.py (1217 -> 1373 lines)) is the one git
+# 85 -> 86 — the new awf/infra/git_model.py (@lines awf/infra/git_model.py (1217 -> 1384 lines)) is the one git
 # parser the R2 model is built on: the NUL-protocol reader (GitRepository,
 # ChangeRecord), the immutable/versioned BaselineManifest with its
 # stability-checked capture, and the rename-pair ownership attribution

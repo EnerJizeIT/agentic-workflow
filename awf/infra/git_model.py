@@ -805,6 +805,17 @@ class GitRepository:
         result = self._run(*args)
         return [p for p in result.stdout.split(b"\0") if p]
 
+    def paths_between(self, before: str, after: str) -> list[bytes]:
+        """Paths that differ between two commits
+        (``git diff --name-only -z before after``).
+
+        The evidence read for a stage that moved HEAD: byte-faithful like
+        every other path read, so a non-UTF-8 name survives and reaches the
+        log through :func:`display_path` instead of a C-quoted alias.
+        """
+        result = self._run("diff", "--name-only", "-z", before, after)
+        return [p for p in result.stdout.split(b"\0") if p]
+
     def staged_paths(self, rev: str = "") -> list[bytes]:
         """Paths staged against ``rev`` (default HEAD): the index side of the
         working tree, ``git diff --cached --name-only -z``. Byte-faithful

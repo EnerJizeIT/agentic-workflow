@@ -10,6 +10,7 @@ Gate: [ -f docs/design/single-owners.md ] && ! grep -rqn "_legacy_plan_split" aw
 | пути дерева и untracked | `awf/infra/git_model.py` | `def untracked_paths` |
 | пути относительно baseline | `awf/infra/git_model.py` | `def changed_paths` |
 | индекс против ревизии | `awf/infra/git_model.py` | `def staged_paths` |
+| пути между двумя коммитами (улика FOREIGN COMMIT) | `awf/infra/git_model.py` | `def paths_between` |
 | набор файлов без baseline | `awf/commit_delta.py` | `def worktree_file_set` |
 | предсуществующие untracked базового снимка | `awf/infra/git_model.py` | `def read_untracked_snapshot` |
 | базовый снимок дерева (запись) | `awf/api/pipeline.py` | `def create_baseline` |

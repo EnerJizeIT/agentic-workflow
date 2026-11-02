@@ -51,6 +51,12 @@ def run(args: Any) -> int:
         print(f"Replan: FAILED — {result.replan_error}")
         print()
 
+    # A31: a commit outside the gate is never silent — the line names the
+    # SHAs and the files; the run has stopped on it.
+    if result.foreign_commit:
+        print(result.foreign_commit)
+        print()
+
     for entry in result.active_todos:
         todo_id = entry["todo_id"]
         print(f"Active: {todo_id}")

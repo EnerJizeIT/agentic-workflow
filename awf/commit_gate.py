@@ -34,7 +34,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import commit_delta, commit_plan, git_utils, paths, publish, stage_manifest
+from . import commit_delta, commit_plan, git_utils, head_guard, paths, publish, stage_manifest
 from ._log import log as _log
 from ._markdown import HEADING_RE, first_heading_index, skip_leading_trivia
 from .infra import managed_fs
@@ -526,6 +526,10 @@ def maybe_commit(
         # leave the per-unit audit fact so the RUN-REPORT shows the unit's
         # commit instead of silently dropping the section (TODO-0195).
         _write_resume_audit(project_dir, todo_id, pending, logs_dir)
+        # A31: the resumed commit is still the gate's own — record it, or
+        # the engine's HEAD drift check would call it a foreign commit.
+        if pending.status == commit_plan.OUTCOME_COMMITTED:
+            head_guard.record_gate_commit(project_dir, pending.sha, logs_dir)
         return pending
 
     if policy not in ("commit_and_next", "commit_and_report"):
@@ -545,6 +549,11 @@ def maybe_commit(
     # ``plan`` at call time, so the auto-mode refresh below is covered.
     def _finalize(outcome: commit_plan.CommitOutcome) -> commit_plan.CommitOutcome:
         _write_commit_audit(project_dir, plan, outcome, logs_dir)
+        # A31: the engine compares HEAD before/after each stage — the gate's
+        # own commit must be recognizable there, or a legitimate commit
+        # would look foreign.
+        if outcome.status == commit_plan.OUTCOME_COMMITTED:
+            head_guard.record_gate_commit(project_dir, outcome.sha, logs_dir)
         return outcome
 
     # R2.3: a model refusal (unsupported gitlink / unmerged / sparse / split
@@ -686,7 +695,7 @@ def maybe_commit(
     )
     if outcome.status == commit_plan.OUTCOME_COMMITTED:
         print(f"Auto-committed: {todo_id} at '{stage_name}' ({outcome.sha}).", file=sys.stderr)
-        print("Remember to push: git push origin HEAD", file=sys.stderr)
+        print("Publication is the engine's step — do not push by hand.", file=sys.stderr)
         _log(logs_dir, f"Auto-committed {todo_id} at {stage_name} ({outcome.sha})")
     elif outcome.status == commit_plan.OUTCOME_SKIPPED:
         print(f"No commit at '{stage_name}': {outcome.reason}", file=sys.stderr)

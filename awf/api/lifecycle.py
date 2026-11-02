@@ -14,7 +14,7 @@ from typing import Any
 
 from .. import budget as budget_mod
 from .. import config as cfg_mod
-from .. import paths, run_state, todos
+from .. import head_guard, paths, run_state, todos
 from .._atomic import MODE_OWNER_EDITABLE, atomic_write_text
 from .._lock import LOCK_NAME
 from ..dispatch_policy import CONFIG_VERSION
@@ -1374,6 +1374,7 @@ def get_status(project_dir: Path) -> StatusResult:
         engine_dead_todo=engine_dead_todo,
         stale_stage=stale_stage,
         replan_error=(_state or {}).get("replan_error") or None,
+        foreign_commit=(_state or {}).get(head_guard.FOREIGN_COMMIT_KEY) or None,
         budget_exhausted_todo=budget_exhausted_todo,
         active_pipeline=active_pipeline,
         pipeline_count=pipeline_count,

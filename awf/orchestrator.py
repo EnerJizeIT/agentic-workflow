@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config as cfg_mod
-from . import paths
+from . import head_guard, paths
 from . import stage_timeout as _stage_timeout
 from ._atomic import atomic_write_text
 from ._log import log as _log
@@ -551,20 +551,35 @@ def _run_pipeline_impl(args: Any, liveness: Any = None) -> int:
             from .api.dashboard import generate_dashboard
             generate_dashboard(project_dir)
 
+            # A31: the stage boundary — the gate's commit record is per
+            # stage, and HEAD before/after is the drift evidence. The label
+            # is the unit the stage STARTED with: a supervisor transition may
+            # already have adopted the next TODO by the time we check.
+            head_guard.reset_stage_markers(project_dir, logs_dir)
+            head_before = head_guard.head_sha(project_dir)
+            stage_todo = current_todo
+
             if s_role == "supervisor":
                 current_todo, delta, rc = execute_supervisor_stage(
                     stage, current_todo, auto, project_dir, config, logs_dir, pipeline_name
                 )
-                if rc != 0:
-                    return rc
-                stage_idx += delta
+                if rc == 0:
+                    stage_idx += delta
             else:
                 current_todo, stage_idx, rc = execute_agent_stage(
                     stage, current_todo, project_dir, config, logs_dir,
                     stages, stage_idx, retry_counts, auto, agent_hard_timeout,
                 )
-                if rc != 0:
-                    return rc
+
+            # A31: a stage that moved HEAD without the commit gate gets no
+            # silent pass — on failure AND on success; loud error, run stops.
+            # The stage's own rc still decides the exit code on failure.
+            if head_guard.check_stage_head(
+                project_dir, head_before, stage_todo, s_name, logs_dir
+            ):
+                return 1
+            if rc != 0:
+                return rc
 
             # ORCH M3.3: the plan stage is where an unpinned start learns
             # its TODO — capture the unit's definition the moment it is
