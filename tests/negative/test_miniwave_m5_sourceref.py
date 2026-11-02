@@ -9,7 +9,7 @@ Four invariants:
   (c) ``blocked_draft`` builds a ready ``## REVIEW-фикс`` text from the
       BLOCKED note (findings + fix directions + supervisor slots) and does
       NOT touch the TODO;
-  (d) the tool counter (55 = 5 UI + 50 workflow) agrees in the registry
+  (d) the tool counter (54 = 5 UI + 49 workflow) agrees in the registry
       and the live docs.
 
 Every repository is disposable in ``tmp_path``.
@@ -345,14 +345,14 @@ def test_l2_out_tilde_is_expanded_once(tmp_path, monkeypatch):
 
 def test_d_tool_counter_matches_docs():
     counts = registry.tool_counts()
-    assert counts == {"total": 56, "awf": 51, "ui": 5}, counts
+    assert counts == {"total": 54, "awf": 49, "ui": 5}, counts
     names = registry.tool_names()
     assert "awf_blocked_draft" in names
 
     repo_root = Path(__file__).resolve().parents[2]
-    assert "56 tools: 51 `awf_*` workflow + 5 UI" in (
+    assert "54 tools: 49 `awf_*` workflow + 5 UI" in (
         repo_root / "USAGE.md"
     ).read_text(encoding="utf-8")
-    assert "56 инструмента: 51 `awf_*` workflow + 5 UI" in (
+    assert "54 инструмента: 49 `awf_*` workflow + 5 UI" in (
         repo_root / "USAGE.ru.md"
     ).read_text(encoding="utf-8")

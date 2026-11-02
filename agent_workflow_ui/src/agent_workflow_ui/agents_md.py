@@ -45,23 +45,21 @@ required — the tool responses contain everything.
 ```
 1. awf_init(project_dir)
    → Returns supervisor.md + vision excerpt + plan.md. You're now supervisor.
-2. awf_load_supervisor_context(project_dir)
-   → Optional: full context in one call (vision + plan + status + next role).
-3. awf_open_project_setup_form(project_dir)
+2. awf_open_project_setup_form(project_dir)
    → One call opens project-setup form. Plugin auto-populates roles/models/
      skills. Don't study template structure, don't pass data dict — just call.
      User picks pipeline + team. Submit triggers awf.api.apply_project_setup.
-4. awf_dispatch_todo(project_dir, content="# TODO-0001\\n...", role="developer")
+3. awf_dispatch_todo(project_dir, content="# TODO-0001\\n...", role="developer")
    → Atomic: writes TODO-NNNN.md + BASELINE-NNNN + .ready signal.
    → Replaces manual 3-step workflow.
-5. awf_start(project_dir, background=True)
+4. awf_start(project_dir, background=True)
    → Pipeline launches detached, returns PID + log_file.
-6. awf_open_pipeline_dashboard(project_dir) — MANDATORY after start.
+5. awf_open_pipeline_dashboard(project_dir) — MANDATORY after start.
    → Browser opens dashboard, auto-refresh 5s.
    → Tell user: "Pipeline started. Dashboard open. Write me when you need me."
-7. GO IDLE. Do NOT poll. User monitors dashboard and writes you reactively.
+6. GO IDLE. Do NOT poll. User monitors dashboard and writes you reactively.
    → When user writes: check awf_status, act on event (verify/blocked/salvage).
-8. Pipeline continues. When done_count increments, task complete.
+7. Pipeline continues. When done_count increments, task complete.
 ```
 
 ### Continue existing work
@@ -91,7 +89,7 @@ to current working directory when omitted.
 | Tool | Purpose |
 |---|---|
 | `awf_init` | Create `.agentic/` + assume supervisor role. Auto-detects stack (test/lint/typecheck/build). Returns supervisor.md + vision + plan.md content. |
-| `awf_load_supervisor_context` | **One-shot aggregate** for session bootstrap. Returns vision excerpt + plan.md + supervisor.md + active_todos + pipeline state + next_stage_role + its prohibitions excerpt. Replaces 5-6 separate calls. |
+| `awf_brief` | **Single entry point** for a session: a card with live state, situation, `next_action`, tool map, verify facts and the full phase prompt. |
 | `awf_open_project_setup_form` | **Dedicated shortcut** for opening project-setup form. Auto-populates roles/models/skills. Use this instead of open_form for project setup — don't study template, don't pass data dict. |
 | `awf_dispatch_todo` | **Atomic unit + baseline + signal** in one call. Auto-picks next NNNN, writes md + BASELINE + .ready. Replaces manual 3-step workflow. |
 | `awf_status` | Current state: active units, progress, blocked, **pipeline_running** (background subprocess alive?), **log_tail**, **current_stage_name**, **next_stage_role**, **last_signal**, `next_action`. |

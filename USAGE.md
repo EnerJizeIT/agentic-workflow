@@ -666,7 +666,7 @@ says Y); a missing line is not an error.
 | **Commit failed (pre-commit hook)** | TODO is NOT archived. Fix hook issue, then `awf_approve` again |
 | **Worker didn't signal** | Salvage path triggers automatically. Supervisor reads SALVAGE prompt and decides |
 | **Supervisor paused on verify >1 h** | Stage times out → salvage. Extend the window: `AWF_SUPERVISOR_TIMEOUT=7200` (env) or `awf start --timeout 7200` |
-| **Phase stuck** | Check current state with `awf_current_step`, then re-run the phase-advancing tool (`awf_set_goal`, `awf_confirm_normalized`, …). Never use `awf_init(force=True)` here — it wipes runtime data (TODOs, signals, logs) and is refused while a pipeline is live. Re-running `awf_init` without `force` is safe: it deletes nothing and preserves the project byte-for-byte. A full reset is a last resort, see below |
+| **Phase stuck** | Check current state with `awf_brief`, then re-run the phase-advancing tool (`awf_set_goal`, `awf_confirm_normalized`, …). Never use `awf_init(force=True)` here — it wipes runtime data (TODOs, signals, logs) and is refused while a pipeline is live. Re-running `awf_init` without `force` is safe: it deletes nothing and preserves the project byte-for-byte. A full reset is a last resort, see below |
 | **Wrong roles after setup** | `awf_analyze_roles` to re-check overlaps, `awf_confirm_normalized` to advance |
 
 To **hard reset** everything: this deletes all runtime data (TODOs, signals, logs, state).
@@ -684,7 +684,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 
 ## All tools (reference)
 
-56 tools: 51 `awf_*` workflow + 5 UI (forms).
+54 tools: 49 `awf_*` workflow + 5 UI (forms).
 
 ### Lifecycle
 | Tool | What it does |
@@ -1002,20 +1002,19 @@ queue item, `awf_run_next` snapshots the launched TODO's contract
 (verify/gates/prove_red) + the file hash of `TODO-*.md` into
 `state/run.yaml` (an append-only `evidence_plans` list, in the same
 atomic write as the position commit — no second store). The plan
-survives a later edit or retire of the TODO: `awf_brief` and
-`awf_load_supervisor_context` show the current/last item's plan (the
+survives a later edit or retire of the TODO: `awf_brief` shows the
+current/last item's plan (the
 verify commands and the prove_red ids, brief) before the supervisor
 decides. A TODO without a contract → an empty plan + a note; corrupt
 values degrade to empty with a warning.
 
-**Two views of one record (ORCH M1.2).** `awf_brief` and
-`awf_load_supervisor_context` are two views of the SAME run record, read
-by one shared reader (`awf/run_plan_read.py`), not parallel retellings:
+**One card, one record (ORCH M1.2).** `awf_brief` is the single view of
+the run record, read
+by one shared reader (`awf/run_plan_read.py`), not a parallel retelling:
 the card shows the goal, position, budget, the last decision in one line
 and links to the sources (run.yaml, the last decision's REVIEW /
-RUN-EVIDENCE file, the RUN-REPORT); the full context adds all the
-decisions (which, why, when). After a reject in a run both surfaces show
-the decision and the ONE next step — closing it: replace the rejected
+RUN-EVIDENCE file, the RUN-REPORT). After a reject in a run the card
+shows the decision and the ONE next step — closing it: replace the rejected
 current element with a retry via `awf_run_revise({"from": "<id>", "to":
 "<retry-id>"})`, then retire the old TODO with `awf_todo_retire`; or
 `awf_run_finish` (the run gate refuses `awf_run_next` over an open
@@ -1067,7 +1066,6 @@ for every replan/split goes into the run report/note.
 ### SMO
 | Tool | What it does |
 |---|---|
-| `awf_current_step` | Detect phase + return compact prompt |
 | `awf_set_goal` | Store user goal, advance to form phase |
 | `awf_confirm_normalized` | Confirm roles normalized, advance to brief |
 
@@ -1076,7 +1074,6 @@ for every replan/split goes into the run report/note.
 |---|---|
 | `awf_open_project_setup_form` | Open setup form (auto-populates roles/models) |
 | `awf_open_increment_planning_form` | Open decomposition variants form |
-| `awf_load_supervisor_context` | One-shot: vision + plan + phase + state + next role + full run record (goal, criteria, all decisions, sources) |
 | `awf_open_pipeline_dashboard` | Open dashboard (HTTP or file:// fallback) |
 
 ### Roles & Config

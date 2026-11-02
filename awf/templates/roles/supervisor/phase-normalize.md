@@ -3,7 +3,7 @@
 ## Your task
 Normalize role.md files before writing any TODO. This is a **mandatory gate**:
 until you call `awf_confirm_normalized`, the phase stays `normalize`
-(`awf_current_step` keeps returning this prompt). The dispatch itself is not
+(`awf_brief` keeps returning this phase). The dispatch itself is not
 blocked mechanically — skipping costs you a wasted pipeline cycle.
 
 ## 3-part checklist

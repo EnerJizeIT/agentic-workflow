@@ -2071,8 +2071,8 @@ class TestAwfTodoRetire:
 class TestPhaseLiveProject:
     """RUN3-7 (TODO-0049): the phase read distinguishes a NEW project
     (setup chain, phase 'goal') from a LIVE one (configured + completed
-    work → working phase 'run'). Same behaviour the removed
-    ``awf_current_step`` wrapper exposed; ``awf.phase`` is the owner."""
+    work → working phase 'run'). Same behaviour the removed phase
+    wrapper exposed; ``awf.phase`` is the owner."""
 
     def _make_live(self, project: Path) -> None:
         """Pipeline with a worker stage + one archived TODO."""

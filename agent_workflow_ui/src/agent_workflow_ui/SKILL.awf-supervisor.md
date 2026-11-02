@@ -152,8 +152,7 @@ Stop-flag не перескакивать.
 (раздел Tool map). Ключевые группы:
 
 - **launch:** `awf_start` / `awf_continue` / `awf_retry_stage` / `awf_kill`
-- **check:** `awf_status` / `awf_wait_for_event` / `awf_brief` /
-  `awf_current_step` / `awf_load_supervisor_context`
+- **check:** `awf_status` / `awf_wait_for_event` / `awf_brief`
 - **run (забег):** `awf_run_start` / `awf_run_next` / `awf_run_finish` /
   `awf_run_status` / `awf_run_note`
 - **verify:** `awf_tree_sha` / `awf_approve` / `awf_reject` /

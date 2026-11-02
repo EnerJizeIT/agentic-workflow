@@ -6,7 +6,7 @@ Initialize awf in the project.
 1. Call `awf_init(project_dir)`.
    - If `.agentic/` doesn't exist → creates skeleton.
    - If `.agentic/` exists → cleans runtime, preserves config (R1).
-2. After init → call `awf_current_step(project_dir)` to CONFIRM the phase
+2. After init → call `awf_brief(project_dir)` to CONFIRM the phase
    (expected: `goal`). The phase is derived from project state — the call
    does not advance it.
 

@@ -214,10 +214,11 @@ def test_new_run_resets_plans(tmp_git_repo: Path, monkeypatch) -> None:
 
 
 class TestSurfaces:
-    """(2) brief / load_supervisor_context show the current/last element's
-    plan (verify commands + prove_red ids, brief) before the decision."""
+    """(2) the brief card and the shared record show the current/last
+    element's plan (verify commands + prove_red ids, brief) before the
+    decision."""
 
-    def test_brief_and_context_show_the_plan(self, tmp_git_repo: Path, monkeypatch):
+    def test_brief_and_record_show_the_plan(self, tmp_git_repo: Path, monkeypatch):
         proj = _project(tmp_git_repo)
         _write_todo(proj, T, CONTRACT_TODO)
         _launch(proj, monkeypatch, [T])

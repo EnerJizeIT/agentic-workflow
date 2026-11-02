@@ -723,6 +723,26 @@ class TestPromptAndDocs:
         text = (REPO_ROOT / "USAGE.ru.md").read_text(encoding="utf-8")
         assert "`awf_brief`" in text
 
+    def test_clipped_phase_pointer_names_a_live_surface(self, tmp_path):
+        """The clipped prompt points at a live surface, not a removed tool.
+
+        Regression (QA3/AU1, TODO-0342): the card printed
+        ``… full version: awf_current_step`` — a tool that answers
+        "removed, use awf_brief", so the only pointer led in a circle.
+        """
+        project = _setup_project(tmp_path)
+        _make_live(project)
+        r = api.brief(project)
+        assert r.phase_clipped is True
+        assert "awf_current_step" not in r.text
+        assert "awf_load_supervisor_context" not in r.text
+        marker = "excerpt; the full prompt"
+        assert marker in r.text
+        tail = r.text.split(marker, 1)[1]
+        # Either the current pointer (init returns the full phase prompt in
+        # ``supervisor_md``) or IMP5's ``phase_prompt`` field of this call.
+        assert "awf_init" in tail or "phase_prompt" in tail
+
     def test_tool_map_shipped_with_package_data(self):
         data_file = Path(brief_mod.__file__).parent / "data" / "tool_map.yaml"
         assert data_file.is_file()

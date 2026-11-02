@@ -9,6 +9,7 @@ IMP1: ``awf_current_step`` и ``awf_load_supervisor_context`` удалены.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from agent_workflow_ui.tools import registry
@@ -156,3 +157,65 @@ def test_cli_has_no_removed_subcommands(tmp_git_repo) -> None:
         )
         assert proc.returncode == 0, proc.stderr
         assert "Traceback" not in proc.stderr
+
+
+# ── IMP8/T17: live carriers never offer a removed tool as working ───────
+#
+# REMOVED_TOOLS and the refusal text keep the old names on purpose. Every
+# other carrier — docs, the skill, the role templates, advice in code and
+# the tool map — must point at ``awf_brief`` instead. Specs, audits and the
+# BACKLOG are history (they describe the removal), so they stay out of the
+# list: a stale advice line in a live carrier is the regression this pins.
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+CARRIERS = [
+    "README.md",
+    "README.ru.md",
+    "USAGE.md",
+    "USAGE.ru.md",
+    "docs/design.md",
+    "docs/file-bus.md",
+    "docs/vision.md",
+    "agent_workflow_ui/README.md",
+    "agent_workflow_ui/src/agent_workflow_ui/SKILL.awf-supervisor.md",
+    "agent_workflow_ui/src/agent_workflow_ui/agents_md.py",
+    "awf/api/lifecycle.py",
+    "awf/api/brief.py",
+    "awf/api/planning.py",
+    "awf/brief.py",
+    "awf/phase.py",
+    "awf/run_plan_read.py",
+    "awf/data/tool_map.yaml",
+]
+
+# Surfaces that hand out advice: dropping the old name is not enough, they
+# must name the single entry point.
+ADVICE_SURFACES = [
+    "awf/templates/roles/supervisor/_core.md",
+    "awf/templates/roles/supervisor/phase-init.md",
+    "awf/templates/roles/supervisor/phase-normalize.md",
+    "awf/api/lifecycle.py",
+    "awf/phase.py",
+]
+
+
+def test_live_carriers_do_not_name_removed_tools() -> None:
+    files = [REPO_ROOT / p for p in CARRIERS]
+    files += sorted((REPO_ROOT / "awf/templates/roles/supervisor").glob("*.md"))
+    bad = []
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        for gone in REMOVED:
+            if gone in text:
+                bad.append(f"{path.relative_to(REPO_ROOT)}: {gone}")
+    assert not bad, "removed tools still named in live carriers:\n" + "\n".join(bad)
+
+
+def test_advice_surfaces_point_to_brief() -> None:
+    missing = [
+        p
+        for p in ADVICE_SURFACES
+        if "awf_brief" not in (REPO_ROOT / p).read_text(encoding="utf-8")
+    ]
+    assert not missing, f"advice surfaces without awf_brief: {missing}"

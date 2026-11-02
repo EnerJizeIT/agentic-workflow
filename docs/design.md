@@ -4,11 +4,11 @@
 
 ## Обзор
 
-`agent-workflow-ui` — MCP plugin для opencode. 47 typed tools (5 UI + 42 workflow). Plugin импортирует `awf` напрямую (Python import, без subprocess).
+`agent-workflow-ui` — MCP plugin для opencode. 54 typed tools (5 UI + 49 workflow). Plugin импортирует `awf` напрямую (Python import, без subprocess).
 
 ```mermaid
 graph TD
-    A[opencode supervisor LLM] -->|MCP stdio - 47 tools| B[agent-workflow-ui plugin]
+    A[opencode supervisor LLM] -->|MCP stdio - 54 tools| B[agent-workflow-ui plugin]
     B -->|Python import| C[awf.api.*]
     C -->|subprocess| D[opencode run - worker agents]
     C -->|HTTP daemon| E[Dashboard - live /api/state]
@@ -41,7 +41,7 @@ init → goal → form → normalize → brief → run → verify → done
 - Phase templates: `awf/templates/roles/supervisor/phase-{init,goal,form,normalize,brief,run,verify}.md` + общий `_core.md` (у `done` шаблона нет — фаза терминальная).
 - Шаблоны живут в одном месте: пакетный каталог `awf/templates/` (рядом с `__file__` пакета). Корневого `templates/` в репозитории нет — движок стейджит изменённые пути поштучно, а путь за симлинком (`fatal: pathspec ... is beyond a symbolic link`) ломал approve. Проект может переопределить промпты своим `templates/` — `awf/phase.py` проверяет его первым; иначе источник пакетный.
 - Каждый tool возвращает `next_action` — компактную инструкцию для следующего шага.
-- `awf_init` и `awf_load_supervisor_context` возвращают compact phase prompt (не полный supervisor.md).
+- `awf_init` возвращает compact phase prompt (не полный supervisor.md).
 - Потерянный контекст или новая сессия → `awf_brief` (MCP/CLI): карточка, собранная из живого состояния — фаза, что дальше, run, активные TODO, карта инструментов, ритуалы, recovery-рецепты.
 
 ### Забег (run)
@@ -96,7 +96,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `api/lifecycle.py` | `init_project`, `get_status`, `get_report` |
 | `api/setup.py` | `apply_project_setup` (form materialization → pipeline.yaml + config) |
 | `config_write.py` | Байт-сохраняющий патч `config.yaml` (R10): скаляры `models.<role>`, `context.message`, `supervisor.instructions` без потери комментариев, пустых строк и порядка; отказ на битом YAML, flow-стиле, CRLF и нестандартном отступе |
-| `api/context.py` | `load_supervisor_context` (aggregate: vision + plan + phase + state) |
+| `api/context.py` | Helpers of `get_status`: stage info, expected action, stage kind (the aggregate `load_supervisor_context` is gone — `awf_brief` is the entry point) |
 | `api/brief.py` | `awf_brief` — карточка супервизора из живого состояния |
 | `api/dashboard.py` | Dashboard HTML generation + `generate_state_dict()` JSON API |
 | `api/dashboard_server.py` | HTTP server (ThreadingHTTPServer, live polling) |
@@ -114,7 +114,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `_markdown.py` | Разбор markdown-заголовков и тел секций для `dispatch` (source_ref), `blocked_draft` и чек-листа (TODO-0244); на корне пакета, чтобы `checklists` не тянул за собой весь `awf.api` |
 | `api/workflow_commit.py` | `commit_workflow` + dry-run `uncommitted_workflow_files`: workflow-определения `.agentic/` в git изолированным индексом (REPORTS26 F6) |
 | `run_state.py` | `.agentic/state/run.yaml`: лок read→merge→write, shape-проверка (AUD02-06) |
-| `run_plan_read.py` | Единый reader записи забега (ORCH M1.2): одна запись — два представления (brief-карточка / полный контекст) |
+| `run_plan_read.py` | Единый reader записи забега (ORCH M1.2): одна запись — карточка `awf_brief` и полный вид `read_run_record` |
 | `stall_detect.py` | Детекция зависшей активной стадии (ORCH M4.2): общий детектор — строка в brief/status |
 | `pipeline_state.py` | `.agentic/state/current.yaml` persistence |
 | `orchestrator.py` | Pipeline dispatch loop (thin entry: setup → stage loop → complete) |
@@ -199,9 +199,9 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 
 | Файл | Ответственность |
 |---|---|
-| `tools/registry.py` | **Единый реестр** `registry.TOOLS` — единственный источник списка для server, skill и тестов (47 = 5 UI + 42 workflow, R-06) |
+| `tools/registry.py` | **Единый реестр** `registry.TOOLS` — единственный источник списка для server, skill и тестов (54 = 5 UI + 49 workflow, R-06) |
 | `server.py` | MCP server (stdio transport); регистрирует tools из `registry.TOOLS` |
-| `tools/awf.py` | 42 awf tool wrappers (async → `asyncio.to_thread` + `next_action`) |
+| `tools/awf.py` | 49 awf tool wrappers (async → `asyncio.to_thread` + `next_action`) |
 | `tools/forms.py` | 5 UI tool wrappers (open_form, read_submit, ...) |
 | `tools/templates.py` | Реестр HTML-форм |
 | `http_endpoint.py` | Long-lived HTTP server для form submits (127.0.0.1, CSRF check) |
@@ -279,7 +279,7 @@ HTTP server (daemon thread in orchestrator, `127.0.0.1`):
 7. **PR_SET_PDEATHSIG.** Worker subprocesses die with orchestrator (Linux).
 8. **Закреплённый движок (`automation.runner_dir`).** Для проектов, где awf правит сам себя: background-ребёнок стартует с cwd закреплённого checkout — движок берётся оттуда, а не из дерева проекта, которое воркер меняет прямо сейчас (TODO-0077).
 9. **Evidence-гейт (AUD11-03).** В забеге approve без записи RUN-EVIDENCE не принимается, а ручной ACK без неё игнорируется. Содержимое evidence сообщает вызывающий; фактический запуск проверок ядро не удостоверяет.
-10. **Единый реестр tools (R-06).** `tools/registry.py` — один список для server, skill-установщика и тестов: 47 tools не расходятся по файлам.
+10. **Единый реестр tools (R-06).** `tools/registry.py` — один список для server, skill-установщика и тестов: 54 tools не расходятся по файлам.
 11. **`readonly_roles` (W7, V-04 27.09).** Роли из `automation.readonly_roles` получают в `OPENCODE_CONFIG_CONTENT` принудительные `edit: deny` / `write: deny` — поверх любых разрешений хоста; `bash` остаётся разрешённым (QA прогоняет тесты). Полная изоляция роли — в ORCH-плане.
 12. **Mutation smoke (U11).** `awf mutations` — supervisor проверяет, что ключевые инварианты реально ловятся тестами: подменить строку в файле, прогнать команду, ожидание красного.
 13. **Salvage-сценарий.** Worker умер без сигнала → `SALVAGE-{todo}.md` + рестарт стадии (`awf_retry_stage`); сценарий зафиксирован в brief-карточке (`awf/data/scenarios.yaml`) и в recovery-разделе USAGE.

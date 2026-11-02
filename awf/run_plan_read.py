@@ -1,11 +1,9 @@
 """ORCH M1.2: the single reader of the run (забег) record.
 
-``awf_brief`` (the compact card) and ``awf_load_supervisor_context`` (the
-full context) are two views of ONE record, not parallel retellings
-(IMPLEMENTATION-STRATEGY §1.2): both call :func:`read_run_record` and
-render different amounts of it — the card shows goal, position, budget,
-the last decision in one line and links to the sources; the full context
-adds all the decisions (which, why, when) and the vision/plan excerpts.
+``awf_brief`` is the entry point that renders the record (the compact
+card: goal, position, budget, the last decision in one line and links to
+the sources). The full detail is the record itself — ``state/run.yaml``;
+the card carries no second copy of it.
 
 The record is DERIVED from ``.agentic/state/run.yaml`` (the single
 source, ORCH M1.1) — there is no second store. A corrupted file (broken
@@ -25,11 +23,11 @@ from . import paths, run_state
 
 # Card line budgets (the brief card has a 900-word limit and little
 # headroom): the goal and the decision reason are clipped to fit ONE
-# compact line each; the full context carries the unclipped text.
+# compact line each; the record (``read_run_record``) carries the unclipped text.
 _GOAL_MAX_WORDS = 10
 _REASON_MAX_WORDS = 10
 # ORCH M2.3: the card's evidence plan stays brief — one verify command
-# per line, clipped to ONE line, at most three commands (the context
+# per line, clipped to ONE line, at most three commands (the record
 # carries all of them unclipped).
 _VERIFY_MAX_WORDS = 12
 _PLAN_MAX_ITEMS = 3
@@ -219,7 +217,7 @@ def read_run_record(project_dir: Path) -> RunRecord:
 
 
 def clip_goal(goal: str, max_words: int = _GOAL_MAX_WORDS) -> str:
-    """The card's one-line goal (the full context keeps the unclipped text)."""
+    """The card's one-line goal (``read_run_record`` keeps the unclipped text)."""
     return _clip_words(goal, max_words)
 
 
