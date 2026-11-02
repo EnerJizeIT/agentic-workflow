@@ -244,8 +244,9 @@ _SNIPPET_ALWAYS = """\
 ## ⚡ Critical rules (always apply)
 - DO NOT edit source files, awf tooling, or templates. All changes through pipeline.
 - Commit follows the stage policy: `on_approved` in .agentic/pipelines/*.yaml —
-  commit_and_next/commit_and_report = the engine commits after approve; with
-  `next` the commit is yours. `git push` is always yours.
+  commit_and_next/commit_and_report = the engine commits after approve.
+  NEVER run `git add`, `git commit` or `git push`: a refused gate is a REVIEW
+  with the reason, never a manual commit.
 - You ARE the decision maker. Do NOT ask user "should I approve?" — decide yourself.
 - No active run: GO IDLE after start — the engine tracks signals itself, do NOT
   poll awf_wait_for_event/awf_status in a loop. In an active run (забег): keep
@@ -288,8 +289,8 @@ _SNIPPET_VERIFY = """\
    - ANY criterion not met → write .agentic/outbox/REVIEW-{todo_id}.md
      listing which criteria failed and what to fix
 7. DO NOT relay "pipeline waits for your decision" — that's YOUR call.
-8. Commit follows the stage policy (on_approved in .agentic/pipelines/*.yaml):
-   auto-commit = engine's step, otherwise the commit is yours; push always is.
+8. The verdict is yours, the commit is the engine's: NEVER run `git add`,
+   `git commit` or `git push`. A refused gate is a REVIEW with the reason.
 """
 
 _SNIPPET_SALVAGE = """\
@@ -302,8 +303,8 @@ The worker ran but didn't create DONE-{todo_id}.ready. Common with smaller model
    the engine ignores a file-based ACK without RUN-EVIDENCE)
 4. If no → call awf_retry_stage(project_dir) to retry the stage
 5. If retry also fails → create .agentic/outbox/REVIEW-{todo_id}.md (reject)
-6. Commit follows the stage policy (on_approved in .agentic/pipelines/*.yaml);
-   `git push` is always the supervisor's step.
+6. The verdict is yours, the commit is the engine's — never run `git add`,
+   `git commit` or `git push`; a refused gate is a REVIEW with the reason.
 
 If the diff is EMPTY and this is a REPEAT salvage (see "ATTEMPT" in the
 SALVAGE file): do NOT retry the same scope again. Split the work into
@@ -371,8 +372,8 @@ def build_prompt(
             f".agentic/outbox/REVIEW-{todo_id}.md explaining what's wrong.\n\n"
             "## Signal ends your work\n"
             "Your work ends when you write the signal file. Do NOT poll `awf status` "
-            "and do NOT wait for the commit — the engine commits on its own as soon "
-            "as it sees your signal."
+            "and do NOT wait for the commit — committing is the engine's gate, "
+            "not your step."
         )
     elif kind == "salvage":
         base = (
@@ -430,7 +431,8 @@ def build_prompt(
             f"Execute your part of {todo_id} according to your role/skill instructions. "
             f"You see the TODO goal and handoffs from previous roles (if any). Add YOUR contribution — "
             f"don't redo prior work. "
-            f"Do not commit unless the TODO explicitly asks for it."
+            f"Do not commit — the engine's commit gate commits after verification; "
+            f"leave your changes in the working tree."
         )
         # BD-10: pipeline context — tell worker its place in the team.
         # Without this, system-analyst tries to implement code, implementer

@@ -17,6 +17,8 @@ work through deterministic awf tools, NOT by editing files directly.
 
 - **YOU decide:** what to build, in what order, when to approve/reject.
 - **YOU do NOT:** write source code, edit config, commit directly.
+  Committing is the engine's commit gate; publication is its step. A
+  refused gate is a REVIEW with the reason, never a manual commit.
 - Running the test suite by hand to check a worker's work is the worker's
   job. One exception: at the verify stage you run the TODO's verify
   commands yourself (see phase-verify).

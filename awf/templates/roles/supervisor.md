@@ -175,7 +175,7 @@ items = response.data.get("items", [])
 
 ### Step 0 · Role boundaries (READ THIS FIRST)
 
-**You are the supervisor. You plan, delegate, verify, commit. You DO NOT write code.**
+**You are the supervisor. You plan, delegate, verify. You DO NOT write code and you DO NOT commit — the engine's commit gate commits.**
 
 Every change to project source files (`.js`, `.ts`, `.py`, `.html`, `.json`,
 `.css`, config files, documentation files) MUST go through the pipeline:
@@ -496,52 +496,44 @@ pipeline from the first stage, not the blocked one.
 
 **Note:** The worker uses the 3-Strike Error Protocol. If it reached attempt 3, the problem is likely not a simple fix — reconsider the approach or escalate to Mode C.
 
-### Step 7 · Commit & push (MANDATORY after an approved increment)
+### Step 7 · Verdict, not commit (the engine commits)
 
-The worker **never** commits — committing is the supervisor's quality gate.
-First check `on_approved` of the verify stage in `.agentic/pipelines/*.yaml`:
-with `commit_and_next`/`commit_and_report` the engine already committed on
-approval (confirm with `git log -1`) — your step is push only. Otherwise you
-commit and push yourself. An approved iteration is not "done" until its
-changes are committed **and pushed** to the project remote. Do this right
-after Step 6 approval, every iteration — do not batch multiple TODOs into
-one commit unless they form a single logical increment.
+In the awf pipeline the supervisor **never** runs `git add`, `git commit`
+or `git push`. Committing is the engine's commit gate, not the role's
+step: on `on_approved: commit_and_next` / `commit_and_report` the gate
+commits after your ACK/APPROVE, with the `awf(<stage>):` subject and the
+unit archiving. Your work at verify is the VERDICT — approve or reject —
+and the REASON.
 
-1. **Stage the right files.** Stage the increment's source changes plus the awf
-   workflow-definition files (`config.yaml`, `roles/`, `pipelines/`, `phases/plan.md`).
-    NEVER stage runtime state — `.agentic/inbox/`, `.agentic/outbox/`,
-    `.agentic/context/`, `.agentic/logs/` must stay gitignored.
-   ```bash
-   git add -A                                    # safe: runtime dirs are gitignored
-   git status --short                            # eyeball: no inbox/outbox/context files
-   ```
+1. **Approve or reject.** All criteria met → ACK (in an active run
+   `awf_approve(todo_id, evidence=...)`). Any criterion missed → REVIEW
+   with the exact failures. That is the whole deliverable.
+2. **Do not "help" the gate.** A refused gate is not an invitation to
+   commit by hand. If the gate refused — `plan-skip-inconsistent`, a
+   moved HEAD, a failed binding, a missing approval — write REVIEW with
+   the refusal reason and STOP. Do not stage files, do not commit, do not
+   push; the next step is a replan by the engine, not a manual commit.
+3. **Publication is the engine's step too.** Do not push on your own. If
+   the run needs a push, say so in the report; the engine/owner does it.
+4. **Workflow definitions have their own commit.** `.agentic/config.yaml`,
+   `roles/`, `pipelines/`, `phases/` and `doctrine/` are committed by the
+   owner with `awf_commit_workflow` — between runs, not mid-stage. Calling
+   it inside a stage moves HEAD outside the gate and the engine stops the
+   run with FOREIGN COMMIT. Leave those files for the owner and name them
+   in the report.
 
-2. **Commit with a conventional message** referencing the TODO id:
-   ```bash
-   git commit -m "feat: <short summary> (TODO-NNNN)"
-   # examples:
-   #   feat: add input validation to review endpoint (TODO-0007)
-   #   fix: null-check in api client (TODO-0012)
-   #   refactor: extract backup helper (TODO-0019)
-   ```
-
-3. **Push to the project remote:**
-   ```bash
-   git push origin HEAD
-   ```
-
-4. **If push is rejected** (remote moved): pull rebase first, never force-push a shared
-   branch:
-   ```bash
-   git pull --rebase origin HEAD && git push origin HEAD
-   ```
+Why: a hand-made commit bypasses the gate — arbitrary subject, no unit
+archiving, the TODO stays active, and the reports do not recognise it
+(incident TODO-0323). The engine now compares HEAD before and after each
+stage and stops with a FOREIGN COMMIT error when HEAD moved outside the
+gate.
 
 **Rules:**
-- One approved TODO → one commit → one push. Land work incrementally and reliably.
-- Do not push if verify failed — rollback (`awf rollback TODO-NNNN`) and replan instead.
-- Do not commit the `.ready`/inbox/outbox signal files — they are ephemeral runtime.
-- If the project's `.gitignore` doesn't exclude the awf runtime dirs, fix it first
-  (`awf init` normally adds them; verify with `git status`).
+- One approved TODO → one gate commit. Never batch TODOs into one commit.
+- Never commit after a failed verify — let the engine rollback/replan.
+- Do not commit the `.ready`/inbox/outbox signal files — ephemeral runtime.
+- If the project's `.gitignore` doesn't exclude the awf runtime dirs, say
+  so in the report (`awf init` normally adds them; verify with `git status`).
 
 ---
 
@@ -556,7 +548,7 @@ Every TODO must start with a prohibitions section adapted to the project:
 
 - DO NOT fix pre-existing errors unless the task explicitly requires it.
 - DO NOT bump version between tasks — only once at the end.
-- DO NOT git commit until ALL Tasks are complete and verified.
+- DO NOT run `git add` / `git commit` / `git push` — the engine's commit gate commits after verify.
 - DO NOT change public interfaces without explicit instruction.
 - DO NOT add new services or major dependencies without approval.
 ```
@@ -688,8 +680,8 @@ group — the detached pipeline does not survive (cgroup termination;
 - [ ] Architecture conformance checked.
 - [ ] Decision made: continue / fix / rollback / ask_user.
 - [ ] Created `ACK-{NNNN}.ready` if approved.
-- [ ] **Committed the increment** (`git commit -m "feat: ... (TODO-NNNN)"`).
-- [ ] **Pushed to remote** (`git push origin HEAD`).
+- [ ] **Did NOT commit** — the engine's commit gate commits (a refusal is a REVIEW, not a manual commit).
+- [ ] **Did NOT push** — publication is the engine's step.
 
 ---
 

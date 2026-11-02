@@ -677,6 +677,9 @@ _ACTIONABLE_FIELDS = (
     "salvage_needed",
     "blocked_ids",
     "budget_exhausted_todo",
+    # A31: a commit outside the gate stopped the run — the owner must see
+    # the recovery step, not the setup chain.
+    "foreign_commit",
     "engine_dead",
     "stale_stage",
     "zombie_state",
@@ -723,6 +726,19 @@ def next_action_from_status(s: Any) -> str:
     # must be cleared before the next launch (TODO-0307 test pins this).
     if expected and not (_get("stale_stage") and _get("pipeline_running")):
         return str(expected)
+    # A31: a FOREIGN COMMIT stopped the run, so the generic engine-death
+    # advice ("resume with awf_continue") would bury the cause and resume
+    # into the next clean boundary, which erases the evidence. This fact
+    # outranks the resume/active-unit advice; while a NEW run is genuinely
+    # live (``expected`` above) the stale line stays display-only.
+    foreign = _get("foreign_commit")
+    if foreign:
+        from .head_guard import foreign_commit_next_action
+
+        # The card clips ``next:`` at 26 words; the evidence line (SHAs +
+        # every file) would push the recovery sentence out of the card.
+        # The action alone goes here — the full line stays in ``awf status``.
+        return foreign_commit_next_action()
     if _get("salvage_needed"):
         stage = _get("salvage_stage") or "?"
         return (

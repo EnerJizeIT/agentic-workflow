@@ -82,6 +82,9 @@ class StatusResult:
     # at a clean exit — a run that later only rewinds without a replan keeps
     # the reason, because that replan really did fail.
     replan_error: str | None = None
+    # A31: the engine saw HEAD move outside the commit gate during a stage.
+    # The line carries the SHAs and the files; the run stopped on it.
+    foreign_commit: str | None = None
     # TODO-0262 REVIEW (CTX1): the unit stopped for its review-pass budget
     # (a BUDGET note on disk). The owner's decision outranks ``awf_continue``
     # — an exhausted unit cannot be resumed into the same limit again.

@@ -805,6 +805,20 @@ def _engine_dead_event(
             message=closed_run_hint(),
             state_snapshot=_state_to_dict(state),
         )
+    # A31: a FOREIGN COMMIT is the CAUSE of this stop, and the generic
+    # "resume with awf_continue" advice would bury it — the next clean stage
+    # boundary then clears the evidence. The event type stays ``engine_dead``
+    # (that is the verified condition); only the answer names the real cause.
+    from .. import head_guard as _head_guard
+
+    foreign = str(state.get(_head_guard.FOREIGN_COMMIT_KEY) or "")
+    if foreign:
+        return WaitEventResult(
+            event_type="engine_dead",
+            message=_head_guard.foreign_commit_hint(foreign),
+            state_snapshot=_state_to_dict(state),
+            next_action=_head_guard.foreign_commit_next_action(),
+        )
     return WaitEventResult(
         event_type="engine_dead",
         message=engine_dead_hint(dead.line, dead.todo_id),
