@@ -1373,6 +1373,7 @@ def get_status(project_dir: Path) -> StatusResult:
         engine_dead=engine_dead,
         engine_dead_todo=engine_dead_todo,
         stale_stage=stale_stage,
+        replan_error=(_state or {}).get("replan_error") or None,
         budget_exhausted_todo=budget_exhausted_todo,
         active_pipeline=active_pipeline,
         pipeline_count=pipeline_count,

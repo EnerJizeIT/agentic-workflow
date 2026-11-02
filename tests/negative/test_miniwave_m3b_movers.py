@@ -586,6 +586,22 @@ def test_gc_records_refuses_non_posix(tmp_path, monkeypatch):
 # ``archive_todo`` нёс только PROGRESS/DONE: BLOCKED- и REVIEW-отчёты
 # упавших попыток копились в outbox после закрытия TODO.
 
+def test_archive_todo_files_the_readers_probes(tmp_path):
+    """A27: PROBES-<id>.json belongs to the unit — the close must not leave it
+    in the outbox (the same rule DONE/PROGRESS follow)."""
+    from awf import todos
+
+    project = _project(tmp_path)
+    outbox = project / ".agentic" / "outbox"
+    (outbox / f"PROBES-{T}.json").write_text('{"tests_run": []}', encoding="utf-8")
+
+    dest = todos.archive_todo(project, T)
+
+    assert dest is not None
+    assert (dest / "PROBES.json").is_file()
+    assert not (outbox / f"PROBES-{T}.json").exists()
+
+
 def test_archive_todo_moves_blocked_and_review_reports(tmp_path):
     from awf import todos
 

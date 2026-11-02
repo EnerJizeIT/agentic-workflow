@@ -142,3 +142,33 @@ class TestPayloadShape:
         assert result.phase_prompt
         assert result.pipeline_running is False
         assert result.pipeline_pid is None
+
+
+class TestWorkerRejectionIsNotAVerifyDecision:
+    """A32: a refusal writes its findings into the SAME unit.
+
+    The supervisor bootstrap keyed off any ``REVIEW-`` signal, so a stopped
+    run whose last signal was the worker's ``REVIEW-REJECTED-<id>`` was told
+    to "write the next TODO" — the clone the engine no longer creates. Only
+    the verify stage's own ``REVIEW-<id>`` decision may give that advice.
+    """
+
+    def _advice(self, last_signal: str) -> str:
+        from awf.api.context import _compute_expected_action
+
+        return _compute_expected_action(
+            pipeline_running=False,
+            current_stage_kind=None,
+            checkpoint_pending=False,
+            has_active_todos=True,
+            done_count=0,
+            last_signal=last_signal,
+        ) or ""
+
+    def test_the_verify_decision_still_asks_for_the_next_todo(self) -> None:
+        assert "Write the next TODO" in self._advice("REVIEW-TODO-0001")
+
+    def test_a_worker_rejection_keeps_the_owner_on_the_same_unit(self) -> None:
+        advice = self._advice("REVIEW-REJECTED-TODO-0001")
+        assert "Write the next TODO" not in advice
+        assert "awf_start" in advice

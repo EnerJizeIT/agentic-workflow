@@ -119,6 +119,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `pipeline_state.py` | `.agentic/state/current.yaml` persistence |
 | `orchestrator.py` | Pipeline dispatch loop (thin entry: setup → stage loop → complete) |
 | `pipeline_engine.py` | Stage handlers + transition logic |
+| `rejection.py` | A32/A34: решения отказа — остаться в юните или отдать replan, куда возвращать (политика, владелец отчёта, ближайший автор), ограниченный контекст и бюджет replan-промпта, заметка о снятом юните и `PROGRESS` |
 | `spec_package.py` | Пакет спецификации (K1/K2): шапки, матрица покрытия, отпечаток, предикат готовности |
 | `stage_manifest.py` | Границы записи стадии (K5): снимок дерева до/после, запись нарушений allowlist; чтение и классификацию держит `violations.py` |
 | `violations.py` | Чтение и классификация записей нарушений стадии (CTX5, TODO-0281): один разбор открытых путей для merge и гейта, fail-closed на не-64-hex `after`; пишет запись `stage_manifest.py` |
@@ -129,6 +130,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `unit_history.py` | Неключевая история юнита (CTX2): `forget_unit_history` снимает `CLOSER-<id>.json` и `CHECKLIST-<id>.json` на service-rollback, main-rollback и `restore_todo`; все перечисленные пути идут через один помощник |
 | `supervisor.py` | Supervisor prompts (`build_prompt`), signal wait, run-гейты |
 | `agent_stage.py` | Worker spawn (`opencode run`), `collect_handoff()` |
+| `done_owner.py` | A27: `DONE-<id>.json` принадлежит стадии, чей отчёт он описывает — снимок до стадии и возврат байтов автора после чужой перезаписи; пробы читателя живут в `PROBES-<id>.json` |
 | `session_store.py` | R6/R7 (CTX8–CTX9): файл пары `SESSION-<todo>-<stage>.json`, захват id из sqlite opencode по точному `title` и окну `time_created` (`directory` — тай-брейк) под бюджетом 1 с, решение reused/fresh по `engine.reuse_session` |
 | `phase.py` | SMO: `detect_phase`, `get_phase_prompt`, `advance_phase` |
 | `brief.py` | Данные brief-карточки (`data/*.yaml`: tool_map, scenarios, recovery) |

@@ -12,6 +12,7 @@ from pathlib import Path
 from .. import config as cfg_mod
 from .. import paths
 from ..pipeline import Stage, load_stages, resolve_pipeline_file
+from ..signals import is_review_decision
 from ._background import check_pipeline_running
 from ._helpers import read_file_text, require_agentic
 from ._results import SupervisorContextResult
@@ -135,18 +136,22 @@ def _compute_expected_action(
     model rules from supervisor.md.
 
     Decision tree based on observable state (not on supervisor remembering rules):
-    - pipeline_running=False + last_signal=REVIEW → write new TODO, restart
+    - pipeline_running=False + last_signal=REVIEW decision → write new TODO, restart
+      (a worker's REVIEW-REJECTED signal is not a decision — A32)
     - pipeline_running=False → either start pipeline or create TODO
     - checkpoint_pending=True → wait (user confirms in browser)
     - current_stage_kind='plan' → wait (plan stage, supervisor's plan TODO done)
     - current_stage_kind='execute' → wait (worker running, auto-transition)
     - current_stage_kind='verify' → supervisor must ACK or REVIEW
     """
-    # Dogfood-8: REVIEW signal → pipeline exited, supervisor must restart
+    # Dogfood-8: REVIEW decision → pipeline exited, supervisor must restart.
+    # A32: a worker's REVIEW-REJECTED-<id> shares the prefix but is not a
+    # verify decision — the refusal already wrote its findings into the SAME
+    # unit, so "write the next TODO" would dispatch the clone A32 forbids.
     if (
         not pipeline_running
         and last_signal
-        and last_signal.startswith("REVIEW-")
+        and is_review_decision(last_signal)
     ):
         return (
             "Pipeline exited after REVIEW rejection. Write the next TODO via "

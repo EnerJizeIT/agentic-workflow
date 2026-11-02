@@ -47,6 +47,10 @@ def run(args: Any) -> int:
         print(result.stale_stage)
         print()
 
+    if result.replan_error:
+        print(f"Replan: FAILED — {result.replan_error}")
+        print()
+
     for entry in result.active_todos:
         todo_id = entry["todo_id"]
         print(f"Active: {todo_id}")

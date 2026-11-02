@@ -76,6 +76,12 @@ class StatusResult:
     # ``automation.stale_stage_minutes``. The resume advice still comes from
     # ``engine_dead`` alone (one owner of the advice order).
     stale_stage: str | None = None
+    # A32/A34: the last rollback replan that failed while the run kept
+    # going. The line names the failure so a continued run is not silently
+    # degraded. Cleared by the next successful replan and by the state clear
+    # at a clean exit — a run that later only rewinds without a replan keeps
+    # the reason, because that replan really did fail.
+    replan_error: str | None = None
     # TODO-0262 REVIEW (CTX1): the unit stopped for its review-pass budget
     # (a BUDGET note on disk). The owner's decision outranks ``awf_continue``
     # — an exhausted unit cannot be resumed into the same limit again.

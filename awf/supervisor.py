@@ -397,6 +397,8 @@ def build_prompt(
             f'   "gates": ["contracts", "ratchet"], "notes": "one line"}}\n'
             f"tests_run items are OBJECTS {{cmd, result}}, not strings — a file that\n"
             f"violates the schema (or is broken JSON) is skipped by the handoff.\n"
+            f"If you review or audit another stage's work, your own facts go to\n"
+            f"  .agentic/outbox/PROBES-{todo_id}.json — leave DONE-{todo_id}.json to its author.\n"
             f"Full format: docs/unit-contract.md.\n\n"
             f"## OUTPUT DISCIPLINE (dogfood-11: works with any model, any output limit)\n"
             f"Your reply has a limited token budget. Work in small pieces:\n"
@@ -1020,6 +1022,31 @@ def run_supervisor_stage(
     )
 
 
+def _replan_budget_chars() -> int:
+    """A32/A34: the engine's existing cap for text handed to a role.
+
+    The value is ``pipeline_engine.FIX_ROUND_MAX_CHARS`` — the cap A7
+    already uses for the same kind of text. ``awf.rejection`` owns the
+    accessor (it owns the prompt), this wrapper stays here so the stage can
+    substitute a budget in tests without reaching across modules.
+    """
+    from .rejection import replan_budget_chars
+
+    return replan_budget_chars()
+
+
+def build_replan_context(
+    todo_id: str, project_dir: Path, logs_dir: Path | None = None
+) -> tuple[str, list[str]]:
+    """A32/A34: the bounded replan prompt (owner: :mod:`awf.rejection`).
+
+    The stage keeps this thin call so the budget stays substitutable here.
+    """
+    from .rejection import build_replan_context as _build
+
+    return _build(todo_id, project_dir, logs_dir, budget=_replan_budget_chars())
+
+
 def _prepare_supervisor_stage(
     kind: str,
     todo_id: str,
@@ -1081,17 +1108,14 @@ def _prepare_supervisor_stage(
             print("[auto mode] No todo_id for replan — skip.")
             _log(logs_dir, "Supervisor replan auto-skipped (no todo_id)")
             return None
-        blocked = outbox / f"BLOCKED-{todo_id}.md"
-        if blocked.is_file():
-            extra_files.append(str(blocked))
-        prompt = (
-            f"Worker reported BLOCKED on {todo_id}. Read the BLOCKED note, analyze the problem, "
-            "create a refined TODO at .agentic/inbox/TODO-NNNN.md (next sequential ID), "
-            "baseline it, and create the .ready signal. "
-            f"Mark the refined TODO as the replan answer for this unit: put "
-            f"``replan_for: {todo_id}`` into its front-matter contract block "
-            "(the engine picks the replan up by this marker — TODO-0213)."
-        )
+        # A32/A34: the replan prompt is bounded and carries exactly three
+        # sources — the reviewer's report, the current TODO, the report of
+        # the stage that slid. Handoff history and DONE archives never
+        # enter (that is what blew the context window on 01.11). The
+        # closing instruction is part of the budgeted text (one builder).
+        prompt, dropped = build_replan_context(todo_id, project_dir, logs_dir)
+        if dropped:
+            print(f"  replan context cut: {', '.join(dropped)}")
 
     elif kind == "salvage":
         print("[auto mode] salvage not automated — skipping.")

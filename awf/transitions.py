@@ -11,8 +11,9 @@ log = logging.getLogger(__name__)
 def resolve_transition(stage: Stage, sig_type: str) -> tuple[str, str]:
     """Return (action, target) based on signal type and stage policy.
 
-    Actions: next, rollback, escalate, stop, commit_and_next, commit_and_report
-    Target is the stage name for rollback, empty otherwise.
+    Actions: next, rollback, escalate, fix_round, stop, commit_and_next,
+    commit_and_report. Target is the stage name for rollback/fix_round,
+    empty otherwise.
     """
     if sig_type == "blocked":
         policy = stage.on_blocked
@@ -37,10 +38,13 @@ def resolve_transition(stage: Stage, sig_type: str) -> tuple[str, str]:
             return ("fix_round", policy.split(":", 1)[1])
         if policy.startswith("rollback_to:"):
             return ("rollback", policy.split(":", 1)[1])
-        # Both 'replan' and 'escalate' (default) escalate to supervisor
-        # for a refined TODO. 'replan' is kept as distinct policy name
-        # for forward-compat (future: replan might mean "redo same TODO"
-        # vs escalate = "create new TODO").
+        # A32: 'replan' is the ONLY value that grows the queue — it names
+        # the replan subprocess (refined TODO). 'escalate' (default) and
+        # the two prefixed forms above are resolved by the engine as a
+        # rewind of the SAME unit: the report is appended and the stage
+        # returns to its author. The resolver returns the same "escalate"
+        # action for both words on purpose — the engine, not the mapping,
+        # owns "does a refusal create a unit" (awf/rejection.py).
         return ("escalate", "")
 
     # Unknown signal — treat as blocked so supervisor gets salvage context

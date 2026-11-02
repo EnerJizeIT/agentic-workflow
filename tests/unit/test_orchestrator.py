@@ -1636,7 +1636,10 @@ class TestSupervisorReplan:
 
         assert len(_FakePopen._last_cmds) == 1, "Replan must spawn supervisor subprocess"
         cmd = _FakePopen._last_cmds[0]
-        assert any("BLOCKED-TODO-0042.md" in c for c in cmd), "BLOCKED file must be passed"
+        # A32/A34: the replan context is assembled into the prompt under a
+        # fixed budget (no handoff files on the command line), so the
+        # blocked note reaches the supervisor as prompt text, not --file.
+        assert any("can't proceed" in c for c in cmd), "BLOCKED note must reach the replan prompt"
 
     def test_execute_kind_skips_in_supervisor_subprocess(
         self, tmp_path: Path, monkeypatch, capsys

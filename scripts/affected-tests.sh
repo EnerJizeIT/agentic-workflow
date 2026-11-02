@@ -62,47 +62,26 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-pybin=${AWF_PYTHON:-python3}
-pybin_src="AWF_PYTHON"
-if [ -z "${AWF_PYTHON:-}" ]; then
-  pybin_src="PATH"
+# Which interpreter runs the project's checks is answered by one shared
+# function (scripts/lib/python-interp.sh): the contract gate asks the same
+# question, and a second copy would drift. Here `pybin` is only the bootstrap
+# for the CLI probe below; the project's answer replaces it right after.
+# The existence test comes first: a failed `.` aborts dash itself, so an
+# `|| { echo …; exit 2; }` after it is dead code.
+lib="$script_dir/lib/python-interp.sh"
+if [ ! -f "$lib" ]; then
+  echo "affected-tests: нет $lib" >&2
+  exit 2
 fi
-
-# AUD8: a configured interpreter that does not exist must say so. Without
-# this check the selector prints nothing and the script blames an "empty
-# selection" — the real reason (a typo, a removed venv) stays hidden.
-# Called before every use of $pybin: the CLI probe below runs the interpreter
-# too, so a missing one has to be named before anything blames `awf`.
-require_interpreter() {
-  case "$pybin" in
-    */*)
-      if [ ! -x "$pybin" ]; then
-        echo "affected-tests: интерпретатор из $pybin_src не найден: $pybin" >&2
-        exit 2
-      fi
-      ;;
-    *)
-      if ! command -v "$pybin" >/dev/null 2>&1; then
-        echo "affected-tests: интерпретатор из $pybin_src не найден в PATH: $pybin" >&2
-        exit 2
-      fi
-      ;;
-  esac
-}
-
-require_interpreter
+. "$lib"
+pybin=${AWF_PYTHON:-python3}
 
 # CLI: тот же порядок, что в scripts/suite-canonical.sh — дерево исходников
 # ($root/bin/awf), работающий `awf` на PATH, затем установленный пакет через
-# `$pybin -m awf`. Общего файла нет намеренно: suite-canonical.sh уезжает в
-# шаблон проекта один, без соседней библиотеки.
-awf=""
-if [ -x "$root/bin/awf" ]; then
-  awf="$root/bin/awf"
-elif command -v awf >/dev/null 2>&1 \
-  && "$(command -v awf)" --help >/dev/null 2>&1; then
-  awf=$(command -v awf)
-fi
+# `$pybin -m awf`. Поиск CLI — общий (scripts/lib/python-interp.sh): тот же
+# вопрос задаёт check-contracts.sh, копия разъехалась бы. suite-canonical.sh
+# остаётся самодостаточным намеренно: он уезжает в шаблон проекта один.
+awf=$(awf_find_cli "$root")
 
 run_awf() {
   if [ -n "$awf" ]; then
@@ -118,23 +97,17 @@ run_awf() {
 # interpreter for pytest plugins (`--timeout` lives in the venv). The
 # question is asked about $project, not the current directory: --project
 # exists precisely because they differ.
-if [ -z "${AWF_PYTHON:-}" ]; then
-  suite_cmd=$(run_awf suite-command --project-dir "$project" 2>/dev/null || true)
-  read -r first second _rest <<<"${suite_cmd:-}"
-  if [ "${second:-}" = "-m" ] && [ -n "${first:-}" ]; then
-    case "$first" in
-      # A relative interpreter in test_cmd means "relative to the project":
-      # suite-canonical.sh runs that command from the project root, while
-      # this script may be invoked from anywhere. Without the prefix
-      # ``.venv/bin/python`` would be looked up in the caller's directory.
-      /*) pybin=$first ;;
-      */*) pybin="$project/$first" ;;
-      *) pybin=$first ;;
-    esac
-    pybin_src="verification.test_cmd"
-  fi
-  require_interpreter
+if [ -n "$awf" ]; then
+  awf_python_resolve "$project" "$awf"
+elif "$pybin" -c 'import awf' >/dev/null 2>&1; then
+  # No CLI, but the package is importable: ask the same question through
+  # `python -m awf`, exactly as run_awf would. Dropping this branch silently
+  # demoted a configured interpreter to `python3` from PATH.
+  awf_python_resolve "$project" "$pybin" -m awf
+else
+  awf_python_resolve "$project"
 fi
+pybin=$AWF_PY
 
 if [ -z "$awf" ] && ! "$pybin" -c 'import awf' >/dev/null 2>&1; then
   echo "affected-tests: awf CLI not found (tried \$root/bin/awf, a working 'awf' on PATH, '$pybin -m awf')" >&2

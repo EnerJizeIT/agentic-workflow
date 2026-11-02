@@ -110,9 +110,9 @@ _DEFAULTS: dict[str, Any] = {
     # fixed stage name that form-generated pipelines never have (their stages
     # are role-named, e.g. ``agent-implementer``). Any rejection then hit
     # "Rollback target 'implement' not found" and hard-stopped the pipeline.
-    # Escalating is the safe default: the supervisor gets the rejection and
-    # replans. Authors who want a rollback set ``rollback_to:<stage-name>``
-    # explicitly (validated with a warning at load).
+    # A32: the safe default is a rewind of the SAME unit — a refusal appends
+    # the report and returns to the author, and only the explicit ``replan``
+    # value spawns the supervisor replan (a new unit).
     "on_rejected": "escalate",
     # AUD16-03: reserved — accepted from pipeline.yaml (files still carry it),
     # but no signal drives it: TEST-FAILED no longer exists, so the resolver
@@ -267,20 +267,25 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
     """A-06: form check for a pipeline stage list.
 
     Shared by load_stages (hand-written YAML) and the write path
-    (awf.api.write_pipeline) — one rule set, no duplicated checks.
-    Type-level checks only: name uniqueness, rollback-target existence
-    and role-file resolution stay load-time warnings in load_stages.
+    (awf.api.write_pipeline) — one rule set, no duplicated checks. The
+    policy rules live here and nowhere else: the allowed words, the
+    ``fix_round:``/``rollback_to:`` prefixes, a non-empty target and
+    fix_round's execute-stage target. The loader only WARNS about a
+    ``rollback_to:`` target that is not a stage and about a role file that
+    does not resolve — both need the built stage list / the project.
 
     Raises:
         AwfApiError: stages not a non-empty list, a stage not a mapping,
-            unknown keys, a missing/empty/            non-string role, an empty or
+            unknown keys, a missing/empty/non-string role, an empty or
             non-slug ``id`` / an empty ``task`` (ORCH M3.1), a non-empty
             but non project-relative ``input``/``output`` (ORCH M3.2),
             a malformed ``tools`` profile (not a mapping, unknown
             sub-key, a non-list value, an empty or unknown permission
             key — ORCH M7.2), a duplicated stage ``id``, a policy that
             is not an allowed string (rollback_to:<stage> only on
-            on_blocked/on_rejected), or a negative/non-integer budget.
+            on_blocked/on_rejected, an empty target, a fix_round target
+            that is not an execute stage), or a negative/non-integer
+            budget.
     """
     if not isinstance(stages, list) or not stages:
         raise AwfApiError(
@@ -539,6 +544,15 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
                             f"supported for {'/'.join(_ROLLBACK_TO_KEYS)} "
                             f"(the transition resolver ignores it on {pk})."
                         )
+                    # A33: the same "target name is not empty" rule the
+                    # fix_round branch above applies. Without it a bare
+                    # ``rollback_to:`` passed here and only warned at load
+                    # ("rolls back to '' which is not a stage").
+                    if not value.split(":", 1)[1].strip():
+                        raise AwfApiError(
+                            f"Pipeline {source}: stage '{label}' {pk}="
+                            f"{value!r} — rollback_to needs a stage name."
+                        )
                 elif value not in _POLICY_ALLOWED[pk]:
                     raise AwfApiError(
                         f"Pipeline {source}: stage '{label}' {pk}={value!r} "
@@ -696,10 +710,18 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
             if policy.startswith("rollback_to:"):
                 rb_target = policy.split(":", 1)[1]
                 if rb_target not in stage_names:
+                    # A32: a rejection with a phantom target rewinds to the
+                    # nearest earlier author (escalating only when there is
+                    # none); a blocked stage keeps the supervisor fallback.
+                    fallback = (
+                        "a rejection will rewind to the nearest earlier author "
+                        "stage instead (to the supervisor when there is none)"
+                        if pk == "on_rejected"
+                        else "a block will escalate to the supervisor instead"
+                    )
                     print(
                         f"WARNING: stage '{st.name}' rolls back to '{rb_target}' which "
-                        f"is not a stage in this pipeline — a rejection will escalate "
-                        f"to the supervisor instead.",
+                        f"is not a stage in this pipeline — {fallback}.",
                         file=sys.stderr,
                     )
 
@@ -718,9 +740,10 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
                 file=sys.stderr,
             )
 
-    # A-06: policy words are validated in validate_pipeline_document —
-    # unknown words, non-string values and rollback_to: on the wrong key
-    # are load errors now (AUD04-02/FU-19 used to warn).
+    # A-06: policy words are validated in validate_pipeline_stages (the
+    # one validator the loader and the write path share) — unknown words,
+    # non-string values, an empty rollback target and rollback_to: on the
+    # wrong key are load errors now (AUD04-02/FU-19 used to warn).
 
     # Day-2 spec (second tier): stage roles must resolve to a role .md
     # (project .agentic/roles/ or the global awf roles dir). A typo used to
@@ -729,7 +752,7 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
     from .supervisor import resolve_role_file  # lazy — avoids import cycle
 
     for st in result:
-        # A-06: role is guaranteed non-empty by validate_pipeline_document.
+        # A-06: role is guaranteed non-empty by validate_pipeline_stages.
         try:
             resolve_role_file(st.role, project_dir)
         except RuntimeError:

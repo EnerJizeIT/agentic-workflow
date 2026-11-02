@@ -35,10 +35,17 @@ from .pipeline import Stage
 from .pipeline_state import read_state
 from .pipeline_state import write_state as _write_state
 from .plan_progress import mark_plan_step_done as _mark_plan_step_done
+from .rejection import (
+    append_progress_note,
+    is_retired_unit,
+    reject_fix_target,
+    rejection_stays_in_unit,
+)
 from .signal_watch import HardTimeoutError as _HardTimeoutError
 from .signals import (
     clean_stage_signals,
     expected_signal_prefixes,
+    find_review_report,
     find_signal_file,
     read_signal_for_todo,
     short_id,
@@ -69,6 +76,7 @@ _UNIT_FILE_PREFIXES = (
     "BLOCKED",
     "REVIEW-",
     "PROGRESS",
+    "PROBES",
     "TEST-RESULTS",
     # CTX3 (audit round 3): BUDGET-<id>.{md,json} are this unit's artifacts
     # too — the list is hand-kept, so it is verified against the outbox->done
@@ -251,12 +259,49 @@ def _replan_answer(sup_signal: object, current_todo: str, project_dir: Path) -> 
         and sup_signal.startswith("TODO-")
         and sup_signal != current_todo
     ):
+        # A32/A34: a retired id never returns as a new unit.
+        if is_retired_unit(project_dir, sup_signal):
+            return ""
         return sup_signal
     if current_todo and current_todo in todos.list_active_todos(
         paths.inbox(project_dir), paths.outbox(project_dir)
     ):
         return current_todo
     return ""
+
+
+def _adopt_replanned_unit(
+    project_dir: Path,
+    logs_dir: Path,
+    current_todo: str,
+    new_todo: str,
+    reason: str,
+) -> None:
+    """A32/A34: the ONE place a replan answer becomes the run's unit.
+
+    Every replan path (escalate, rollback, verify REVIEW) adopts its answer
+    through here, so both facts hold on all three surfaces instead of only
+    where someone remembered to write them:
+
+    * a NEW unit is one visible log line — the only sanctioned way a refusal
+      or a rollback grows the queue;
+    * a successful replan clears the failure record left by an earlier
+      crashed rollback replan, so ``awf status`` never shows a stale
+      ``Replan: FAILED`` for a run that has since replanned cleanly.
+
+    Same-unit answers (the replan re-runs the current unit) only clear the
+    record — they create nothing and stay out of the new-unit line.
+    """
+    if not new_todo:
+        # No answer (the supervisor wrote nothing usable): the caller stops
+        # the run. Not a success — the failure record stays as it was.
+        return
+    _write_state(project_dir, replan_error="", logs_dir=logs_dir)
+    if new_todo != current_todo:
+        _log(
+            logs_dir,
+            f"replan: новый юнит {new_todo} по причине {reason}",
+        )
 
 
 def _unblock_todo(project_dir: Path, todo_id: str, logs_dir: Path) -> bool:
@@ -716,6 +761,10 @@ def _handle_escalate(
         f"BD-30: replanned unit {new_todo} starts at stage 0 "
         f"(the full pipeline, not the blocked stage {s_name})",
     )
+    _adopt_replanned_unit(
+        project_dir, logs_dir, current_todo, new_todo,
+        f"отказа стадии {s_name}",
+    )
     return 0, new_todo, 0  # TODO-0213: the replan unit runs the full pipeline
 
 
@@ -772,12 +821,8 @@ def _fix_round_text(project_dir: Path, todo_id: str, source_stage: str) -> str:
     an honest empty body: the caller then declines the round instead of
     rewinding a worker with no instruction.
     """
-    from .signals import find_signal_file
-
     candidates = []
-    review = find_signal_file(
-        paths.outbox(project_dir), "REVIEW", todo_id, ".md"
-    )
+    review = find_review_report(paths.outbox(project_dir), todo_id)
     if review is not None:
         candidates.append(review)
     handoff = paths.handoff_dir(project_dir) / f"{source_stage}-{todo_id}.md"
@@ -796,7 +841,6 @@ def _fix_round_text(project_dir: Path, todo_id: str, source_stage: str) -> str:
 def _handle_fix_round(
     project_dir: Path,
     logs_dir: Path,
-    config: dict,
     stages: list[Stage],
     current_todo: str,
     target: str,
@@ -851,7 +895,10 @@ def _handle_fix_round(
             current_todo,
             findings,
             reason=f"engine fix round after {source}",
-            _lock_held=True,
+            # The engine IS the live pipeline on this unit: it must take the
+            # project lock like any writer, but the "engine owns the file"
+            # refusal is aimed at outside callers and cannot apply to itself.
+            _engine_owned=True,
         )
     except Exception as e:  # noqa: BLE001 — a refused append stops the loop cleanly
         print(
@@ -871,6 +918,88 @@ def _handle_fix_round(
         f"appended {appended.section!r}",
     )
     return target_idx, current_todo, 0
+
+
+def _handle_rejected(
+    project_dir: Path,
+    logs_dir: Path,
+    stages: list[Stage],
+    current_todo: str,
+    stage: Stage,
+    stage_idx: int,
+    target: str = "",
+    allow_escalate: bool = False,
+) -> tuple[int, str, int] | None:
+    """A32: a rejected stage inside a live unit never creates a unit.
+
+    The reviewer's report is appended to the SAME TODO (one
+    ``## REVIEW-фикс`` section) and the unit rewinds to the fixing stage —
+    named by ``rollback_to:``, by the readiness report's owner, or else the
+    nearest earlier author stage. A rejection on a stage with no author
+    before it stops the run with a reason: there is nothing to fix and no
+    policy value (this function runs only when the policy is not
+    ``replan``) that sanctions a new unit.
+
+    ``allow_escalate`` is the one legacy escape hatch (NEG-2): the policy
+    NAMED a rollback target that does not exist (a typo, an old pipeline)
+    and there is no author to fall back to. The supervisor then gets the
+    refusal instead of a hard stop — the phantom target already broke the
+    pipeline's own contract, so growing a unit is not the worse outcome.
+    """
+    fix_target = target or reject_fix_target(stages, stage_idx)
+    if not fix_target:
+        if allow_escalate:
+            _log(
+                logs_dir,
+                f"A32: rejection at {stage.name}: declared rollback target "
+                "is missing and there is no earlier author — escalating "
+                "to supervisor (NEG-2)",
+            )
+            return None
+        print(
+            f"ERROR: rejection at '{stage.name}' has no earlier author "
+            "stage — nothing to rewind to. Pipeline stopped.",
+            file=sys.stderr,
+        )
+        _log(
+            logs_dir,
+            f"A32: rejection at {stage.name} has no earlier author stage — "
+            "stopped (no replan: the policy is not 'replan')",
+        )
+        return -1, current_todo, 1
+    new_idx, new_todo, exit_code = _handle_fix_round(
+        project_dir, logs_dir, stages, current_todo, fix_target,
+        source=stage.name,
+    )
+    return new_idx, new_todo, exit_code
+
+
+def _maybe_rewind_rejection(
+    project_dir: Path,
+    logs_dir: Path,
+    stages: list[Stage],
+    current_todo: str,
+    stage: Stage,
+    stage_idx: int,
+    sig_type: str,
+    target: str = "",
+    allow_escalate: bool = False,
+) -> tuple[int, str, int] | None:
+    """A32: the ONE decision "a refusal rewinds the same unit".
+
+    Both dispatcher branches that used to grow the queue (``escalate`` and
+    ``rollback``) ask here, so the rule cannot drift between them. Returns
+    None only when the caller must keep its own path: the signal is not a
+    rejection, the policy sanctions a new unit (``replan``), or a declared
+    rollback target is missing with no author left (``allow_escalate``,
+    the NEG-2 survive path).
+    """
+    if sig_type != "rejected" or not rejection_stays_in_unit(stage):
+        return None
+    return _handle_rejected(
+        project_dir, logs_dir, stages, current_todo,
+        stage, stage_idx, target=target, allow_escalate=allow_escalate,
+    )
 
 
 def _handle_direct_rollback(
@@ -959,10 +1088,29 @@ def _handle_rollback(
             replan_stage, current_todo, auto, project_dir, logs_dir, pipeline_name
         )
     except (RuntimeError, TimeoutError) as e:
-        print("ERROR: supervisor replan after rollback crashed. Pipeline stopped.", file=sys.stderr)
-        print(f"  Details: {e}", file=sys.stderr)
-        _log(logs_dir, f"Pipeline stopped at stage {source or target}: rollback replan crashed: {e}")
-        return -1, current_todo, 1
+        # A34: a failed replan is a refinement of the rollback, not the
+        # rollback itself — the unit continues at the target stage. The
+        # reason is kept on every surface the owner reads: log, status,
+        # PROGRESS.
+        reason = str(e)[:300]
+        print(
+            f"WARNING: supervisor replan after rollback failed ({reason}) — "
+            f"continuing at '{stages[target_idx].name}'.",
+            file=sys.stderr,
+        )
+        _log(
+            logs_dir,
+            f"A34: rollback replan crashed at {source or target}: {reason} — "
+            f"continuing at {stages[target_idx].name}",
+        )
+        _write_state(project_dir, replan_error=reason, logs_dir=logs_dir)
+        append_progress_note(
+            project_dir,
+            current_todo,
+            f"replan after rollback failed: {reason} — continued at "
+            f"'{stages[target_idx].name}'",
+        )
+        return target_idx, current_todo, 0
 
     # TODO-0213 (REVIEW fix): the replan answer is the marked TODO's id in
     # the signal (a TODO id naming a unit OTHER than the current one) or
@@ -976,6 +1124,10 @@ def _handle_rollback(
         print("Rollback: no runnable unit after replan. Stopping.", file=sys.stderr)
         _log(logs_dir, "Rollback: no new TODO after replan — stopping")
         return -1, current_todo, 1
+    _adopt_replanned_unit(
+        project_dir, logs_dir, current_todo, new_todo,
+        f"отката стадии {source or target}",
+    )
     return target_idx, new_todo, 0
 
 
@@ -1544,6 +1696,10 @@ def execute_supervisor_stage(
             # construction) instead of the unit the wait picked up. No
             # answer → the rejected unit stays (the pipeline stops anyway).
             new_todo = _replan_answer(replan_signal, current_todo, project_dir)
+            _adopt_replanned_unit(
+                project_dir, logs_dir, current_todo, new_todo,
+                f"отказа стадии {s_name}",
+            )
             if new_todo and new_todo != current_todo:
                 current_todo = new_todo
                 # Persist replanned TODO so continue resumes the right task.
@@ -3046,8 +3202,15 @@ def execute_agent_stage(
     action, target = resolve_transition(stage, sig_type)
     # S14: a BLOCKED readiness report is an automatic rewind to the AUTHOR
     # who owns the finding (requirements or architecture) — the policy
-    # gives the rollback action, the report's owner picks the stage.
-    if auto_rollback and action == "rollback":
+    # gives the action, the report's owner picks the stage. A32 widened the
+    # surface twice: an ``escalate`` policy on such a verdict rewinds the
+    # same unit too, and a worker that emitted ``REVIEW-REJECTED`` (instead
+    # of DONE) still gets the report's owner — the signal spelling does not
+    # decide where the finding belongs.
+    if (auto_rollback or sig_type == "rejected") and action in (
+        "rollback",
+        "escalate",
+    ):
         author_stage = _readiness_rollback_target(
             project_dir, stage.output or "", stages
         )
@@ -3073,6 +3236,17 @@ def execute_agent_stage(
         return current_todo, new_idx, rc
 
     elif action == "escalate":
+        # A32: a rejected stage inside a live unit never creates a unit —
+        # the report is appended to the SAME TODO and the unit rewinds to
+        # the fixing stage. Only the explicit ``replan`` policy may spawn
+        # the replan subprocess (and with it a new unit).
+        rewind = _maybe_rewind_rejection(
+            project_dir, logs_dir, stages, current_todo,
+            stage, stage_idx, sig_type, target=target,
+        )
+        if rewind is not None:
+            new_idx, new_todo, exit_code = rewind
+            return new_todo, new_idx, exit_code
         new_idx, new_todo, exit_code = _handle_escalate(
             project_dir, logs_dir, s_name, current_todo, auto, stage, retry_counts, stage_idx,
             pipeline_name,
@@ -3081,13 +3255,41 @@ def execute_agent_stage(
 
     elif action == "fix_round":
         new_idx, new_todo, exit_code = _handle_fix_round(
-            project_dir, logs_dir, config, stages, current_todo, target,
+            project_dir, logs_dir, stages, current_todo, target,
             source=s_name,
         )
         return new_todo, new_idx, exit_code
 
     elif action == "rollback":
-        if _find_stage_index(stages, target) < 0:
+        target_exists = _find_stage_index(stages, target) >= 0
+        # SPEC: an automatic FAIL rewind is the report's own decision — the
+        # same unit goes back to the author stage without a supervisor
+        # replan. A worker-emitted REVIEW-REJECTED keeps the rewind path too
+        # (A32), never the replan.
+        if auto_rollback and target_exists:
+            new_idx, new_todo, exit_code = _handle_direct_rollback(
+                project_dir, logs_dir, stages, current_todo, target,
+                source=s_name,
+            )
+            return new_todo, new_idx, exit_code
+        # A32: a worker-emitted rejection with ``rollback_to:`` rewinds the
+        # SAME unit (the report is appended); the replan subprocess is not
+        # part of a rejection at all. A rejection whose declared target does
+        # not exist still rewinds — to the nearest earlier author. Only when
+        # there is no author either does it take the NEG-2 escalation
+        # (``allow_escalate``), so a broken pipeline still survives.
+        rewind = _maybe_rewind_rejection(
+            project_dir, logs_dir, stages, current_todo,
+            stage, stage_idx, sig_type,
+            target=target if target_exists else "",
+            # A declared but missing target is a broken pipeline, not a
+            # refusal rule — NEG-2 keeps the supervisor fallback for it.
+            allow_escalate=bool(target) and not target_exists,
+        )
+        if rewind is not None:
+            new_idx, new_todo, exit_code = rewind
+            return new_todo, new_idx, exit_code
+        if not target_exists:
             # NEG-2 (dogfood-11): a rollback target that doesn't exist (typo,
             # or a pipeline generated with the old default) must not hard-stop
             # the pipeline — escalate to the supervisor instead, same recovery
@@ -3101,15 +3303,6 @@ def execute_agent_stage(
             new_idx, new_todo, exit_code = _handle_escalate(
                 project_dir, logs_dir, s_name, current_todo, auto, stage,
                 retry_counts, stage_idx, pipeline_name,
-            )
-            return new_todo, new_idx, exit_code
-        # SPEC: an automatic FAIL rewind is the report's own decision — the
-        # same unit goes back to the author stage without a supervisor
-        # replan. A worker-emitted REVIEW-REJECTED keeps the replan path.
-        if auto_rollback:
-            new_idx, new_todo, exit_code = _handle_direct_rollback(
-                project_dir, logs_dir, stages, current_todo, target,
-                source=s_name,
             )
             return new_todo, new_idx, exit_code
         new_idx, new_todo, exit_code = _handle_rollback(
