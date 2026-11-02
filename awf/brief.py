@@ -212,8 +212,75 @@ def _data_file(name: str) -> Path:
     return Path(__file__).resolve().parent / "data" / name
 
 
+# TODO-0347 (IMP4): the coarse names the advice uses, resolved to the fine
+# situation codes of D5. The fine codes stay the data keys; the aliases let
+# the card ask by the advice's own vocabulary (verify / run / blocked /
+# salvage / hygiene / setup).
+SITUATION_ALIASES = {
+    "setup": "S0",
+    "salvage": "S1",
+    "blocked": "S2",
+    "run": "S7",
+    "verify": "S8",
+    "hygiene": "S10",
+}
+
+# The first tool of each situation's row — and the tool the advice names
+# (AC19). The key order is also the canonical order of situation codes
+# (``S1a`` right after ``S1``, ``S11a``/``S11b`` after ``S11``).
+SITUATION_ADVICE = {
+    "S0": "awf_init",
+    "S1": "awf_retry_stage",
+    "S1a": "awf_rollback",
+    "S2": "awf_continue",
+    "S3": "awf_todo_retire",
+    "S4": "awf_continue",
+    "S5": "awf_kill",
+    "S6": "awf_continue",
+    "S7": "awf_wait_for_event",
+    "S8": "awf_approve",
+    "S9": "awf_start",
+    "S10": "awf_dispatch_todo",
+    "S11": "awf_review_append",
+    "S11a": "awf_run_revise",
+    "S11b": "awf_dispatch_todo",
+    "S12": "awf_run_next",
+    "S13": "read_submit",
+}
+
+SITUATION_ORDER = tuple(SITUATION_ADVICE)
+
+
+def _group_situations(tools: list[dict[str, Any]]) -> list[str]:
+    """Situations where the group has a selectable row, in order (D8).
+
+    TODO-0347 (IMP4): a group does not list its situations by hand — it
+    *inherits* the union of its entries (K2), so the group and its entries
+    cannot drift apart. Only selectable entries count: D8 says a group with
+    no row for a situation is not rendered there, and an ``inventory_only``
+    entry never becomes a row — otherwise the card prints a heading with
+    nothing under it (metrics had S2/S3 that way). Unknown codes (not in the
+    advice table) go last, alphabetically, instead of disappearing.
+    """
+    found = {
+        code
+        for t in tools
+        if not t["inventory_only"]
+        for code in t["situations"]
+    }
+    rank = {code: index for index, code in enumerate(SITUATION_ORDER)}
+    return sorted(found, key=lambda code: (rank.get(code, len(rank)), code))
+
+
 def load_tool_map() -> list[dict[str, Any]]:
-    """Groups from ``awf/data/tool_map.yaml`` (normalized entry shape)."""
+    """Groups from ``awf/data/tool_map.yaml`` (normalized entry shape).
+
+    TODO-0347 (IMP4): an entry also carries ``situations`` (the situation
+    codes it serves) and ``inventory_only`` (present in the full list but
+    never in the ≤5 advice row). The group carries the union of its
+    entries' situations (computed here, not declared in the file), so a
+    group with no situation is not rendered by the situational card (IMP5).
+    """
     raw = yaml.safe_load(_data_file("tool_map.yaml").read_text(encoding="utf-8")) or {}
     groups: list[dict[str, Any]] = []
     for g in raw.get("groups") or []:
@@ -222,6 +289,8 @@ def load_tool_map() -> list[dict[str, Any]]:
                 "mcp": str(t.get("mcp") or ""),
                 "cli": str(t.get("cli") or ""),
                 "when": str(t.get("when") or ""),
+                "situations": [str(s) for s in (t.get("situations") or [])],
+                "inventory_only": bool(t.get("inventory_only")),
             }
             for t in (g.get("tools") or [])
         ]
@@ -229,10 +298,49 @@ def load_tool_map() -> list[dict[str, Any]]:
             {
                 "title": str(g.get("title") or ""),
                 "hidden": bool(g.get("hidden")),
+                "situations": _group_situations(tools),
                 "tools": tools,
             }
         )
     return groups
+
+
+def situational_tools(
+    situation: str, advice_tool: str = ""
+) -> list[dict[str, str]]:
+    """Tools for one situation: ≤5 entries, the advice tool first.
+
+    TODO-0347 (IMP4) / D8: the entry order is the file order, entries of
+    the situation only, ``inventory_only`` never selected (it stays in the
+    full ``tool_map`` list — AC20). ``why`` is the entry's ``when`` line,
+    so the card never prints an empty reason (INV3). The advice tool comes
+    first even when the file lists it later (AC19).
+
+    An advice tool that no entry of the situation names cannot be moved to
+    the front: the row keeps the file order. That is data drift, not a
+    runtime decision — ``SITUATION_ADVICE`` is checked against the rows by
+    ``tests/unit/test_tool_map_situations.py``.
+    """
+    code = SITUATION_ALIASES.get(situation, situation)
+    advice = advice_tool or SITUATION_ADVICE.get(code, "")
+    picked: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for group in load_tool_map():
+        for t in group["tools"]:
+            if t["inventory_only"] or code not in t["situations"]:
+                continue
+            key = (t["mcp"], t["cli"])
+            if key in seen:
+                continue
+            seen.add(key)
+            name = t["mcp"] or f"awf {t['cli']}"
+            picked.append({"tool": name, "why": t["when"]})
+    if advice:
+        for index, entry in enumerate(picked):
+            if entry["tool"] == advice:
+                picked.insert(0, picked.pop(index))
+                break
+    return picked[:5]
 
 
 def load_recovery() -> str:
