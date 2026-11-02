@@ -26,6 +26,13 @@ def brief(project_dir: Path) -> BriefResult:
     Deterministic for the same state: two calls give identical text
     except the date line (pinned by tests).
 
+    TODO-0348 (IMP5): the result is the single entry — ``entry`` (tool,
+    single, recall_when) in every state, the situation words, the ≤5-tool
+    row, the current pass's ``verify`` facts (pack verdict, first failure,
+    commit verdict) and the FULL ``phase_prompt`` (the card only points at
+    the field). ``budget`` reports the card's word count and the dropped
+    verbose sections.
+
     ORCH M1.2: the run record comes from the shared reader
     (``awf/run_plan_read.py``) — the card is the one view of that record.
     """

@@ -21,24 +21,20 @@ sleep+status cycles). Supervisor doesn't burn tokens on idle polling.
 """
 from __future__ import annotations
 
-import os
 import re
-import sys
 import time
 from pathlib import Path
 from typing import Any
 
 from ..pipeline_state import read_state
+from ..wait_policy import TRANSPORT_CAP, _parse_cap, wait_cap  # noqa: F401
 from ._helpers import require_agentic
 from ._results import WaitEventResult
 
-# B3 (run2 report): the default MCP client transport (~60s timeout) cuts a
-# single wait at ~55s — the measured working cap. This is the DEFAULT; when
-# the owner's transport tolerates a longer single wait, the cap is raised
-# via .agentic/config.yaml `wait.cap_seconds` or env AWF_WAIT_CAP (env wins,
-# RUN6 #3) — see wait_cap(). suggested_timeout must stay at or under it, or
-# the supervisor's next call dies mid-wait (-32001).
-TRANSPORT_CAP = 55
+# TODO-0348 (IMP5): the cap lives in the leaf ``awf.wait_policy`` so the
+# brief card reads it without importing this package (AUD5). It is
+# re-exported here — ``awf.api.wait_cap`` / ``TRANSPORT_CAP`` stay the
+# public names.
 MIN_WAIT = 30
 
 # M5 (REVIEW виток 10): the stale-APPROVE verdict re-materialised the
@@ -62,56 +58,6 @@ _STALE_STATUS_CACHE_MAX = 16
 # RUN10 #2: the safety gap between the mcp timeout (opencode.json) and the
 # wait cap advised from it — the transport cut lands mid-wait otherwise.
 WAIT_CAP_MARGIN = 30
-
-
-def _parse_cap(value: Any) -> int | None:
-    """A positive int usable as a wait cap; None when not a valid one."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        n = int(value)
-    elif isinstance(value, str):
-        try:
-            n = int(value.strip())
-        except ValueError:
-            return None
-    else:
-        return None
-    return n if n > 0 else None
-
-
-def wait_cap(project_dir: Path | None = None) -> int:
-    """RUN6 #3: the honest single-wait cap for this project.
-
-    Priority: env ``AWF_WAIT_CAP`` > ``wait.cap_seconds`` in
-    ``.agentic/config.yaml`` > ``TRANSPORT_CAP`` (default 55s). An invalid
-    value falls through to the next source with a stderr warning, so the
-    default always works.
-    """
-    raw = os.environ.get("AWF_WAIT_CAP")
-    if raw is not None:
-        cap = _parse_cap(raw)
-        if cap is not None:
-            return cap
-        print(
-            f"WARNING: AWF_WAIT_CAP={raw!r} is not a positive integer — "
-            "falling back to the config/default cap",
-            file=sys.stderr,
-        )
-    if project_dir is not None:
-        from .. import config as _cfg
-
-        value = _cfg.get(_cfg.load(project_dir), "wait.cap_seconds")
-        if value is not None:
-            cap = _parse_cap(value)
-            if cap is not None:
-                return cap
-            print(
-                f"WARNING: wait.cap_seconds={value!r} is not a positive "
-                "integer — using the default cap",
-                file=sys.stderr,
-            )
-    return TRANSPORT_CAP
 
 
 def mcp_transport_timeout_ms(project_dir: Path | None = None) -> int | None:
