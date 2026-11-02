@@ -111,6 +111,16 @@ accepts it while `VERIFIED-<todo-id>.sha`, the baseline and the tree
 still match, so approving before the wait starts no longer needs a
 manual `touch` (A23).
 
+**`GATES-<todo>.md` — the commit gate (A37).** The pack taken on the
+current tree now decides: `verdict: failed` refuses the commit, the unit
+stays ACTIVE and its work stays in the working tree. The `candidate`,
+`prove_red` and `spec_budget` sections are advisory and never block. To
+knowingly accept a failed section, approve with `awf approve <todo-id>
+--override-failed gates --override-reason "why"` (MCP:
+`awf_approve(override_failed=[...], override_reason="...")`); the list and
+the reason land in `.agentic/context/COMMIT-AUDIT-<todo>.json`. An `ok`
+pack, a pack taken on another tree, and no pack at all change nothing.
+
 **`awf mutations [--list] [--file PATH] [--timeout N]`** — mutation smoke
 over `scripts/mutations.txt` (the same base list the CI test job runs as
 a gate step, `bash scripts/mutation-smoke.sh`). Runs on a QUIET tree only

@@ -664,6 +664,25 @@ def _build_parser():
              "digest (a warning alone must not admit foreign work).",
     )
     p_approve.add_argument(
+        "--override-failed",
+        dest="override_failed",
+        action="append",
+        default=None,
+        metavar="SECTION",
+        # A37 (TODO-0349): a red verify pack blocks the commit; the owner may
+        # accept named failed sections with a reason.
+        help="A37: accept a red verify-pack section by name (repeatable), "
+             "e.g. --override-failed gates. Requires --override-reason.",
+    )
+    p_approve.add_argument(
+        "--override-reason",
+        dest="override_reason",
+        default="",
+        # A37: the reason is recorded in COMMIT-AUDIT-<todo>.json.
+        help="A37: WHY the overridden pack section does not block this "
+             "commit (required with --override-failed).",
+    )
+    p_approve.add_argument(
         "--project-dir",
         default=".",
         help="Path to project root (default: current directory)",

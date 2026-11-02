@@ -1732,6 +1732,8 @@ async def awf_approve(
     evidence: str = "",
     verified_sha: str = "",
     confirm_degraded: bool = False,
+    override_failed: list[str] | None = None,
+    override_reason: str = "",
 ) -> dict[str, Any]:
     """Approve auto-commit for a TODO in --auto mode.
 
@@ -1760,6 +1762,11 @@ async def awf_approve(
             degrades a file to its full worktree content is refused (a
             warning alone must not admit foreign work); with it the full
             file enters the commit.
+        override_failed: A37 — failed verify-pack sections you knowingly
+            accept (e.g. ["gates"]). Requires override_reason; the pair is
+            recorded in COMMIT-AUDIT-{todo}.json.
+        override_reason: A37 — WHY the overridden section does not block
+            this commit (required with override_failed).
 
     Returns:
         Dict with: todo_id, signal_file (path to APPROVE-*.ready),
@@ -1777,6 +1784,8 @@ async def awf_approve(
         evidence=evidence,
         verified_sha=verified_sha,
         confirm_degraded=confirm_degraded,
+        override_failed=override_failed,
+        override_reason=override_reason,
     )
     if response.get("status") != "ok":
         return response

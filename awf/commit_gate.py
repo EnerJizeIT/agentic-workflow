@@ -362,6 +362,9 @@ def _write_commit_audit(
     plan: commit_plan.CommitPlan,
     outcome: commit_plan.CommitOutcome,
     logs_dir: Path,
+    *,
+    override_failed: tuple[str, ...] | list[str] = (),
+    override_reason: str = "",
 ) -> None:
     """TODO-0195: ``context/COMMIT-AUDIT-{todo}.json`` — the per-unit fact
     the RUN-REPORT renders («вне коммита остались»): the paths left outside
@@ -385,6 +388,8 @@ def _write_commit_audit(
             excluded=plan.excluded,
             worker_staged=plan.worker_staged,
             skip_inconsistent=skip_inconsistent,
+            override_failed=override_failed,
+            override_reason=override_reason,
         ),
         logs_dir,
     )
@@ -422,6 +427,8 @@ def _audit_record(
     worker_staged: list | tuple = (),
     skip_inconsistent: bool = False,
     resumed: bool = False,
+    override_failed: list | tuple = (),
+    override_reason: str = "",
 ) -> dict:
     """The ONE shape of ``COMMIT-AUDIT-{todo}.json``.
 
@@ -446,6 +453,14 @@ def _audit_record(
         "worker_staged": list(worker_staged),
         "skip_inconsistent": skip_inconsistent,
         "skip_reason": outcome.reason if skip_inconsistent else "",
+        # A37 (TODO-0349): the pack override the APPROVAL carried — the
+        # section names the owner knowingly accepted and WHY. It is the fact
+        # of the approval, not a filter on the outcome: a green pack or a
+        # still-refused commit keeps the pair as recorded, so the audit never
+        # claims an override the owner did not give (and never hides one they
+        # did). Empty when the approval carried none.
+        "override_failed": list(override_failed),
+        "override_reason": override_reason if override_failed else "",
     }
     if resumed:
         record["commit"] = outcome.sha
@@ -569,11 +584,26 @@ def maybe_commit(
 
     plan = commit_plan.build_commit_plan(project_dir, todo_id, baseline_sha)
 
+    # A37 (TODO-0349): the pack override is read from the APPROVE binding, so
+    # in auto mode it must be read AFTER the signal wait (an approve landing
+    # in the wait window writes the binding then). ``_finalize`` reads these
+    # at call time; () / "" means "no override" (also for the refusals that
+    # happen before the read).
+    pack_override_sections: tuple[str, ...] = ()
+    pack_override_reason: str = ""
+
     # TODO-0195: every post-plan outcome (refused/skipped/committed/error)
     # leaves the per-unit audit fact for the RUN-REPORT. The closure reads
     # ``plan`` at call time, so the auto-mode refresh below is covered.
     def _finalize(outcome: commit_plan.CommitOutcome) -> commit_plan.CommitOutcome:
-        _write_commit_audit(project_dir, plan, outcome, logs_dir)
+        _write_commit_audit(
+            project_dir,
+            plan,
+            outcome,
+            logs_dir,
+            override_failed=pack_override_sections,
+            override_reason=pack_override_reason,
+        )
         # A31: the engine compares HEAD before/after each stage — the gate's
         # own commit must be recognizable there, or a legitimate commit
         # would look foreign.
@@ -680,6 +710,23 @@ def maybe_commit(
             file=sys.stderr,
         )
         _log(logs_dir, f"R2.4: commit refused for {todo_id} — {refusal}")
+        return _finalize(commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal))
+
+    # A37 (TODO-0349): a red verify pack for THIS tree closes the gate. The
+    # pack was only a report before — TODO-0339 failed its pack and still
+    # committed. Advisory sections (and the approve's explicit override) do
+    # not block; every other failed section refuses, audited with the reason.
+    pack_override_sections, pack_override_reason = commit_plan.read_pack_overrides(
+        project_dir, todo_id
+    )
+    refusal = commit_plan.pack_refusal(plan, project_dir, pack_override_sections)
+    if refusal:
+        print(
+            f"REFUSING unit commit for {todo_id}: {refusal}. "
+            "Nothing was staged; the working tree is left for manual review.",
+            file=sys.stderr,
+        )
+        _log(logs_dir, f"A37: commit refused for {todo_id} — {refusal}")
         return _finalize(commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal))
 
     if not plan.files:

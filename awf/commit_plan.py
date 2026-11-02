@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -45,6 +46,14 @@ OUTCOME_ERROR = "error"
 NO_CHANGES_REASON = "no changes to commit"
 
 PROCEED_STATUSES = (OUTCOME_COMMITTED, OUTCOME_SKIPPED)
+
+#: A37 (TODO-0349): the verify-pack sections that never close the commit gate
+#: on their own — ``spec_budget``/``prove_red``/``candidate`` report advice
+#: about a unit that already has its verdict. Every OTHER failed section
+#: (``gates``, ``tests``, ``lint``, ...) refuses the commit; the owner can
+#: still override a section by name through the approve (``override_failed``)
+#: and must say why — the reason lands in ``COMMIT-AUDIT-<todo>.json``.
+PACK_ADVISORY_SECTIONS: tuple[str, ...] = ("candidate", "prove_red", "spec_budget")
 
 
 @dataclass(frozen=True)
@@ -543,6 +552,108 @@ def read_approval_binding(project_dir: Path, todo_id: str) -> dict | None:
     if not isinstance(data, dict):
         return None
     return data
+
+
+def normalize_override_sections(raw: object) -> tuple[str, ...]:
+    """A37: the ONE spelling of an ``override_failed`` section list.
+
+    The approve validates and stores the names, the gate re-reads them from
+    the signal file — both need the same normalization (strip, drop empties,
+    dedupe, sort), or a name accepted by the approve would not match the
+    section the pack reports. A non-list is no override, not an error.
+    """
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    return tuple(sorted({str(s).strip() for s in raw if str(s).strip()}))
+
+
+def read_pack_overrides(project_dir: Path, todo_id: str) -> tuple[tuple[str, ...], str]:
+    """A37: the owner's pack override from the approval binding.
+
+    The approve may carry ``override_failed=[section, ...]`` plus
+    ``override_reason`` when a red verify pack is knowingly accepted. An
+    override WITHOUT a reason is not an override — the owner must say why
+    the failure does not block this commit — so the pair degrades to
+    ``((), "")`` and the gate refuses exactly as if none was passed.
+    """
+    binding = read_approval_binding(project_dir, todo_id)
+    if not binding:
+        return (), ""
+    sections = normalize_override_sections(binding.get("override_failed"))
+    reason = str(binding.get("override_reason") or "").strip()
+    if not sections or not reason:
+        return (), ""
+    return sections, reason
+
+
+def pack_refusal(
+    plan: CommitPlan,
+    project_dir: Path,
+    override_failed: tuple[str, ...] | list[str] = (),
+) -> str:
+    """A37 (TODO-0349): a red verify pack closes the commit gate.
+
+    Before this the pack was a report: TODO-0339 produced ``verdict: failed``
+    (section ``gates``) and the unit still committed. The gate now reads the
+    pack that describes THIS tree (``GATES-<todo>.md`` with a matching
+    ``tree_sha``) and refuses a ``failed`` verdict unless every failed
+    section is advisory (:data:`PACK_ADVISORY_SECTIONS`) or explicitly
+    overridden by the approve. A missing pack, an ``ok`` pack or a pack
+    taken on another tree change nothing. A report that says ``failed`` but
+    names no failing section is refused too — the verdict is the contract,
+    and no section override can clear an inconsistent report.
+
+    Returns a refusal reason, or "" when the commit may proceed.
+    """
+    if not plan.todo_id:
+        return ""
+    from . import verify_pack  # local: verify_pack imports this module lazily
+
+    report = paths.context_dir(project_dir) / f"GATES-{plan.todo_id}.md"
+    try:
+        current = git_utils.tree_fingerprint(project_dir)
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
+        # The SAME failure set the pack writer treats as "no fingerprint"
+        # (``verify_pack._current_tree_sha``): a hung git (``TimeoutExpired``
+        # is not a ``RuntimeError``) or an unreadable repo must degrade to
+        # "no current tree" here too — a red pack then refuses (fail closed)
+        # instead of crashing the gate with a traceback.
+        current = ""
+    # A37: freshness is compared HERE, not through ``read_gates_facts``'s
+    # ``stale``: a pack that records no tree at all is not "another tree's
+    # verdict" — it cannot be shown to describe this commit, so it stays
+    # blocking (fail closed) instead of being read as fresh.
+    facts = verify_pack.read_gates_facts(report)
+    if facts is None or str(facts.get("verdict") or "") != "failed":
+        return ""
+    recorded = str(facts.get("tree_sha") or "")
+    if recorded and current and recorded != current:
+        return ""  # the pack describes another tree — not this commit's gate
+
+    allowed = set(PACK_ADVISORY_SECTIONS) | {str(s) for s in override_failed}
+    named = [str(s) for s in (facts.get("failed_sections") or [])]
+    failed = [s for s in named if s not in allowed]
+    if not failed:
+        if named:
+            return ""
+        # The verdict, not the section list, is the contract: a report that
+        # says "failed" but names no failing section is inconsistent (a
+        # truncated or hand-edited block), and no override can clear it.
+        return (
+            f"the verify pack {report.name} reports verdict 'failed' for the "
+            "current tree but names no failing section — the report is "
+            "inconsistent. Re-run the pack (`awf verify-pack --todo "
+            f"{plan.todo_id}`) before committing."
+        )
+    first = str(facts.get("first_failure") or "").strip()
+    detail = f" ({first[:200]})" if first else ""
+    return (
+        f"the verify pack {report.name} reports verdict 'failed' for the "
+        f"current tree in section(s) {', '.join(failed)}{detail} — a red pack "
+        "must not commit. Fix the section and re-run the pack, or approve "
+        "with override_failed=[...] AND a reason when the failure is "
+        f"knowingly accepted (recorded in COMMIT-AUDIT-{plan.todo_id}.json)."
+    )
 
 
 def binding_refusal(plan: CommitPlan, project_dir: Path, authorized_by: str) -> str:

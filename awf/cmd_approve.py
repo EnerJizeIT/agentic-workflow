@@ -26,6 +26,10 @@ def run(args: Any) -> int:
             # legitimate full-file degradation event (the API flag was not
             # reachable from the CLI before).
             confirm_degraded=bool(getattr(args, "confirm_degraded", False)),
+            # A37 (TODO-0349): the terminal twin of the MCP override — a red
+            # verify pack is accepted only by name and only with a reason.
+            override_failed=getattr(args, "override_failed", None) or None,
+            override_reason=getattr(args, "override_reason", "") or "",
         )
     except api.AwfApiError as e:
         print(str(e))
