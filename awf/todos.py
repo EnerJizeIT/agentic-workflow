@@ -175,6 +175,7 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
     - outbox/PROGRESS-{id}.md   → done/{id}/PROGRESS.md
     - outbox/DONE-{id}.md       → done/{id}/DONE.md
     - outbox/DONE-{id}.json     → done/{id}/DONE.json (U3 machine facts, U5)
+    - outbox/PROBES-{id}.json   → done/{id}/PROBES.json (A27 auditor probes)
     - outbox/DONE-{id}.ready    → deleted
     - outbox/TEST-RESULTS-{id}.log → done/{id}/TEST-RESULTS-{id}.log (AUD15-07)
     - outbox/BLOCKED-{id}.{md,json} → done/{id}/ (H2: dead-attempt report)
@@ -251,7 +252,10 @@ def archive_todo(project_dir: str | Path, todo_id: str) -> Path | None:
 
     # PROGRESS and DONE from outbox — canonical (TODO-NNNN) AND legacy
     # short (NNNN) form, mirroring is_closed/has_progress (AUD01-05).
-    for prefix in ("PROGRESS", "DONE"):
+    # A27: PROBES is the reviewer/auditor's claims file; it belongs to the
+    # unit the same way DONE does and must not stay in the outbox after the
+    # close.
+    for prefix in ("PROGRESS", "DONE", "PROBES"):
         for ext in (".md", ".json"):
             for tid_variant in (todo_id, _short_id(todo_id)):
                 src = outbox_p / f"{prefix}-{tid_variant}{ext}"

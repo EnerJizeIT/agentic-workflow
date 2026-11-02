@@ -258,3 +258,130 @@ def test_the_total_budget_stops_the_rerun_early(tmp_path):
     assert report.mismatches == []
     assert report.checked == 0
     assert len(report.unverified) + report.skipped.get("budget", 0) == 2
+
+
+def test_a_line_of_prose_is_skipped_not_blamed(tmp_path):
+    """A27: "reused canonical suite artifact …" is a fact, not a command.
+
+    It used to be rerun from the project root: FileNotFoundError, and the
+    honest unit landed in "does not reproduce".
+    """
+    project = _project(tmp_path)
+    _done(
+        project,
+        [
+            {
+                "cmd": "reused canonical suite artifact .agentic/context/SUITE-abc-1234.json (QA stage)",
+                "result": "exit 0, 6494 passed (not rerun)",
+            }
+        ],
+    )
+
+    report = verify_pack.check_done_claims(project, "TODO-0001")
+
+    assert report.mismatches == []
+    assert report.skipped == {"prose": 1}
+    assert "line that is not a command" in report.summary()
+
+
+def test_a_real_failing_command_is_still_a_mismatch(tmp_path):
+    """A27 did not soften the check: an existing command with rc≠0 lies."""
+    project = _project(tmp_path)
+    _done(
+        project,
+        [{"cmd": "python3 -c 'import sys; sys.exit(3)'", "result": "5 passed"}],
+    )
+
+    report = verify_pack.check_done_claims(project, "TODO-0001")
+
+    assert len(report.mismatches) == 1
+    assert report.skipped == {}
+    assert report.checked == 1
+
+
+def _probes(project: Path, tests_run: list[dict]) -> None:
+    (project / ".agentic" / "outbox" / "PROBES-TODO-0001.json").write_text(
+        json.dumps({"tests_run": tests_run}), encoding="utf-8"
+    )
+
+
+def test_auditor_probes_are_checked_and_counted_apart(tmp_path):
+    """A27: PROBES is read too, and the report names it separately."""
+    project = _project(tmp_path)
+    _done(project, [{"cmd": "python3 -c 'print(1)'", "result": "1 passed"}])
+    _probes(project, [{"cmd": "python3 -c 'print(2)'", "result": "1 passed"}])
+
+    report = verify_pack.check_done_claims(project, "TODO-0001")
+
+    assert report.mismatches == []
+    assert report.probe_mismatches == []
+    assert report.checked == 1
+    assert report.probes_checked == 1
+    assert "auditor probes — checked 1" in report.probes_summary()
+    assert any("auditor probes" in line for line in report.lines())
+
+
+def test_a_false_probe_is_a_contradiction_too(tmp_path):
+    """A green probe that no longer reproduces fails the pack section."""
+    project = _project(tmp_path)
+    _done(project, [{"cmd": "python3 -c 'print(1)'", "result": "1 passed"}])
+    _probes(project, [{"cmd": "python3 -c 'import sys; sys.exit(1)'", "result": "9 passed"}])
+
+    report = verify_pack.check_done_claims(project, "TODO-0001")
+    section = verify_pack._done_json_section(project, "TODO-0001", project / ".agentic")
+
+    assert len(report.probe_mismatches) == 1
+    assert report.mismatches == []
+    assert section.status == "fail"
+    assert any("probe:" in line for line in section.lines)
+
+
+def test_the_pack_passes_a_unit_with_honest_auditor_probes(tmp_path):
+    """Acceptance: DONE + a separate PROBES file give ``done_json: PASS``."""
+    project = _project(tmp_path)
+    _done(project, [{"cmd": "python3 -c 'print(1)'", "result": "1 passed"}])
+    _probes(project, [{"cmd": "python3 -c 'print(2)'", "result": "1 passed"}])
+
+    section = verify_pack._done_json_section(project, "TODO-0001", project / ".agentic")
+
+    assert section.status == "pass"
+    assert any("auditor probes — checked 1" in line for line in section.lines)
+
+
+def test_an_audit_only_unit_still_checks_its_probes(tmp_path):
+    """A unit with PROBES and no DONE: the probes are rerun and named; the
+    section does not claim a DONE it never had."""
+    project = _project(tmp_path)
+    _probes(project, [{"cmd": "python3 -c 'print(1)'", "result": "1 passed"}])
+
+    section = verify_pack._done_json_section(project, "TODO-0001", project / ".agentic")
+
+    assert section.status == "skipped"
+    assert any("no DONE-TODO-0001.json" in line for line in section.lines)
+    assert any("auditor probes — checked 1" in line for line in section.lines)
+
+
+def test_an_audit_only_unit_with_a_lying_probe_fails_the_section(tmp_path):
+    """No author DONE is not a hiding place for a probe that does not reproduce."""
+    project = _project(tmp_path)
+    _probes(project, [{"cmd": "python3 -c 'import sys; sys.exit(2)'", "result": "7 passed"}])
+
+    section = verify_pack._done_json_section(project, "TODO-0001", project / ".agentic")
+
+    assert section.status == "fail"
+    assert any("probe:" in line for line in section.lines)
+
+
+def test_a_shell_builtin_line_is_named_a_shell_line_not_prose(tmp_path):
+    """``cd x && pytest`` has no program as its first token, but it is a
+    shell line — calling it "not a command" would misname an honest entry."""
+    project = _project(tmp_path)
+    _done(
+        project,
+        [{"cmd": "cd . && python3 -c 'print(1)'", "result": "1 passed"}],
+    )
+
+    report = verify_pack.check_done_claims(project, "TODO-0001")
+
+    assert report.mismatches == []
+    assert report.skipped == {"shell": 1}

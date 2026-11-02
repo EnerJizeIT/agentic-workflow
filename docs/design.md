@@ -130,6 +130,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `unit_history.py` | Неключевая история юнита (CTX2): `forget_unit_history` снимает `CLOSER-<id>.json` и `CHECKLIST-<id>.json` на service-rollback, main-rollback и `restore_todo`; все перечисленные пути идут через один помощник |
 | `supervisor.py` | Supervisor prompts (`build_prompt`), signal wait, run-гейты |
 | `agent_stage.py` | Worker spawn (`opencode run`), `collect_handoff()` |
+| `done_owner.py` | A27: `DONE-<id>.json` принадлежит стадии, чей отчёт он описывает — снимок до стадии и возврат байтов автора после чужой перезаписи; пробы читателя живут в `PROBES-<id>.json` |
 | `session_store.py` | R6/R7 (CTX8–CTX9): файл пары `SESSION-<todo>-<stage>.json`, захват id из sqlite opencode по точному `title` и окну `time_created` (`directory` — тай-брейк) под бюджетом 1 с, решение reused/fresh по `engine.reuse_session` |
 | `phase.py` | SMO: `detect_phase`, `get_phase_prompt`, `advance_phase` |
 | `brief.py` | Данные brief-карточки (`data/*.yaml`: tool_map, scenarios, recovery) |

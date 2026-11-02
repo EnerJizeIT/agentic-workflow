@@ -22,6 +22,7 @@ from .signals import (
     expected_signal_prefixes,
     find_review_report,
     read_signal_for_todo,
+    short_id,
     stage_signal_paths,
 )
 from .supervisor import (
@@ -150,27 +151,44 @@ def run_agent_stage(
     prefixes = expected_signal_prefixes(kind)
     outbox = paths.outbox(project_dir)
     stale_progress = outbox / f"PROGRESS-{todo_id}.md"
-    # TODO-0235 (M3d, architect-review): this function removes two sets of
-    # files — the stale signals and the stale PROGRESS note. Both are
-    # preflighted as ONE set before the FIRST unlink: a symlinked surface or
-    # leaf must refuse with nothing consumed, not after the signals are gone.
+    # TODO-0235 (M3d, architect-review): this function removes three sets of
+    # files — the stale signals, the stale PROGRESS note and the previous
+    # reader's PROBES. All are preflighted as ONE set before the FIRST
+    # unlink: a symlinked surface or leaf must refuse with nothing consumed,
+    # not after the signals are gone.
     managed_fs.require_posix("start agent stage")
     managed_root = managed_fs.agentic_root_for(outbox)
-    for leaf in (*stage_signal_paths(outbox, todo_id, *prefixes), stale_progress):
+    # A27: PROBES is this stage's claims file, the same way PROGRESS is this
+    # stage's notes — the previous reader's copy is archived and removed
+    # below, so the one found after the stage belongs to this stage.
+    stale_probes = (
+        outbox / f"PROBES-{todo_id}.json",
+        outbox / f"PROBES-{short_id(todo_id)}.json",
+    )
+    for leaf in (*stage_signal_paths(outbox, todo_id, *prefixes), stale_progress, *stale_probes):
         managed_fs.assert_no_symlink_escape(leaf, root=managed_root)
     # A2: the previous stage's reports are archived BEFORE the next worker
     # overwrites them. ``stage_signal_paths`` lists only the .ready wire, so
     # the reports (.md/.json, canonical or legacy short name) are found here;
     # the stale PROGRESS note is this stage's too.
+    # A27: PROBES is a stage report as well — without this a second reader
+    # stage would silently replace the first one's probes (the A2 rule).
     from .reports_archive import archive_report as _archive_report
     from .signals import find_signal_file as _find_signal
 
-    for prefix in prefixes:
+    for prefix in (*prefixes, "PROBES"):
         for ext in (".md", ".json"):
             report = _find_signal(outbox, prefix, todo_id, ext)
             if report is not None:
                 _archive_report(project_dir, report, logs_dir=logs_dir)
     _archive_report(project_dir, stale_progress, logs_dir=logs_dir)
+
+    # A27: the previous reader's probes are archived above; the live file
+    # must go, otherwise ``done_owner.restore`` sees "PROBES already here"
+    # and drops the facts this stage wrote over DONE.
+    for probe in stale_probes:
+        if probe.is_file():
+            probe.unlink()
 
     clean_stage_signals(outbox, todo_id, *prefixes)
 
@@ -181,6 +199,14 @@ def run_agent_stage(
     if stale_progress.exists():
         stale_progress.unlink()
         _log(logs_dir, f"DF5-5: cleaned stale PROGRESS-{todo_id}.md from previous stage")
+
+    # A27: DONE-<id>.json belongs to the stage whose report it describes.
+    # A reviewer/auditor must not erase the author's tests_run; the engine
+    # snapshots the file now and puts it back after the stage if a foreign
+    # stage overwrote it.
+    from . import done_owner
+
+    done_snapshot = done_owner.snapshot(outbox, todo_id)
 
     _log(logs_dir, f"Agent stage started: {role} ({kind}) for {todo_id}")
 
@@ -368,6 +394,15 @@ def run_agent_stage(
     # CARRY IMP1: the real return code of THIS attempt — the engine reads it
     # from the holder (the crash branch cannot see the local variable).
     log_holder["exit_code"] = str(result.returncode)
+    # A27: a foreign stage's overwrite of DONE.json is undone before the
+    # handoff reads it — the next role sees the author's facts, and the
+    # reader's claims stay in PROBES-<id>.json.
+    done_owner.restore(
+        outbox, todo_id,
+        stage_id=s_id,
+        snapshot_text=done_snapshot,
+        logs_dir=logs_dir,
+    )
     _log(logs_dir, f"Agent stage finished: {role} ({kind}) for {todo_id} (exit={result.returncode})")
     # TODO-0226: a silent death must leave a trace in the stage log — exit
     # code, signal, duration and class are the only evidence of why the

@@ -76,6 +76,7 @@ _UNIT_FILE_PREFIXES = (
     "BLOCKED",
     "REVIEW-",
     "PROGRESS",
+    "PROBES",
     "TEST-RESULTS",
     # CTX3 (audit round 3): BUDGET-<id>.{md,json} are this unit's artifacts
     # too — the list is hand-kept, so it is verified against the outbox->done

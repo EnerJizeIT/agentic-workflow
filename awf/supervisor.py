@@ -397,6 +397,8 @@ def build_prompt(
             f'   "gates": ["contracts", "ratchet"], "notes": "one line"}}\n'
             f"tests_run items are OBJECTS {{cmd, result}}, not strings — a file that\n"
             f"violates the schema (or is broken JSON) is skipped by the handoff.\n"
+            f"If you review or audit another stage's work, your own facts go to\n"
+            f"  .agentic/outbox/PROBES-{todo_id}.json — leave DONE-{todo_id}.json to its author.\n"
             f"Full format: docs/unit-contract.md.\n\n"
             f"## OUTPUT DISCIPLINE (dogfood-11: works with any model, any output limit)\n"
             f"Your reply has a limited token budget. Work in small pieces:\n"

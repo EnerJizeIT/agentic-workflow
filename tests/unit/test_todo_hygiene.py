@@ -295,6 +295,8 @@ class TestRetireTodo:
         (outbox / f"PROGRESS-{todo_id}.md").write_text("half done")
         (outbox / f"DONE-{todo_id}.md").write_text("worker claim")
         (outbox / f"DONE-{todo_id}.json").write_text("{}")
+        # A27: the reviewer/auditor's own claims file is the unit's artifact too.
+        (outbox / f"PROBES-{todo_id}.json").write_text("{}")
         (outbox / f"REVIEW-{todo_id}.md").write_text("rejected: too broad")
 
     def _write_state(self, project: Path, todo_id: str) -> None:
@@ -317,6 +319,7 @@ class TestRetireTodo:
         assert not (outbox / "PROGRESS-TODO-0035.md").exists()
         assert not (outbox / "DONE-TODO-0035.md").exists()
         assert not (outbox / "DONE-TODO-0035.json").exists()
+        assert not (outbox / "PROBES-TODO-0035.json").exists()
         assert not (outbox / "REVIEW-TODO-0035.md").exists()
         assert "TODO-0035" not in todos.list_active_todos(inbox, outbox)
         # archive shape: restore-ready TODO.md + the history files
@@ -327,6 +330,7 @@ class TestRetireTodo:
         assert (done / "PROGRESS-TODO-0035.md").is_file()
         assert (done / "DONE-TODO-0035.md").is_file()
         assert (done / "DONE-TODO-0035.json").is_file()
+        assert (done / "PROBES-TODO-0035.json").is_file()
         assert (done / "REVIEW-TODO-0035.md").is_file()
         assert (done / "REVIEW-REJECTED-TODO-0035.md").is_file()
         assert not (outbox / "REVIEW-REJECTED-TODO-0035.md").exists()

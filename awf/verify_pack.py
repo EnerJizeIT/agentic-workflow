@@ -94,7 +94,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import command_parse, paths
+from . import command_parse, done_owner, paths
 from ._errors import AwfApiError
 from ._log import log as _log
 from ._proc import run_tree
@@ -1171,6 +1171,10 @@ _SKIP_WORDS: dict[str, tuple[str, str]] = {
     "malformed": ("malformed entry", "malformed entries"),
     "empty": ("entry without a command", "entries without a command"),
     "budget": ("claim beyond the time budget", "claims beyond the time budget"),
+    # A27: a line of prose ("reused canonical suite artifact …") is not a
+    # command. Rerunning it produced FileNotFoundError and a false
+    # contradiction; it belongs in the skipped half, named as what it is.
+    "prose": ("line that is not a command", "lines that are not commands"),
 }
 
 
@@ -1192,12 +1196,19 @@ class ClaimsReport:
     unverified: list[str] = field(default_factory=list)
     #: reason → count, in the order the check names them.
     skipped: dict[str, int] = field(default_factory=dict)
+    # A27: auditor probes live in PROBES-<id>.json and are counted apart from
+    # the author's DONE claims — a reader must see which file said what.
+    probe_mismatches: list[str] = field(default_factory=list)
+    probes_checked: int = 0
+    probes_unverified: list[str] = field(default_factory=list)
+    probes_skipped: dict[str, int] = field(default_factory=dict)
 
-    def skip(self, reason: str) -> None:
+    def skip(self, reason: str, *, probes: bool = False) -> None:
         """Count one unchecked claim; ``reason`` must have a wording above."""
         if reason not in _SKIP_WORDS:
             raise KeyError(f"no wording for the skip reason {reason!r}")
-        self.skipped[reason] = self.skipped.get(reason, 0) + 1
+        bucket = self.probes_skipped if probes else self.skipped
+        bucket[reason] = bucket.get(reason, 0) + 1
 
     def summary(self) -> str:
         parts = [f"checked {self.checked}"]
@@ -1214,9 +1225,40 @@ class ClaimsReport:
                                   "claims not verified in time"))
         return "claims — " + "; ".join(parts)
 
+    def probes_summary(self) -> str:
+        parts = [f"checked {self.probes_checked}"]
+        if self.probes_skipped:
+            parts.append(
+                "skipped: "
+                + ", ".join(
+                    _counted(count, *_SKIP_WORDS[reason])
+                    for reason, count in self.probes_skipped.items()
+                )
+            )
+        if self.probes_unverified:
+            parts.append(
+                _counted(
+                    len(self.probes_unverified),
+                    "probe not verified in time",
+                    "probes not verified in time",
+                )
+            )
+        return "auditor probes — " + "; ".join(parts)
+
+    #: True when the unit carries a ``PROBES-<id>.json`` at all — the report
+    #: names the file even when it holds no rerun-able claim.
+    probes_present: bool = False
+
+    def has_probes(self) -> bool:
+        """Did the check see a PROBES file at all?"""
+        return self.probes_present
+
     def lines(self) -> list[str]:
         out = [f"A8: {self.summary()}"]
         out.extend(f"  - {line}" for line in self.unverified)
+        if self.has_probes():
+            out.append(f"A8: {self.probes_summary()}")
+            out.extend(f"  - {line}" for line in self.probes_unverified)
         return out
 
 
@@ -1245,6 +1287,10 @@ def check_done_claims(
 ) -> ClaimsReport:
     """A8: rerun the commands ``DONE-<todo>.json`` says the worker ran.
 
+    A27: ``PROBES-<todo>.json`` (the reviewer/auditor's own file) is checked
+    the same way and counted apart — the author's facts are never read from
+    a file another stage overwrote.
+
     Returns a report: one line per CONTRADICTION (a claimed green whose
     command now fails), the number of claims rerun, the ones that outlived
     the budget (``unverified`` — AUD4: not a contradiction) and the ones
@@ -1255,60 +1301,122 @@ def check_done_claims(
     that does not pass. Everything a worker asserts beyond that stays a
     declaration — verify-pack renders it as such.
     """
-    from . import paths
-    from .unit_contract import parse_done_json
-
     report = ClaimsReport()
     project = Path(project_dir).resolve()
-    path = paths.outbox(project) / f"DONE-{todo_id}.json"
-    try:
-        data = parse_done_json(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError):
-        return report
-    if not isinstance(data, dict):
-        return report
+    outbox = paths.outbox(project)
 
-    entries = data.get("tests_run") or []
-    if not isinstance(entries, list):
+    done_path = done_owner.done_path(outbox, todo_id)
+    probes_path = done_owner.probes_path(outbox, todo_id)
+    entries = _claims_entries(done_path)
+    probes = _claims_entries(probes_path)
+    report.probes_present = probes is not None
+    if entries is None and probes is None:
         return report
-    beyond = max(0, len(entries) - limit)
-    for _ in range(beyond):
-        report.skip("limit")
 
     # AUD4 (owner decision): the total budget belongs to the check, not to
     # the worker. A command that no longer fits is not run at all — the
     # report says so instead of spending the last seconds on a doomed try.
+    # A27: both files share one deadline — the check is still one check.
     deadline = time.monotonic() + total_timeout
+    if entries is not None:
+        _rerun_claims(
+            entries, project, report,
+            timeout=timeout, limit=limit, deadline=deadline, probes=False,
+        )
+    if probes is not None:
+        _rerun_claims(
+            probes, project, report,
+            timeout=timeout, limit=limit, deadline=deadline, probes=True,
+        )
+    return report
+
+
+def _claims_entries(path: Path | None) -> list | None:
+    """``tests_run`` of one claims file, or None when the file is unusable."""
+    if path is None:
+        return None
+    try:
+        data = parse_done_json(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    entries = data.get("tests_run") or []
+    if not isinstance(entries, list):
+        return None
+    return entries
+
+
+def _is_command(token: str, project: Path) -> bool:
+    """Is the first token a program, or a word from a sentence?
+
+    A path must exist; a bare name must be on PATH. A27: anything else is
+    prose. Running it raised FileNotFoundError and the report called an
+    honest line a lie.
+    """
+    looks_like_path = "/" in token or token.startswith((".", "~"))
+    if looks_like_path:
+        candidate = Path(token).expanduser()
+        return (candidate if candidate.is_absolute() else project / candidate).exists()
+    return shutil.which(token) is not None
+
+
+def _rerun_claims(
+    entries: list,
+    project: Path,
+    report: ClaimsReport,
+    *,
+    timeout: int,
+    limit: int,
+    deadline: float,
+    probes: bool,
+) -> None:
+    """Rerun one claims file into ``report`` (its own counters when probes)."""
+    beyond = max(0, len(entries) - limit)
+    for _ in range(beyond):
+        report.skip("limit", probes=probes)
 
     for entry in entries[:limit]:
         if not isinstance(entry, dict):
-            report.skip("malformed")
+            report.skip("malformed", probes=probes)
             continue
         cmd = str(entry.get("cmd") or "").strip()
         claimed = _claimed_green(str(entry.get("result") or ""))
         if not cmd:
-            report.skip("empty")
+            report.skip("empty", probes=probes)
             continue
         if claimed is not True:
-            report.skip("claim")
+            report.skip("claim", probes=probes)
             continue
         try:
             argv = shlex.split(cmd)
         except ValueError:
-            report.skip("malformed")
+            report.skip("malformed", probes=probes)
             continue
         if not argv:
-            report.skip("empty")
+            report.skip("empty", probes=probes)
+            continue
+        # A27: a leading assignment (``FOO=1 pytest``) is a shell line — the
+        # assignment is the shell's syntax, not a program. Skipping it as
+        # prose would misname it; rerunning the raw argv fails with
+        # FileNotFoundError and looks like a contradiction.
+        if command_parse.is_assignment(argv[0]):
+            report.skip("shell", probes=probes)
             continue
         # argv only: a bare operator TOKEN means a shell line. A `;` inside
         # quotes (`python3 -c 'import sys; sys.exit(1)'`) is one argument,
         # not a pipeline — the split already removed the quotes.
         if any(token in _SHELL_OPERATORS for token in argv):
-            report.skip("shell")
+            report.skip("shell", probes=probes)
+            continue
+        # A27: prose is not a command. A line like "reused canonical suite
+        # artifact …" names a fact, not an argv — it is skipped, not rerun.
+        if not _is_command(argv[0], project):
+            report.skip("prose", probes=probes)
             continue
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            report.skip("budget")
+            report.skip("budget", probes=probes)
             continue
         # The smaller of the two: one claim may not eat the whole check.
         budget = min(timeout, remaining)
@@ -1325,33 +1433,81 @@ def check_done_claims(
         except subprocess.TimeoutExpired:
             # AUD4: the budget is the check's, not the worker's — a claim
             # that did not fit says so and stays out of the failure count.
-            report.unverified.append(
-                f"not verified in {budget:g}s: {cmd}"
-            )
+            if probes:
+                report.probes_unverified.append(f"not verified in {budget:g}s: {cmd}")
+            else:
+                report.unverified.append(f"not verified in {budget:g}s: {cmd}")
             continue
         except (OSError, subprocess.SubprocessError) as e:
-            report.mismatches.append(
+            _record_mismatch(
+                report, probes,
                 f"claimed {entry.get('result')!r} but the command could not "
-                f"run ({type(e).__name__}: {e}): {cmd}"
+                f"run ({type(e).__name__}: {e}): {cmd}",
             )
             continue
-        report.checked += 1
+        if probes:
+            report.probes_checked += 1
+        else:
+            report.checked += 1
         if rc != 0:
             tail = (done.stderr or done.stdout or "").strip().splitlines()
             extra = f" — {tail[-1][:160]}" if tail else ""
-            report.mismatches.append(
-                f"claimed {entry.get('result')!r} but rc={rc}: {cmd}{extra}"
+            _record_mismatch(
+                report, probes,
+                f"claimed {entry.get('result')!r} but rc={rc}: {cmd}{extra}",
             )
-    return report
+
+
+def _record_mismatch(report: ClaimsReport, probes: bool, line: str) -> None:
+    if probes:
+        report.probe_mismatches.append(line)
+    else:
+        report.mismatches.append(line)
+
+
+def _claims_lines(report: ClaimsReport) -> tuple[list[str], bool]:
+    """The A8 part of the done_json section, and whether a probe failed.
+
+    One assembly for both callers — a unit with an author's DONE and an
+    audit-only unit with PROBES alone — so the same facts cannot be
+    worded two ways in one pack.
+    """
+    lines: list[str] = []
+    if (
+        report.mismatches or report.checked or report.skipped
+        or report.unverified or report.has_probes()
+    ):
+        lines.append("")
+        lines.extend(report.lines())
+    if report.mismatches or report.probe_mismatches:
+        lines.append("A8: the claims below do not survive a rerun:")
+        lines.extend(f"  - {line}" for line in report.mismatches)
+        lines.extend(f"  - probe: {line}" for line in report.probe_mismatches)
+    return lines, bool(report.probe_mismatches)
 
 
 def _done_json_section(project: Path, todo_id: str, logs_dir: Path) -> Section:
-    path = paths.outbox(project) / f"DONE-{todo_id}.json"
-    if not path.is_file():
+    path = done_owner.done_path(paths.outbox(project), todo_id)
+    if path is None:
+        # A27: an audit-only unit has no author DONE, but its PROBES still
+        # hold claims — those are checked, and named, without inventing a
+        # DONE section.
+        report = check_done_claims(project, todo_id)
+        lines = [f"skipped — no DONE-{todo_id}.json in outbox"]
+        claims, probe_failed = _claims_lines(report)
+        lines.extend(claims)
+        if probe_failed:
+            return Section(
+                name="done_json",
+                status="fail",
+                lines=lines,
+                measured=True,
+                detail="an auditor probe does not reproduce",
+            )
         return Section(
             name="done_json",
             status="skipped",
-            lines=[f"skipped — no DONE-{todo_id}.json in outbox"],
+            lines=lines,
         )
     try:
         text = path.read_text(encoding="utf-8")
@@ -1374,12 +1530,9 @@ def _done_json_section(project: Path, todo_id: str, logs_dir: Path) -> Section:
     lines = ["executor data (declared by the implementer):"]
     lines.extend(render_done_json(data))
     report = check_done_claims(project, todo_id)
-    if report.mismatches or report.checked or report.skipped or report.unverified:
-        lines.append("")
-        lines.extend(report.lines())
-    if report.mismatches:
-        lines.append("A8: the claims below do not survive a rerun:")
-        lines.extend(f"  - {line}" for line in report.mismatches)
+    claims, _ = _claims_lines(report)
+    lines.extend(claims)
+    if report.mismatches or report.probe_mismatches:
         return Section(
             name="done_json",
             status="fail",

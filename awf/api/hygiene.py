@@ -669,6 +669,7 @@ def retire_todo(project_dir: Path, todo_id: str, reason: str) -> RetireTodoResul
     - ``inbox/TODO-<id>.ready``   → ``done/<id>/`` (kept, not deleted)
     - ``outbox/PROGRESS-<id>.*``  → ``done/<id>/``
     - ``outbox/DONE-<id>.{md,json}`` (NOT ``.ready``) → ``done/<id>/``
+    - ``outbox/PROBES-<id>.json`` → ``done/<id>/`` (A27 reader's claims)
     - ``outbox/REVIEW-<id>.*``    → ``done/<id>/``
 
     (canonical and legacy short id forms). Writes
@@ -773,6 +774,12 @@ def retire_todo(project_dir: Path, todo_id: str, reason: str) -> RetireTodoResul
                 p = outbox / f"DONE-{tid}{ext}"
                 if p.is_file():
                     candidates.append((p, p.name))
+            # A27: the reviewer/auditor's own claims file belongs to the
+            # unit the same way DONE does — archive_todo files it, and a
+            # closer that knows only DONE leaves it in the outbox.
+            p = outbox / f"PROBES-{tid}.json"
+            if p.is_file():
+                candidates.append((p, p.name))
             # A32: a worker's rejection report has two spellings in the tree
             # (``REVIEW-`` and ``REVIEW-REJECTED-``) — retire files both with
             # the unit, exactly like ``todos.archive_todo``. A closer that
