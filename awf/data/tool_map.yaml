@@ -1,188 +1,283 @@
 # Tool map for the `awf brief` card (RUN4 #1, TODO-0051).
 #
-# One group per situation. Every tool of the registry — MCP tools of
+# One group per situation family. Every tool of the registry — MCP tools of
 # agent_workflow_ui + CLI subcommands — must appear in EXACTLY ONE entry
-# (tests/unit/test_brief.py enforces both directions against the live
-# registry; see awf.brief.tool_registry / map_coverage).
+# (tests/unit/test_brief.py checks both directions against the live
+# registry, tests/unit/test_tool_map_situations.py checks the "exactly one";
+# see awf.brief.tool_registry / map_coverage).
+#
+# TODO-0347 (IMP4): the map is situational. An entry carries `situations`
+# — the situation codes (S0–S13, S1a, S11a, S11b) whose ≤5-tool row it
+# belongs to — and `inventory_only: true` when it stays in the full list
+# but is never printed in the advice row (AC20). A group does NOT list its
+# situations: awf.brief computes the union of its *selectable* entries, so
+# the two cannot drift apart and an inventory-only entry never puts a group
+# heading above an empty row; a group with no situation is not rendered by
+# the card (IMP5). The first tool of a situation row is its advice tool
+# (AC19); the selection lives in awf.brief.situational_tools.
 #
 # Entry fields:
 #   mcp:  MCP tool name (omit when the tool is CLI-only)
 #   cli:  CLI subcommand (omit when the tool is MCP-only)
 #   when: one short line — when to use it (keep it ≤5 words: the card
-#         has a 900-word budget; RUN6 #5 compressed the lines)
+#         has a 900-word budget; RUN6 #5 compressed the lines). It is also
+#         the `why` of a situational row, so it must never be empty (INV3).
+#   situations: situation codes this entry serves. On an `inventory_only`
+#         entry the list says which row it would serve but never enters
+#         (omit only for helpers, which serve no situation at all).
+#   inventory_only: true — full list only, never the advice row
 groups:
   - title: launch
     tools:
       - mcp: awf_start
         cli: start
+        situations: [S9, S1a, S11b]
         when: "start the active unit"
       - mcp: awf_continue
         cli: continue
+        situations: [S1, S2, S4, S5, S6]
         when: "resume dead pipeline (--ack)"
       - mcp: awf_retry_stage
+        situations: [S1]
         when: "retry the salvage stage"
       - mcp: awf_kill
         cli: kill
+        situations: [S1, S4, S5]
         when: "stop a stuck pipeline"
       - cli: supervise
+        situations: [S4]
         when: "restart a dead engine"
   - title: check
     tools:
       - mcp: awf_status
         cli: status
+        situations: [S1, S2, S3, S4, S5, S6, S7, S9, S11]
         when: "state: units, pipeline"
       - mcp: awf_commit_workflow
         cli: commit-workflow
+        situations: [S1a]
         when: "workflow files → git"
       - mcp: awf_wait_for_event
+        situations: [S7]
         when: "block until an event"
       - mcp: awf_pipelines
         cli: pipelines
+        situations: [S6]
         when: "list pipelines + active"
       - mcp: awf_check_model_config
+        situations: [S4]
+        inventory_only: true
         when: "models vs providers"
       - mcp: awf_doctor
         cli: doctor
+        situations: [S4]
         when: "preflight: versions, models, dead keys"
       - cli: dashboard
+        situations: [S7]
+        inventory_only: true
         when: "dashboard URL; --open opens it"
   - title: run
     tools:
       - mcp: awf_run_start
+        situations: [S11b]
         when: "queue, budget, stop flags"
       - mcp: awf_run_status
+        situations: [S7, S11a, S12]
         when: "position, budget, stop"
       - mcp: awf_run_next
+        situations: [S11a, S12]
         when: "launch the next item"
       - mcp: awf_run_note
+        situations: [S7]
         when: "live status line"
       - mcp: awf_run_revise
+        situations: [S11, S11a]
         when: "revise/retry queue"
       - mcp: awf_run_finish
+        situations: [S12]
         when: "close the run"
       - mcp: awf_run_service_start
+        situations: [S12]
+        inventory_only: true
         when: "create role mid-run"
       - mcp: awf_run_service_status
+        situations: [S12]
+        inventory_only: true
         when: "service + main snapshot"
       - mcp: awf_run_service_finish
+        situations: [S12]
+        inventory_only: true
         when: "close service run"
       - mcp: awf_run_service_approve
+        situations: [S12]
+        inventory_only: true
         when: "approve service unit"
       - mcp: awf_approve
         cli: approve
+        situations: [S8, S12]
         when: "approve (evidence)"
       - mcp: awf_reject
+        situations: [S8]
         when: "reject (REVIEW signal)"
   - title: hygiene
     tools:
       - mcp: awf_unblock
         cli: unblock
+        situations: [S2, S10]
         when: "clear stale closures"
       - mcp: awf_todo_remove
         cli: todo-remove
+        situations: [S10]
         when: "remove never-started unit"
       - mcp: awf_todo_retire
         cli: todo-retire
+        situations: [S3, S11, S11a, S11b]
         when: "retire rejected unit"
       - mcp: awf_todo_update
         cli: todo-update
+        situations: [S3]
         when: "reword not-started unit"
       - mcp: awf_review_append
         cli: review-append
+        situations: [S2, S11, S11a, S11b]
         when: "append REVIEW fix"
       - mcp: awf_blocked_draft
         cli: blocked-draft
+        situations: [S2]
         when: "draft from BLOCKED"
       - mcp: awf_restore
         cli: restore
+        situations: [S10]
         when: "restore archived unit"
       - mcp: awf_reset
         cli: reset
+        situations: [S6]
         when: "clean runtime (confirm first)"
   - title: forms
     tools:
       - mcp: awf_open_project_setup_form
+        situations: [S0]
         when: "setup: pipeline + team"
       - mcp: awf_open_increment_planning_form
+        situations: [S12]
         when: "owner picks decomposition"
       - mcp: open_form
+        situations: [S13]
         when: "open a form"
       - mcp: read_submit
+        situations: [S13]
         when: "was the form submitted?"
       - mcp: cancel_form
+        situations: [S13]
         when: "cancel a pending form"
       - mcp: list_pending_forms
+        situations: [S13]
         when: "which forms are open"
       - mcp: list_templates
+        situations: [S13]
+        inventory_only: true
         when: "which form templates exist"
   - title: metrics
     tools:
       - mcp: awf_metrics
         cli: metrics
+        situations: [S3]
+        inventory_only: true
         when: "token/cost report"
       - mcp: awf_feedback
         cli: feedback
+        situations: [S2]
+        inventory_only: true
         when: "friction → owner report"
   - title: context
     tools:
       - mcp: awf_brief
         cli: brief
+        situations: [S9]
+        inventory_only: true
         when: "this card"
       - mcp: awf_dispatch_todo
         cli: dispatch
+        situations: [S3, S9, S10, S11b]
         when: "unit + baseline + signal"
       - mcp: awf_write_pipeline
         cli: pipeline-write
+        situations: [S0]
+        inventory_only: true
         when: "write a named pipeline"
       - mcp: awf_init
         cli: init
+        situations: [S0]
         when: "create the .agentic/ skeleton"
       - mcp: awf_set_goal
+        situations: [S0]
         when: "store the session goal"
       - mcp: awf_confirm_normalized
+        situations: [S0]
         when: "confirm role normalization"
       - mcp: awf_add_role
         cli: add-role
+        situations: [S0]
         when: "create a role file"
       - mcp: awf_analyze_roles
         cli: analyze-roles
+        situations: [S10]
+        inventory_only: true
         when: "role zone overlaps"
       - mcp: awf_baseline
         cli: baseline
+        situations: [S1a, S9]
         when: "snapshot sha + tests"
       - mcp: awf_rollback
         cli: rollback
+        situations: [S1a]
         when: "reset to baseline sha"
       - mcp: awf_prove_red
         cli: prove-red
+        situations: [S1a]
         when: "prove red at baseline"
       - mcp: awf_verify_pack
         cli: verify-pack
+        situations: [S8]
         when: "deterministic verify report"
       - mcp: awf_report
         cli: report
+        situations: [S1, S5, S6, S8]
         when: "statuses, diff, test log"
       - mcp: awf_open_pipeline_dashboard
+        situations: [S7]
         when: "open live dashboard"
       - mcp: awf_tree_sha
         cli: tree-sha
+        situations: [S8, S9]
         when: "tree fingerprint (verified-sha)"
       - cli: claim-changes
+        situations: [S8]
+        inventory_only: true
         when: "claim code"
       - cli: mutations
+        situations: [S8]
+        inventory_only: true
         when: "mutation smoke"
       - cli: todo-draft
+        situations: [S10]
+        inventory_only: true
         when: "skeleton from AUDIT-INDEX.md"
   - title: helpers
     hidden: true
     tools:
       - cli: spec
+        inventory_only: true
         when: "check package"
       - cli: spec-check
+        inventory_only: true
         when: "same spelling"
       - cli: suite-command
+        inventory_only: true
         when: "canonical suite"
       - cli: config-get
+        inventory_only: true
         when: "read one config.yaml value"
       - cli: checklist
+        inventory_only: true
         when: "DoD: show/check/apply/hash"

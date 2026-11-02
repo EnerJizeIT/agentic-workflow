@@ -251,17 +251,14 @@ async def awf_status(project_dir: str | None = None) -> dict[str, Any]:
         Dict with: project_name, active_todos (list of {todo_id, ack?,
         progress?}), done_count, blocked_count, blocked_ids,
         conflict_warning (str or None), suggestion (str or None),
-        next_action (the supervisor's next step derived from the state),
+        current_todo (the live unit id or None), state_updated_at
+        (the live state's ISO timestamp or None),
+        next_action (the supervisor's next step — the same sentence
+        awf_brief renders, derived by one owner),
         office (list of {role, model, source} — the team's roles with
         their model and where it comes from: "config" / "md" / "none").
     """
-    result = await _exec(api.get_status, project_dir=_resolve_project_dir(project_dir))
-    # RUN6 #5 (TODO-0060): every answer leads to the next step.
-    if isinstance(result, dict) and result.get("status") == "ok" and not result.get("next_action"):
-        from awf.brief import next_action_from_status
-
-        result["next_action"] = next_action_from_status(result)
-    return result
+    return await _exec(api.get_status, project_dir=_resolve_project_dir(project_dir))
 
 
 # ─── Pipeline execution ─────────────────────────────────────────────────
