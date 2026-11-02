@@ -1,4 +1,4 @@
-"""Smoke test: server starts and registers all 5 tools.
+"""Smoke test: server starts and registers the names the registry declares.
 
 Requires the ``mcp`` package (provided by opencode at runtime). Skipped
 in CI environments where ``mcp`` is not installed.
@@ -23,6 +23,7 @@ from agent_workflow_ui.state import (
     set_http_port,
     set_jinja_env,
 )
+from agent_workflow_ui.tools import registry
 
 import agent_workflow_ui as _awui
 
@@ -73,98 +74,22 @@ def test_server_creates():
 
 
 def test_all_tools_registered():
-    """All 55 tools are registered with correct names (5 UI + 50 awf).
+    """The server registers exactly the names the registry declares.
 
-    AUD08-08: this number is a fact-check, not a label — if it drifts from
-    ``server.py``, ``tool_names == expected`` below fails first. Update both
-    together when a tool is added.
+    The frozen 54-name list (and the count 49 awf + 5 UI) is owned by
+    ``tests/unit/test_mcp_names.py``; this test only checks the seam
+    between ``registry.TOOLS`` and ``create_server().list_tools()`` so the
+    same list is not copied a second time here.
     """
     server = create_server()
     tools = asyncio.run(server.list_tools())
 
     tool_names = {t.name for t in tools}
-    expected = {
-        # UI tools (form lifecycle + templates)
-        "open_form",
-        "read_submit",
-        "cancel_form",
-        "list_pending_forms",
-        "list_templates",
-        # awf workflow tools (MCP-3)
-        "awf_init",
-        "awf_status",
-        "awf_start",
-        "awf_continue",
-        "awf_retry_stage",
-        "awf_baseline",
-        "awf_rollback",
-        "awf_approve",
-        "awf_reject",
-        "awf_report",
-        "awf_reset",
-        "awf_add_role",
-        "awf_analyze_roles",
-        # Dogfood-2 automation
-        "awf_dispatch_todo",
-        "awf_load_supervisor_context",
-        # Dogfood-5: shortcut tools
-        "awf_open_project_setup_form",
-        # Dogfood-7: increment planning
-        "awf_open_increment_planning_form",
-        # DASH Phase 2: pipeline dashboard
-        "awf_open_pipeline_dashboard",
-        # DASH Phase 3: supervisor wake-up
-        "awf_wait_for_event",
-        # Model configuration validation (dogfood-10)
-        "awf_check_model_config",
-        "awf_kill",
-        # SMO: phase-aware supervisor tools
-        "awf_current_step",
-        "awf_set_goal",
-        "awf_confirm_normalized",
-        # SPEC A-run: autonomous run (забег)
-        "awf_run_start",
-        "awf_run_status",
-        "awf_run_next",
-        "awf_run_finish",
-        "awf_run_note",
-        # ORCH M3.4: queue revision (preview + apply by idempotency key)
-        "awf_run_revise",
-        "awf_restore",
-        # RUN3 #4/#5: state hygiene (stale closures, never-started removal)
-        "awf_unblock",
-        "awf_todo_remove",
-        # RUN5 #2: retire a rejected/abandoned TODO that stays "active"
-        "awf_todo_retire",
-        # RUN6 #4: reword a not-started TODO + tree fingerprint for approve
-        "awf_todo_update",
-        "awf_review_append",
-        "awf_blocked_draft",
-        "awf_tree_sha",
-        # U4: machine proof that tests are red on the baseline sha
-        "awf_prove_red",
-        # U5: one deterministic verify report (GATES-<todo>.md)
-        "awf_verify_pack",
-        # U8: token/cost metrics of the work program (report to desktop)
-        "awf_metrics",
-        # RUN3 #1: named pipelines (create + list)
-        "awf_write_pipeline",
-        "awf_pipelines",
-        # RUN4 #2: feedback contour (report to owner)
-        "awf_feedback",
-        # RUN4 #1: supervisor onboarding/recovery card
-        "awf_brief",
-        # ORCH M5.2: service run (role creation during the main run)
-        "awf_run_service_start",
-        "awf_run_service_status",
-        "awf_run_service_finish",
-        "awf_run_service_approve",
-        # REPORTS26 F6: workflow definitions commit (TODO-0166)
-        "awf_commit_workflow",
-        # OPS IMP5 (R5): pre-launch diagnosis (TODO-0296)
-        "awf_doctor",
-    }
-    assert tool_names == expected, f"Missing tools: {expected - tool_names}"
+    expected = set(registry.tool_names())
+    assert tool_names == expected, (
+        f"Missing tools: {expected - tool_names}; "
+        f"unexpected tools: {tool_names - expected}"
+    )
 
 
 def test_open_form_stub_returns_form_id(plugin_initialized):

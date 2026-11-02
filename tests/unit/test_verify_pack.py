@@ -110,6 +110,41 @@ class TestVerdicts:
         assert "nothing-measured" in _report(repo)
 
 
+# ─── IMP3: the reader and the writer agree on a real pack ───────────────
+
+
+class TestGatesFactsContract:
+    """T19: ``read_gates_facts`` on a pack this module actually produced.
+
+    The unit fixtures build reports through ``_render_report``; this one runs
+    the whole pack, so the reader is checked against the writer end to end —
+    the same verdict, sections, details, denominator and tree marker.
+    """
+
+    def test_reader_matches_a_real_pack(self, tmp_path: Path) -> None:
+        from awf import git_utils
+
+        repo = _proj(tmp_path, contract='---\nverify:\n  - "false"\n---\n# TODO\n')
+        res = _run(repo)
+        assert res.verdict == "failed"
+
+        facts = vp.read_gates_facts(res.report_path)
+
+        assert facts is not None
+        assert facts["verdict"] == res.verdict
+        assert facts["exit_code"] == res.exit_code
+        assert facts["measured"] == res.measured
+        assert facts["sections"] == res.sections
+        assert facts["details"] == res.details
+        assert facts["failed_sections"] == ["contract_tests"]
+        assert facts["first_failure"].startswith("- `false`: FAIL (rc=1)")
+        assert facts["generated"] != ""
+
+        tree = git_utils.tree_fingerprint(repo)
+        assert facts["tree_sha"] == tree  # written on THIS tree
+        assert vp.read_gates_facts(res.report_path, tree_sha=tree)["stale"] is False
+
+
 # ─── contract verify: commands ───────────────────────────────────────────
 
 

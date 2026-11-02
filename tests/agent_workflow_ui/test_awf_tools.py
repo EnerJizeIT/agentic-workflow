@@ -1130,7 +1130,6 @@ class TestWaitForEventClamp:
             return _R()
 
         monkeypatch.setattr(api, "wait_for_event", fake_wait)
-        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: False)
 
         result = asyncio.run(
             awf.awf_wait_for_event(project_dir="/tmp", timeout=9999, actionable_only=True)
@@ -1154,7 +1153,6 @@ class TestWaitForEventClamp:
             return _R()
 
         monkeypatch.setattr(api, "wait_for_event", fake_wait)
-        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: False)
 
         result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=55))
 
@@ -1162,12 +1160,16 @@ class TestWaitForEventClamp:
         assert "timeout_clamped" not in result
 
     @staticmethod
-    def _fake_wait_with(event_type: str):
+    def _fake_wait_with(event_type: str, run_active: bool = False):
+        # IMP6 (TODO-0344): the mode travels IN the API answer
+        # (``run_active``); the tool no longer probes ``api.run_is_active``
+        # beside it. The stub must carry the field like the real result.
         def fake_wait(project_dir, *, timeout, actionable_only=False):
             class _R:
                 def as_dict(self):
                     return {"event_type": event_type, "message": "x",
-                            "state_snapshot": {}, "suggested_timeout": 120}
+                            "state_snapshot": {}, "suggested_timeout": 120,
+                            "run_active": run_active}
 
             return _R()
 
@@ -1177,7 +1179,6 @@ class TestWaitForEventClamp:
         """AUD08-01 regression: a verify event must get the approve
         instruction, not the stuck 'timeout' one (dataclass vs dict bug)."""
         monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("verify"))
-        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: False)
 
         result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
 
@@ -1189,7 +1190,6 @@ class TestWaitForEventClamp:
         """AUD08-01 regression: a blocked event must get the unblock
         instruction, not the stuck 'timeout' one."""
         monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("blocked"))
-        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: False)
 
         result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
 
@@ -1200,8 +1200,7 @@ class TestWaitForEventClamp:
     def test_done_event_gets_run_next_next_action(self, monkeypatch):
         """RUN6 #1: a done event inside a run must carry the exact next
         command — awf_run_next (the owner had to read git log instead)."""
-        monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("done"))
-        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: True)
+        monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("done", run_active=True))
 
         result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
 
@@ -1213,8 +1212,9 @@ class TestWaitForEventClamp:
         """RUN10 #1 (bug 2026-09-24): a timeout INSIDE an active run must
         offer the next loop call — never 'Wait for user' or 'DO NOT call
         again' (an agent following those literally stops the run)."""
-        monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("timeout"))
-        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: True)
+        monkeypatch.setattr(
+            api, "wait_for_event", self._fake_wait_with("timeout", run_active=True)
+        )
 
         result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=30))
 
@@ -1228,18 +1228,31 @@ class TestWaitForEventClamp:
         """RUN10 #1 hard rule: outside a run the reactive wording is
         UNCHANGED."""
         monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("timeout"))
-        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: False)
 
         result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=30))
 
         assert "DO NOT call awf_wait_for_event again. Wait for user." in result["next_action"]
         assert "Continue the run loop" not in result["next_action"]
 
+    def test_answer_field_is_the_only_mode_source(self, monkeypatch):
+        """IMP6 (TODO-0344): the advice follows the answer's ``run_active``.
+
+        A second probe beside the field would let the body say
+        ``run_active: false`` while the advice goes the run way (the run
+        closed between the two reads) — this pins the one source.
+        """
+        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: True)
+        monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("timeout"))
+
+        result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=30))
+
+        assert result["run_active"] is False
+        assert "Continue the run loop" not in result["next_action"]
+
     def test_done_event_gets_dispatch_next_action(self, monkeypatch):
         """RUN6 #1: a done event outside a run (single start) must lead to
         awf_dispatch_todo, not awf_run_next."""
         monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("done"))
-        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: False)
 
         result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
 
@@ -1258,12 +1271,11 @@ class TestWaitForEventClamp:
                 def as_dict(self):
                     return {"event_type": "engine_dead", "message": "engine is dead",
                             "state_snapshot": {}, "suggested_timeout": 60,
-                            "next_action": advice}
+                            "run_active": True, "next_action": advice}
 
             return _R()
 
         monkeypatch.setattr(api, "wait_for_event", fake_wait)
-        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: True)
 
         result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
 
@@ -1274,8 +1286,9 @@ class TestWaitForEventClamp:
     def test_engine_dead_without_api_advice_falls_back_to_resume(self, monkeypatch):
         """F9 fallback: an engine_dead result with no next_action still must
         not advise waiting — the table names awf_continue."""
-        monkeypatch.setattr(api, "wait_for_event", self._fake_wait_with("engine_dead"))
-        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: True)
+        monkeypatch.setattr(
+            api, "wait_for_event", self._fake_wait_with("engine_dead", run_active=True)
+        )
 
         result = asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=10))
 
@@ -1295,14 +1308,12 @@ class TestWaitForEventCapNote:
             class _R:
                 def as_dict(self):
                     return {"event_type": event_type, "message": "x",
-                            "state_snapshot": {}, "suggested_timeout": 45}
+                            "state_snapshot": {}, "suggested_timeout": 45,
+                            "run_active": run_active}
 
             return _R()
 
         monkeypatch.setattr(api, "wait_for_event", fake_wait)
-        monkeypatch.setattr(
-            api, "run_is_active", lambda *a, **kw: run_active
-        )
         return asyncio.run(awf.awf_wait_for_event(project_dir="/tmp", timeout=timeout))
 
     def test_next_action_default_cap_names_tool_setting(self, monkeypatch):
@@ -1373,12 +1384,11 @@ class TestWaitForEventCapNote:
             class _R:
                 def as_dict(self):
                     return {"event_type": "timeout", "message": "x",
-                            "state_snapshot": {}}
+                            "state_snapshot": {}, "run_active": True}
 
             return _R()
 
         monkeypatch.setattr(api, "wait_for_event", fake_wait)
-        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: True)
 
         result = asyncio.run(
             awf.awf_wait_for_event(project_dir="/tmp", timeout=10, actionable_only=True)
@@ -1405,7 +1415,6 @@ class TestWaitForEventCapNote:
             return _R()
 
         monkeypatch.setattr(api, "wait_for_event", fake_wait)
-        monkeypatch.setattr(api, "run_is_active", lambda *a, **kw: True)
 
         result = asyncio.run(
             awf.awf_wait_for_event(project_dir=str(tmp_path), timeout=10)
@@ -2059,10 +2068,11 @@ class TestAwfTodoRetire:
         )
 
 
-class TestCurrentStepLiveProject:
-    """RUN3-7 (TODO-0049): awf_current_step distinguishes a NEW project
+class TestPhaseLiveProject:
+    """RUN3-7 (TODO-0049): the phase read distinguishes a NEW project
     (setup chain, phase 'goal') from a LIVE one (configured + completed
-    work → working phase 'run'), without changing the response shape."""
+    work → working phase 'run'). Same behaviour the removed phase
+    wrapper exposed; ``awf.phase`` is the owner."""
 
     def _make_live(self, project: Path) -> None:
         """Pipeline with a worker stage + one archived TODO."""
@@ -2079,27 +2089,23 @@ class TestCurrentStepLiveProject:
         done.mkdir(parents=True, exist_ok=True)
         (done / "TODO.md").write_text("# Task\n", encoding="utf-8")
 
-    def test_live_project_no_goal_returns_run(self, mcp_project):
-        self._make_live(mcp_project)
-        result = run(awf.awf_current_step(project_dir=str(mcp_project)))
-        assert result["status"] == "ok"
-        assert result["phase"] == "run"
-        assert result["goal"] is None
-        # Response shape unchanged: exactly these keys.
-        assert set(result) == {"status", "phase", "prompt", "goal"}
-        # The one explanatory line for a live project without a stored goal.
-        assert "setup chain" in result["prompt"]
+    def test_live_project_phase_is_run(self, mcp_project):
+        from awf import phase as phase_mod
 
-    def test_new_project_no_goal_returns_goal(self, mcp_project):
-        """No pipeline, empty done/ → the setup chain as before. The
-        init-time config (models: {supervisor: stub}) must NOT count as
-        'configured with work' on its own."""
-        result = run(awf.awf_current_step(project_dir=str(mcp_project)))
-        assert result["status"] == "ok"
-        assert result["phase"] == "goal"
-        assert result["goal"] is None
-        assert set(result) == {"status", "phase", "prompt", "goal"}
-        assert "setup chain" not in result["prompt"]
+        self._make_live(mcp_project)
+        detected = phase_mod.detect_phase(mcp_project)
+        assert detected == "run"
+        prompt = phase_mod.get_phase_prompt(detected, mcp_project)
+        assert "setup chain" in prompt
+
+    def test_new_project_phase_is_goal(self, mcp_project):
+        """No pipeline, empty done/ → the setup chain."""
+        from awf import phase as phase_mod
+
+        detected = phase_mod.detect_phase(mcp_project)
+        assert detected == "goal"
+        prompt = phase_mod.get_phase_prompt(detected, mcp_project)
+        assert "setup chain" not in prompt
 
 
 class TestAwfTodoUpdate:

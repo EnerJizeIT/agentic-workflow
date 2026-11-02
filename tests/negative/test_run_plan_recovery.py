@@ -8,7 +8,7 @@ session does not guess and does not launch over an unreviewed result).
 
 Hermetic: a synthetic git project, real public API calls (run_start /
 run_next / reject_commit / approve_commit / retire_todo / brief /
-load_supervisor_context / run_status); the pipeline spawn is mocked
+read_run_record / run_status); the pipeline spawn is mocked
 (`awf.api.pipeline.start_pipeline`) — no live processes.
 """
 from __future__ import annotations
@@ -18,6 +18,7 @@ from pathlib import Path
 import yaml
 
 from awf import api, git_utils, run_state
+from awf.run_plan_read import decision_line, read_run_record
 
 T = "TODO-0001"
 T2 = "TODO-0002"
@@ -91,7 +92,7 @@ def _fake_start(monkeypatch, proj: Path, *, boom: bool = False) -> dict:
 
 class TestNewSessionRecovery:
     """Scenario 1: an active run, "new session" — a fresh read of the state
-    (brief / load_supervisor_context / run_status) restores the goal, the
+    (brief / read_run_record / run_status) restores the goal, the
     position, the last decision and the permitted action, as if the context
     were lost and rebuilt from the files."""
 
@@ -129,13 +130,12 @@ class TestNewSessionRecovery:
         assert "1/2" in b.text  # the position is on the card, not just a field
         assert "awf_run_next" in b.text  # and the permitted action is rendered
 
-        c = api.load_supervisor_context(proj)
+        c = read_run_record(proj)
         # the two card views are ONE record
-        assert c.run_goal == b.run_goal
-        assert c.run_position == st.position
-        assert c.run_last_decision == b.run_last_decision
-        assert c.run_sources == b.run_sources
-        assert "awf_run_next" in c.next_action
+        assert c.goal == b.run_goal
+        assert c.position == st.position
+        assert decision_line(c.last_decision) == b.run_last_decision
+        assert c.sources == b.run_sources
 
     def test_fresh_read_before_any_decision(self, tmp_git_repo: Path, monkeypatch) -> None:
         """Right after the first launch, no decisions yet: the goal, the
@@ -155,11 +155,11 @@ class TestNewSessionRecovery:
         assert st.decisions == []
 
         b = api.brief(proj)
-        c = api.load_supervisor_context(proj)
-        assert b.run_goal == c.run_goal == "Ship the first increment"
+        c = read_run_record(proj)
+        assert b.run_goal == c.goal == "Ship the first increment"
         assert b.run_last_decision == ""
         assert b.next_action  # every answer leads to the next step
-        assert c.run_active is True
+        assert c.active is True
 
 
 class TestAfterRejectGate:
@@ -256,15 +256,17 @@ class TestAfterDoneNextStep:
         _make_live(proj)
         self._done(proj, monkeypatch, [T, T2])
 
-        c = api.load_supervisor_context(proj)
+        c = read_run_record(proj)
         st = api.run_status(proj)
-        assert c.run_goal == "Ship the increment"
+        assert c.goal == "Ship the increment"
         # REPORTS33 (TODO-0205): after the done the finished unit is
         # credited to completed — the slot points at the next not-started
         # item (2/2), not at the done one, on every surface.
-        assert c.run_position == st.position == "2/2"
-        assert "awf_run_next" in c.next_action
-        assert T2 in c.next_action
+        assert c.position == st.position == "2/2"
+        b = api.brief(proj)
+        assert "awf_run_next" in b.next_action
+        assert T2 in b.next_action
+
 
     def test_queue_exhausted_names_the_stop(self, tmp_git_repo: Path, monkeypatch) -> None:
         """Last item done: run_next will stop the run with a report — the
@@ -292,10 +294,10 @@ class TestBrokenStateRecovery:
         before = run_state.run_file(proj).read_text(encoding="utf-8")
 
         b = api.brief(proj)
-        c = api.load_supervisor_context(proj)
+        c = read_run_record(proj)
         st = api.run_status(proj)
         assert b.run_warning and "run.yaml" in b.run_warning
-        assert c.run_warning == b.run_warning
+        assert c.warning == b.run_warning
         assert st.active is False
         assert st.goal == ""
 
@@ -341,8 +343,8 @@ class TestBrokenStateRecovery:
         b = api.brief(proj)
         assert b.run_goal == "Stabilize the run state"
         assert b.run_last_decision == f"reject {T} — real"
-        c = api.load_supervisor_context(proj)
-        assert c.run_decisions == st.decisions
+        c = read_run_record(proj)
+        assert c.decisions == st.decisions
 
     def test_legacy_state_without_plan_fields(self, tmp_git_repo: Path) -> None:
         """A pre-M1.1 state (no goal/criteria/decisions): the surfaces read

@@ -27,8 +27,7 @@ def brief(project_dir: Path) -> BriefResult:
     except the date line (pinned by tests).
 
     ORCH M1.2: the run record comes from the shared reader
-    (``awf/run_plan_read.py``) — the card is the compact view of the same
-    record ``awf_load_supervisor_context`` renders in full.
+    (``awf/run_plan_read.py``) — the card is the one view of that record.
     """
     project_dir = Path(project_dir).expanduser().resolve()
     has_agentic = paths.agentic_dir(project_dir).is_dir()

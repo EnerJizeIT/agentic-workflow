@@ -1,11 +1,9 @@
 """Unit tests for awf.api.dispatch + awf.api.context (dogfood-2 automation).
 
 dispatch_todo: atomic TODO creation + baseline + signal in one call.
-load_supervisor_context: aggregate payload for one-shot bootstrap.
+awf.brief / awf.get_status: the supervisor bootstrap surfaces.
 """
 from __future__ import annotations
-
-import textwrap
 
 import pytest
 import yaml
@@ -123,39 +121,23 @@ class TestDispatchTodo:
         json.dumps(result.as_dict())
 
 
-# ─── load_supervisor_context ────────────────────────────────────────────
+# ─── brief / status: the bootstrap surfaces after IMP1 ─────────────────
 
 
-class TestLoadSupervisorContext:
-    def test_returns_aggregate_payload(self, awf_project):
-        """All fields populated from one call."""
-        result = api.load_supervisor_context(awf_project)
-        assert isinstance(result, api.SupervisorContextResult)
-        assert result.project_name == "Test"
-        assert result.plan_md  # init_project wrote a stub
-        assert result.phase  # SMO: phase detected
-        assert result.phase_prompt  # SMO: compact prompt returned
-        # Pipeline not running → these are None/False
+class TestBootstrapSurfaces:
+    def test_brief_aggregate_payload(self, awf_project):
+        """The card is the single entry point; its basics come from one call."""
+        result = api.brief(awf_project)
+        assert result.project == "Test"
+        assert result.phase
+        assert result.text
         assert result.pipeline_running is False
         assert result.pipeline_pid is None
 
-    def test_includes_vision_excerpt(self, awf_project):
-        """Vision file detected and excerpt included."""
-        (awf_project / "1. PRODUCT-VISION.md").write_text(
-            "# Vision\nBuild the next big thing"
-        )
-        result = api.load_supervisor_context(awf_project)
-        assert result.vision_path is not None
-        assert "next big thing" in result.vision_excerpt
-
-    def test_no_vision_emits_warning(self, awf_project):
-        """Missing vision → warnings list has entry."""
-        (awf_project / "README.md").unlink()  # init created README as vision
-        result = api.load_supervisor_context(awf_project)
-        assert any("Vision" in w for w in result.warnings)
-
     def test_next_stage_role_from_pipeline(self, awf_project):
         """next_stage_role extracted from pipeline.yaml when no current stage."""
+        from awf.api.context import _extract_stage_info
+
         pipelines = awf_project / ".agentic" / "pipelines"
         pipelines.mkdir(exist_ok=True)
         (pipelines / "default.yaml").write_text(yaml.safe_dump({
@@ -166,134 +148,16 @@ class TestLoadSupervisorContext:
                 {"name": "verify", "role": "supervisor"},
             ],
         }))
-        result = api.load_supervisor_context(awf_project)
+        _stage, next_role, _signal, _tail, *_rest = _extract_stage_info(
+            awf_project
+        )
         # Pipeline not started → first execute stage role
-        assert result.next_stage_role == "developer"
-
-    def test_role_prohibitions_extracted(self, awf_project):
-        """When next_stage_role has prohibitions section in .md, it's returned."""
-        pipelines = awf_project / ".agentic" / "pipelines"
-        pipelines.mkdir(exist_ok=True)
-        (pipelines / "default.yaml").write_text(yaml.safe_dump({
-            "stages": [
-                {"name": "plan", "role": "supervisor"},
-                {"name": "reqs", "role": "system-analyst"},
-            ],
-        }))
-        roles = awf_project / ".agentic" / "roles"
-        (roles / "system-analyst.md").write_text(textwrap.dedent("""
-            # ROLE: system-analyst
-
-            ## Prohibitions (DO NOT do this)
-
-            - DO NOT write code.
-            - DO NOT make architecture decisions.
-            - DO NOT pick libraries.
-
-            ## Out of scope
-
-            Implementation work belongs to developer role.
-        """).strip())
-        result = api.load_supervisor_context(awf_project)
-        assert result.next_stage_role == "system-analyst"
-        assert result.next_role_prohibitions is not None
-        assert "DO NOT write code" in result.next_role_prohibitions
-        assert "DO NOT make architecture" in result.next_role_prohibitions
-
-    def test_missing_role_prohibitions_emits_warning(self, awf_project):
-        """Role has no prohibitions section → warning."""
-        pipelines = awf_project / ".agentic" / "pipelines"
-        pipelines.mkdir(exist_ok=True)
-        (pipelines / "default.yaml").write_text(yaml.safe_dump({
-            "stages": [{"name": "x", "role": "mystery-role"}],
-        }))
-        result = api.load_supervisor_context(awf_project)
-        # Role .md missing → next_role_prohibitions is None, warning emitted
-        assert result.next_role_prohibitions is None
-        assert any("mystery-role" in w and "prohibitions" in w for w in result.warnings)
-
-    def test_missing_agentic_raises(self, tmp_git_repo):
-        with pytest.raises(api.AwfApiError, match="No .agentic/"):
-            api.load_supervisor_context(tmp_git_repo)
+        assert next_role == "developer"
 
     def test_as_dict_serializable(self, awf_project):
         import json
-        result = api.load_supervisor_context(awf_project)
+        result = api.brief(awf_project)
         json.dumps(result.as_dict())
-
-    def test_increment_planning_needed_when_pipeline_and_stub(self, awf_project):
-        """Dogfood-9: increment_planning_needed=True when pipeline exists
-        but plan.md is init stub. Supervisor must propose variants."""
-        # Add pipeline.yaml with non-supervisor stages
-        pipelines = awf_project / ".agentic" / "pipelines"
-        pipelines.mkdir(exist_ok=True)
-        (pipelines / "default.yaml").write_text(yaml.safe_dump({
-            "stages": [
-                {"name": "plan", "role": "supervisor"},
-                {"name": "work", "role": "developer"},
-                {"name": "verify", "role": "supervisor"},
-            ],
-        }))
-        # plan.md is still init stub from init_project
-
-        result = api.load_supervisor_context(awf_project)
-        assert result.increment_planning_needed is True, (
-            "Supervisor should propose increment variants before dispatching TODO"
-        )
-
-    def test_increment_planning_not_needed_after_apply(self, awf_project):
-        """After apply_increment_plan → plan.md has frontmatter → not stub."""
-        pipelines = awf_project / ".agentic" / "pipelines"
-        pipelines.mkdir(exist_ok=True)
-        (pipelines / "default.yaml").write_text(yaml.safe_dump({
-            "stages": [
-                {"name": "plan", "role": "supervisor"},
-                {"name": "work", "role": "developer"},
-            ],
-        }))
-        api.apply_increment_plan(awf_project, "# Real plan\n\nActual content")
-
-        result = api.load_supervisor_context(awf_project)
-        assert result.increment_planning_needed is False
-
-    def test_increment_planning_not_needed_without_pipeline(self, awf_project):
-        """No pipeline.yaml → no increment planning needed."""
-        result = api.load_supervisor_context(awf_project)
-        assert result.increment_planning_needed is False
-
-    def test_increment_planning_not_needed_with_active_todo(self, awf_project):
-        """Active TODO in flight → don't interrupt with increment planning."""
-        pipelines = awf_project / ".agentic" / "pipelines"
-        pipelines.mkdir(exist_ok=True)
-        (pipelines / "default.yaml").write_text(yaml.safe_dump({
-            "stages": [{"name": "work", "role": "developer"}],
-        }))
-        inbox = awf_project / ".agentic" / "inbox"
-        (inbox / "TODO-0001.ready").touch()
-        (inbox / "TODO-0001.md").write_text("# active task")
-
-        result = api.load_supervisor_context(awf_project)
-        assert result.increment_planning_needed is False
-
-    def test_final_stage_commit_policy_visible(self, awf_project):
-        """Dogfood-9: final_stage_commit_policy shows if auto-commit fires."""
-        pipelines = awf_project / ".agentic" / "pipelines"
-        pipelines.mkdir(exist_ok=True)
-        (pipelines / "default.yaml").write_text(yaml.safe_dump({
-            "stages": [
-                {"name": "plan", "role": "supervisor"},
-                {"name": "work", "role": "developer"},
-                {"name": "verify", "role": "supervisor", "on_approved": "commit_and_next"},
-            ],
-        }))
-
-        result = api.load_supervisor_context(awf_project)
-        assert result.final_stage_commit_policy == "commit_and_next"
-
-    def test_final_stage_commit_policy_none_without_pipeline(self, awf_project):
-        """No pipeline → no commit policy."""
-        result = api.load_supervisor_context(awf_project)
-        assert result.final_stage_commit_policy is None
 
 
 # AUD-12.5: _extract_stage_info_regex removed (state file always written since T4.1).

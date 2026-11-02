@@ -1733,7 +1733,7 @@ class TestStageStartCheckpointClear:
     def test_clean_exit_preserves_goal_and_normalized(self, tmp_path: Path, monkeypatch):
         """AUD02-04 (r4): the clean-exit write must keep the setup context —
         otherwise >2h later the phase degrades to 'normalize' (SMO project)
-        or 'goal' (CLI project) on every awf_current_step call."""
+        or 'goal' (CLI project) on every phase read."""
         from types import SimpleNamespace
 
         from awf import orchestrator

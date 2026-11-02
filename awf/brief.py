@@ -40,9 +40,10 @@ MAX_WORDS = 900
 # `when` hints (shorter lines), not by the changelog tail.
 #
 # The phase prompt has TWO surfaces, and only one is clipped here:
-# ``awf_brief`` shows a ``_PHASE_PROMPT_MAX_WORDS``-word EXCERPT of the
-# phase prompt (a recall cue, not the manual); the FULL text is
-# ``awf_current_step`` (``awf.phase.get_phase_prompt``). A rule that must
+# ``awf_brief`` shows a ``_PHASE_PROMPT_MAX_WORDS``-word EXCERPT in
+# ``phase_summary`` (a recall cue, not the manual); the FULL text is
+# ``awf.phase.get_phase_prompt``, returned whole by ``awf_init`` in
+# ``supervisor_md``. A rule that must
 # be read by a running project belongs in the card's own sections or near
 # the top of the prompt, not in the prompt tail — ``tests/unit/test_phase.py``
 # asserts the full prompt, so it cannot prove the card shows the line.
@@ -57,6 +58,25 @@ SETUP_HINT = (
     "→ first TODO (`awf_dispatch_todo`)."
 )
 LIVE_LINE = "Live project: continue the working cycle."
+# R6/AC22–AC25: ONE waiting rule for a live pipeline — the same phrase on
+# every surface (``awf_status``, ``awf_brief``, the wait tool's docstring).
+# The literal is the requirement's key phrase; do not paraphrase it.
+WAIT_RULE_RUN = "wait only inside an active run"
+
+
+def running_wait_advice(stage: str) -> str:
+    """The shared 'pipeline is running' next step (status + brief).
+
+    Built here, in the advice owner, so the two surfaces cannot drift.
+    Kept short: it must fit ``_NEXT_ACTION_MAX_WORDS`` without clipping —
+    a clipped tail used to drop the waiting phrase from the card while
+    ``awf_status`` still showed it (the divergence IMP6 closes).
+    """
+    return (
+        f"Pipeline running (stage: {stage}) — Do NOT intervene; go idle; "
+        f"{WAIT_RULE_RUN} with `awf_wait_for_event`."
+    )
+
 # TODO-0208 (REPORTS33): a project with work history (completed units in
 # done/ or a run record in state/) but without the RUN3-7 "configured"
 # signal is a continuation, not a new project — the header says so and
@@ -131,7 +151,8 @@ class BriefResult:
     doctrine: list[str]
     what_new: str
     # ORCH M1.2: the compact view of the shared run record
-    # (awf/run_plan_read.py) — the full view is load_supervisor_context.
+    # (awf/run_plan_read.py) — the record itself is ``state/run.yaml``,
+    # the only store; the card adds no second copy.
     # All empty/[] outside a run; run_warning is set when run.yaml exists
     # but is corrupted (degradation, not a crash).
     run_goal: str = ""
@@ -140,7 +161,7 @@ class BriefResult:
     run_warning: str = ""
     # ORCH M2.3: the current/last element's evidence plan, rendered
     # compact for the card (verify commands + prove_red ids, brief) —
-    # the same record the full context shows in full.
+    # the same record ``read_run_record`` shows in full.
     run_evidence_plan_lines: list[str] = field(default_factory=list)
     # ORCH M4.2: the stalled-stage warning ("" when off / no stall) —
     # stage, TODO, quiet minutes, threshold. Computed from the stock
@@ -598,7 +619,7 @@ def render_brief(r: BriefResult) -> str:
             L.append("")
             L.append(_demote_headings(r.phase_summary))
             if r.phase_clipped:
-                L.append("(… full version: `awf_current_step`)")
+                L.append("(… excerpt; the full prompt is `supervisor_md` of `awf_init`)")
     else:
         L.append(r.setup_hint)
     L.append("")
@@ -786,10 +807,7 @@ def next_action_from_status(s: Any) -> str:
         return "Zombie stage state — read State, then `awf_continue` to resume."
     if _get("pipeline_running"):
         stage = _get("current_stage_name") or "?"
-        return (
-            f"Pipeline running (stage: {stage}) — go idle; in a run wait with "
-            "`awf_wait_for_event`."
-        )
+        return running_wait_advice(str(stage))
     active = list(_get("active_todos") or [])
     if active:
         first = active[0]
@@ -803,7 +821,7 @@ def next_action_from_status(s: Any) -> str:
         return str(suggestion)
     return (
         "No active units — plan the next one: `awf_dispatch_todo` "
-        "(or `awf_current_step` for phase guidance)."
+        "(or call `awf_brief` for phase guidance)."
     )
 
 

@@ -6,7 +6,7 @@ snapped into the run memory (per-item evidence plan) — the verification
 plan is not lost when the TODO is edited or retired afterwards. The
 field lives in the existing ``state/run.yaml`` (derived, no second
 store), written by the SAME atomic path as decisions (M1) — the advance
-commit of the launch. ``awf_brief`` / ``awf_load_supervisor_context``
+commit of the launch. ``awf_brief`` / ``read_run_record``
 show the current/last element's plan (verify commands + prove_red ids,
 brief) before the supervisor decides. Degradation: a TODO without a
 contract → empty plan + note; a broken ``evidence_plans`` field →
@@ -214,10 +214,11 @@ def test_new_run_resets_plans(tmp_git_repo: Path, monkeypatch) -> None:
 
 
 class TestSurfaces:
-    """(2) brief / load_supervisor_context show the current/last element's
-    plan (verify commands + prove_red ids, brief) before the decision."""
+    """(2) the brief card and the shared record show the current/last
+    element's plan (verify commands + prove_red ids, brief) before the
+    decision."""
 
-    def test_brief_and_context_show_the_plan(self, tmp_git_repo: Path, monkeypatch):
+    def test_brief_and_record_show_the_plan(self, tmp_git_repo: Path, monkeypatch):
         proj = _project(tmp_git_repo)
         _write_todo(proj, T, CONTRACT_TODO)
         _launch(proj, monkeypatch, [T])
@@ -228,19 +229,19 @@ class TestSurfaces:
         assert VERIFY_CMD in b.text
         assert PROVE_ID in b.text
 
-        c = api.load_supervisor_context(proj)
-        assert c.run_evidence_plan is not None
-        assert c.run_evidence_plan["todo_id"] == T
-        assert c.run_evidence_plan["verify"] == [VERIFY_CMD]
-        assert c.run_evidence_plan["prove_red"] == [PROVE_ID]
-        assert c.run_evidence_plan["todo_sha"] == _file_sha(proj, T)
+        c = read_run_record(proj)
+        assert c.evidence_plan is not None
+        assert c.evidence_plan["todo_id"] == T
+        assert c.evidence_plan["verify"] == [VERIFY_CMD]
+        assert c.evidence_plan["prove_red"] == [PROVE_ID]
+        assert c.evidence_plan["todo_sha"] == _file_sha(proj, T)
 
     def test_no_run_no_plan_lines(self, tmp_git_repo: Path) -> None:
         proj = _project(tmp_git_repo)
         b = api.brief(proj)
-        c = api.load_supervisor_context(proj)
+        c = read_run_record(proj)
         assert "run evidence plan" not in b.text
-        assert c.run_evidence_plan is None
+        assert c.evidence_plan is None
 
     def test_current_item_wins_over_last_entry(self, tmp_git_repo: Path) -> None:
         """The reader shows the CURRENT element's snapshot when it is
@@ -366,9 +367,9 @@ class TestDegradation:
             },
         )
         b = api.brief(proj)
-        c = api.load_supervisor_context(proj)
+        c = read_run_record(proj)
         assert "run evidence plan" not in b.text
-        assert c.run_evidence_plan is None
+        assert c.evidence_plan is None
 
 
 class TestRejectNextStep:
@@ -389,12 +390,10 @@ class TestRejectNextStep:
         api.reject_commit(proj, T, "missing regression test")
 
         b = api.brief(proj)
-        c = api.load_supervisor_context(proj)
-        for na in (b.next_action, c.next_action):
-            low = na.lower()
-            assert "close the reject decision" in low
-            assert "awf_todo_retire" in low
-            assert "awf_run_finish" in low
-            assert "awf_start" not in low
-            # the loop after the closing is named, not guessed
-            assert "awf_run_next" in low
+        low = b.next_action.lower()
+        assert "close the reject decision" in low
+        assert "awf_todo_retire" in low
+        assert "awf_run_finish" in low
+        assert "awf_start" not in low
+        # the loop after the closing is named, not guessed
+        assert "awf_run_next" in low

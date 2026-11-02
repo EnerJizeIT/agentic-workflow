@@ -3,8 +3,8 @@
 A missing goal is a setup signal only for a NEW project. A live project
 (configured + completed work) stays in the working cycle even with a
 wiped/empty state — otherwise a configured project with finished TODOs
-would be sent through goal → form → normalize on every awf_current_step
-call (the topic-trainer case: 19 finished tasks, phase 'goal').
+would be sent through goal → form → normalize on every phase read
+(the topic-trainer case: 19 finished tasks, phase 'goal').
 
 Kept in a separate file so tests/unit/test_phase.py stays under the
 files_over_400 ratchet.

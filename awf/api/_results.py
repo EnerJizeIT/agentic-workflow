@@ -471,74 +471,6 @@ class BlockedDraftResult:
 
 
 @dataclass
-class SupervisorContextResult:
-    """Result of :func:`awf.api.load_supervisor_context`.
-
-    Aggregate payload for one-shot supervisor bootstrap: everything needed
-    to act as supervisor in a single MCP response.
-    """
-
-    project_name: str
-    project_dir: str
-    vision_path: str | None
-    vision_excerpt: str
-    plan_md: str
-    supervisor_md: str
-    phase: str  # SMO: current phase (init/goal/form/normalize/brief/run/verify/done)
-    phase_prompt: str  # SMO: compact phase-specific instructions
-    active_todos: list[dict[str, Any]]
-    done_count: int
-    blocked_count: int
-    pipeline_running: bool
-    pipeline_pid: int | None
-    log_tail: str | None
-    next_stage_role: str | None
-    next_role_prohibitions: str | None
-    current_stage_name: str | None
-    last_signal: str | None
-    git_diff_stat: str
-    warnings: list[str] = field(default_factory=list)
-    # Dogfood-9: structural trigger for increment planning
-    increment_planning_needed: bool = False
-    final_stage_commit_policy: str | None = None  # on_approved value from last stage
-    # ORCH M1.2: the run record — the SAME reading the brief card renders
-    # (awf/run_plan_read.read_run_record), the full view: all decisions
-    # (which, why, when) + sources. Additive — outside a run every field
-    # is empty/False ("0/0" position); run_warning is set when run.yaml
-    # exists but is corrupted (degradation, not a crash).
-    run_active: bool = False
-    run_goal: str = ""
-    run_criteria: list[str] = field(default_factory=list)
-    run_position: str = "0/0"
-    run_budget_minutes: int = 0
-    run_budget_left_minutes: int = 0
-    run_note: str = ""
-    run_last_decision: str = ""  # one line: "reject TODO-0001 — reason"
-    run_decisions: list[dict[str, str]] = field(default_factory=list)
-    run_sources: list[str] = field(default_factory=list)
-    run_warning: str = ""
-    # ORCH M2.3: the current/last element's evidence plan — the
-    # launch-time snapshot of the TODO's contract (verify/gates/
-    # prove_red) + file hash (the same entry the brief card renders
-    # compactly). None when nothing was launched.
-    run_evidence_plan: dict | None = None
-    # TODO-0242 (A.3): the engine-death fact reaches the supervisor
-    # bootstrap too — a state that outlived the engine must not read as a
-    # calm phase hint. "" when the engine is alive (or no stage is on disk).
-    engine_dead: str = ""
-    engine_dead_todo: str = ""
-    # TODO-0307 (PA-0306-1): the explicit frozen-stage line, the same fact
-    # ``get_status`` carries. The advice ORDER stays with
-    # ``next_action_from_status`` — this field only makes the fact visible.
-    stale_stage: str = ""
-    # the nearest permitted action (run-aware after a reject: awf_run_next)
-    next_action: str = ""
-
-    def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass
 class ApplyIncrementPlanResult:
     """Result of :func:`awf.api.apply_increment_plan`."""
 
@@ -585,6 +517,12 @@ class WaitEventResult:
     # passive events (timeout/idle/done/stage_changed), which keep their
     # instruction in ``message``.
     next_action: str = ""
+    # R6/AC23: which waiting rule applies to the answer — True inside an
+    # active run (забег: the supervisor keeps the wait loop), False in the
+    # reactive mode (react to the owner's message, no loop). Comes from the
+    # ONE run-active source (``run_state.run_is_active``), never from
+    # ``pipeline_running``: a single ``awf_start`` also runs a pipeline.
+    run_active: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -959,7 +897,6 @@ __all__ = [
     "AnalyzeRolesResult",
     "ApplyProjectSetupResult",
     "DispatchTodoResult",
-    "SupervisorContextResult",
     "ApplyIncrementPlanResult",
     "WaitEventResult",
     "RunStartResult",

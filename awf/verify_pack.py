@@ -1868,6 +1868,210 @@ def _load_todo_contract(project: Path, todo_id: str, logs_dir: Path) -> dict | N
 # ─── report ──────────────────────────────────────────────────────────────
 
 
+def _current_tree_sha(project: Path) -> str:
+    """The content-addressed tree fingerprint ``awf tree-sha`` reports.
+
+    Best effort: a non-git project or a missing binary leaves the field
+    empty — the reader then cannot compare and says so instead of guessing.
+    A hung git call is the same fact: ``tree_fingerprint`` talks to git with
+    a 30 s timeout, and its ``TimeoutExpired`` must not escape into the
+    report renderer — that would turn a real verdict into the engine's
+    crash note (the fingerprint is a marker, not a gate).
+    """
+    from . import git_utils
+
+    try:
+        return git_utils.tree_fingerprint(project)
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+#: ``## Verdict: **failed** (exit 1) — 8 section(s) measured``
+_VERDICT_RE = re.compile(r"^## Verdict: \*\*([^*]+)\*\*", re.MULTILINE)
+#: ``## 3. diff: PASS`` — the report's section headings in document order.
+_PACK_SECTION_RE = re.compile(
+    r"^##\s+\d+\.\s+(\S+):\s+(PASS|FAIL|SKIPPED)\s*$", re.MULTILINE
+)
+#: ``- `<cmd>`: FAIL (rc=1) — tail`` — a measured failure, never a heading.
+_FAIL_MARKER_RE = re.compile(r"^- .*: FAIL \(rc=\d+\)", re.MULTILINE)
+_PACK_JSON_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def read_gates_facts(
+    path: str | Path, *, tree_sha: str | None = None
+) -> dict | None:
+    """K4/AC26–AC29: the verify-pack verdict as a fact, not a log.
+
+    Reads the same ``GATES-<id>.md`` module :func:`verify_pack` writes: the
+    markdown for section order and the failure marker, the JSON block for
+    the machine fields. When the block is missing or broken, the headings
+    still supply ``sections``/``failed_sections`` and the marker still
+    supplies ``first_failure`` — the reason never depends on the JSON alone.
+    No second parser, no logs.
+
+    Args:
+        path: the report file.
+        tree_sha: current tree fingerprint; when passed, ``stale`` compares
+            it with the one recorded in the pack. Omitted, ``stale`` stays
+            ``False`` — "not compared", not "fresh": a caller that renders
+            freshness MUST pass it.
+
+    Returns:
+        ``None`` when the file does not exist. Otherwise a dict with
+        ``verdict`` (``ok``/``failed``/``nothing-measured``/``error``/
+        ``unreadable``), ``exit_code``, ``measured``, ``sections``,
+        ``details``, ``report``, ``first_failure``, ``note``,
+        ``generated``, ``tree_sha`` and ``stale``.
+
+    A crashed engine leaves an ``**error**`` note without JSON (no traceback
+    is lost, but there is nothing to parse): that is ``error`` with the note
+    text, not ``missing``. A file with neither a JSON block nor the error
+    heading is ``unreadable`` — an empty dict would read as "nothing failed".
+    """
+    report = Path(path)
+    if not report.is_file():
+        return None
+    try:
+        text = report.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+    verdict_match = _VERDICT_RE.search(text)
+    markdown_verdict = verdict_match.group(1).strip().lower() if verdict_match else ""
+
+    facts: dict = {
+        "verdict": "unreadable",
+        "exit_code": None,
+        "measured": None,
+        "sections": {},
+        "details": {},
+        "failed_sections": [],
+        "report": str(report),
+        "first_failure": "",
+        "note": "",
+        "generated": "",
+        "tree_sha": "",
+        "stale": False,
+    }
+
+    json_match = _PACK_JSON_RE.search(text)
+    payload: dict = {}
+    if json_match:
+        try:
+            parsed = json.loads(json_match.group(1))
+        except ValueError:
+            parsed = {}
+        if isinstance(parsed, dict):
+            payload = parsed
+
+    if payload:
+        facts["verdict"] = str(
+            payload.get("verdict") or markdown_verdict or "unreadable"
+        ).strip().lower()
+        exit_code = payload.get("exit_code")
+        facts["exit_code"] = exit_code if isinstance(exit_code, int) else None
+        measured = payload.get("measured")
+        facts["measured"] = measured if isinstance(measured, int) else None
+        if isinstance(payload.get("sections"), dict) and payload["sections"]:
+            facts["sections"] = {
+                str(k): str(v).lower() for k, v in payload["sections"].items()
+            }
+        else:
+            # A hand-edited/truncated block must not hide the headings the
+            # markdown still carries.
+            facts["sections"] = _markdown_sections(text)
+        if isinstance(payload.get("details"), dict):
+            facts["details"] = {
+                str(k): str(v) for k, v in payload["details"].items()
+            }
+        if isinstance(payload.get("report"), str):
+            facts["report"] = payload["report"]
+        facts["tree_sha"] = str(payload.get("tree_sha") or "")
+    elif markdown_verdict == "error":
+        # The engine's crash note (pipeline_engine._write_verify_pack_error_note):
+        # a verdict heading, prose instead of JSON. Keep the verdict and the
+        # note text — "the pack did not run" is a fact, not an absence.
+        facts["verdict"] = "error"
+        facts["note"] = _first_note_line(text)
+    else:
+        facts["verdict"] = (markdown_verdict or "unreadable").strip().lower()
+        facts["sections"] = _markdown_sections(text)
+
+    # The markdown owns these facts whatever the JSON block says: a missing
+    # or broken block must not take the reason and the generation time down
+    # with it (AC27, D6).
+    generated_match = re.search(r"^Generated:\s*(.+)$", text, re.MULTILINE)
+    facts["generated"] = generated_match.group(1).strip() if generated_match else ""
+    facts["failed_sections"] = _failed_section_names(text, facts["sections"])
+    facts["first_failure"] = _first_fail_marker(text)
+
+    if tree_sha is not None:
+        facts["stale"] = bool(facts["tree_sha"] != tree_sha)
+    return facts
+
+
+def _markdown_sections(text: str) -> dict[str, str]:
+    """Section name → status from the headings, in document order.
+
+    The fallback when the JSON block is absent or carries no ``sections``:
+    the headings are the same report, and a reader that returned ``{}``
+    would make a failed pack look like one with nothing measured.
+    """
+    return {
+        m.group(1): m.group(2).lower() for m in _PACK_SECTION_RE.finditer(text)
+    }
+
+
+def _failed_section_names(text: str, sections: dict) -> list[str]:
+    """Names of the ``fail`` sections, in document order.
+
+    The JSON object keeps the writer's order, but the markdown is the
+    reader's contract for "which one was first" — a reordered or
+    hand-edited block must not reorder the reasons.
+    """
+    ordered = [m.group(1) for m in _PACK_SECTION_RE.finditer(text)]
+    if not ordered:
+        ordered = list(sections)
+    return [
+        name
+        for name in ordered
+        if str(sections.get(name, "")).lower() == "fail"
+    ]
+
+
+def _first_fail_marker(text: str) -> str:
+    """The first ``- <cmd>: FAIL (rc=N)`` inside the first failing section.
+
+    AC27: a section heading (``## 1. contracts: FAIL``) is not a reason, and
+    a later section never wins. No marker at all (a failed section whose
+    detail has another shape) leaves the reason empty rather than inventing
+    one.
+    """
+    headings = list(_PACK_SECTION_RE.finditer(text))
+    for i, match in enumerate(headings):
+        if match.group(2) != "FAIL":
+            continue
+        start = match.end()
+        end = headings[i + 1].start() if i + 1 < len(headings) else len(text)
+        for line in text[start:end].splitlines():
+            if _FAIL_MARKER_RE.match(line):
+                return line.strip()
+        return ""
+    return ""
+
+
+def _first_note_line(text: str) -> str:
+    """The first non-empty line after the verdict heading of a crash note."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if _VERDICT_RE.match(line):
+            for candidate in lines[i + 1:]:
+                if candidate.strip():
+                    return candidate.strip()
+            break
+    return ""
+
+
 def _render_report(
     project: Path,
     todo_id: str,
@@ -1900,6 +2104,9 @@ def _render_report(
         "sections": {s.name: s.status for s in sections},
         "details": {s.name: s.detail for s in sections if s.detail},
         "report": f".agentic/context/GATES-{todo_id}.md",
+        # IMP3 (D6): the tree the pack was taken on — the reader compares it
+        # with the current tree to tell a fresh verdict from yesterday's.
+        "tree_sha": _current_tree_sha(project),
     }
     parts += ["---", "", "```json", json.dumps(payload, indent=2, ensure_ascii=False), "```", ""]
     return "\n".join(parts)
@@ -2015,5 +2222,6 @@ __all__ = [
     "SAFETY_CANARIES",
     "Section",
     "VerifyPackResult",
+    "read_gates_facts",
     "verify_pack",
 ]

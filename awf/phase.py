@@ -84,7 +84,7 @@ def detect_phase(project_dir: Path) -> str:
         # in the working cycle even when state/current.yaml was wiped or
         # never stored a goal — otherwise a configured project with 19
         # finished TODOs would be sent through goal → form → normalize
-        # on every awf_current_step call. TODO-0208 (REPORTS33): work
+        # on every phase read. TODO-0208 (REPORTS33): work
         # history without the configured team is a continuation too —
         # the same cycle, the same reason.
         if _is_live_project(project_dir) or _has_work_history(project_dir):
@@ -273,8 +273,8 @@ def advance_phase(
         raise AwfApiError(
             f"Phase transition refused: current phase is '{current}', "
             f"expected '{from_phase}'. Setup tools make exactly their "
-            "documented transition — check awf_current_step and act on the "
-            "actual phase instead of overwriting it."
+            "documented transition — act on the actual phase instead of "
+            "overwriting it (call awf_brief for guidance)."
         )
 
     # Setup flow progression

@@ -4,7 +4,7 @@
 и доков разъезжались (A-08). Здесь закреплено:
 
 - ``tools/registry.py::TOOLS`` — единственный источник регистрации: его
-  набор имён == ``create_server().list_tools()``, 55 tools, у каждого
+  набор имён == ``create_server().list_tools()``, 54 tools, у каждого
   непустое описание (сверка супервизора 26.09; +awf_run_revise — ORCH M3.4;
   +awf_commit_workflow — REPORTS26 F6; +awf_blocked_draft — TODO-0229);
 - сигнатуры и docstrings обёрток не изменились (внешний MCP-контракт) —
@@ -138,7 +138,10 @@ def test_registry_equals_list_tools():
             "awf",
             "awf_wait_for_event",
             ["project_dir", "timeout", "actionable_only"],
-            "Check for pipeline events (reactive, NOT for proactive polling).",
+            # TODO-0344 (IMP6): the first line no longer claims "reactive,
+            # NOT for proactive polling" — AC25 forbids that rule next to
+            # the run-loop one (the tool docstring now carries one rule).
+            "Check for pipeline events.",
         ),
         (
             "awf",

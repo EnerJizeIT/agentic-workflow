@@ -1,6 +1,6 @@
 """TODO-0307 (3, 4): the bootstrap carries STALE, one ``updated_at`` parser.
 
-PA-0306-1: ``load_supervisor_context`` described engine death but not the
+PA-0306-1: the supervisor bootstrap described engine death but not the
 frozen stage, so the one-shot bootstrap could read as a calm "pipeline
 running". The fact must travel AND the advice must come from
 ``next_action_from_status`` (the one owner of the advice order).
@@ -39,7 +39,7 @@ def _state(proj, *, minutes_ago=20, stage="agent-qa-review"):
 
 
 def test_bootstrap_carries_stale_stage_and_the_owned_advice(tmp_git_repo):
-    """A frozen stage reaches ``awf_load_supervisor_context`` as a field
+    """A frozen stage reaches ``awf_brief`` as a field
     and as the next step — never the calm "pipeline running" line."""
     from awf import api
 
@@ -47,7 +47,7 @@ def test_bootstrap_carries_stale_stage_and_the_owned_advice(tmp_git_repo):
     api.init_project(proj, project_name="stale")
     _state(proj)
 
-    ctx = api.load_supervisor_context(proj)
+    ctx = api.brief(proj)
 
     assert ctx.stale_stage.startswith("STALE stage agent-qa-review")
     assert f"({T})" in ctx.stale_stage
@@ -63,7 +63,7 @@ def test_bootstrap_without_a_frozen_stage_keeps_the_old_answer(tmp_git_repo):
     api.init_project(proj, project_name="fresh")
     _state(proj, minutes_ago=1)
 
-    ctx = api.load_supervisor_context(proj)
+    ctx = api.brief(proj)
 
     assert ctx.stale_stage == ""
     assert "stale" not in ctx.next_action.lower()
@@ -213,7 +213,7 @@ def test_bootstrap_lets_engine_death_outrank_the_stale_advice(tmp_git_repo):
     api.init_project(proj, project_name="boot-stale")
     _run_with_a_frozen_stage(proj)
 
-    ctx = api.load_supervisor_context(proj)
+    ctx = api.brief(proj)
 
     assert ctx.engine_dead
     assert ctx.stale_stage
@@ -285,7 +285,6 @@ def test_bootstrap_drops_do_not_intervene_when_a_live_stage_is_stale(
     intervene") must lose to the STALE advice, or the bootstrap tells the
     owner to sit still while nothing moves."""
     from awf import api
-    from awf.api import context as context_mod
     from awf.api import lifecycle
 
     proj = tmp_git_repo
@@ -305,16 +304,13 @@ def test_bootstrap_drops_do_not_intervene_when_a_live_stage_is_stale(
     )
     # A live engine pid: pipeline_running stays True, engine_dead stays empty —
     # the one combination where the calm structural answer used to win.
-    # Both readers ask it: ``get_status`` through ``lifecycle`` and the
-    # bootstrap through its own import in ``context``.
+    # One reader asks it: ``get_status`` through ``lifecycle``; the brief
+    # card takes both facts from that status.
     monkeypatch.setattr(
         lifecycle, "check_pipeline_running", lambda _p: (True, os.getpid(), "")
     )
-    monkeypatch.setattr(
-        context_mod, "check_pipeline_running", lambda _p: (True, os.getpid(), "")
-    )
 
-    ctx = api.load_supervisor_context(proj)
+    ctx = api.brief(proj)
 
     assert ctx.pipeline_running
     assert ctx.stale_stage

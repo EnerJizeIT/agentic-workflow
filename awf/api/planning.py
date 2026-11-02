@@ -1,7 +1,7 @@
 """Increment planning: persist supervisor-proposed decomposition variants.
 
 Pipeline:
-  1. supervisor studies vision/requirements (via awf_load_supervisor_context).
+  1. supervisor studies vision/requirements (via awf_brief).
   2. supervisor generates 2-3 increment variants (creative LLM work).
   3. supervisor calls awf_open_increment_planning_form(options, project_dir).
   4. user picks a variant in browser form.

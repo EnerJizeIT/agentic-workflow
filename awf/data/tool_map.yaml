@@ -34,10 +34,6 @@ groups:
       - mcp: awf_commit_workflow
         cli: commit-workflow
         when: "workflow files → git"
-      - mcp: awf_current_step
-        when: "phase + prompt"
-      - mcp: awf_load_supervisor_context
-        when: "full context, one call"
       - mcp: awf_wait_for_event
         when: "block until an event"
       - mcp: awf_pipelines

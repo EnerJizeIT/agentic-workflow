@@ -777,7 +777,7 @@ def init_project(
 
     # SMO: return compact phase prompt instead of full 639-line supervisor.md.
     # Dogfood finding: supervisor reads full supervisor.md and ignores phase system.
-    # Compact prompt tells supervisor to call awf_current_step for phase guidance.
+    # Compact prompt tells supervisor to call awf_brief for phase guidance.
     try:
         from ..phase import detect_phase, get_phase_prompt
         phase = detect_phase(project_dir)
@@ -1155,7 +1155,7 @@ def get_status(project_dir: Path) -> StatusResult:
                 "then run: awf start"
             )
         else:
-            suggestion = "No active tasks. Check awf_current_step for guidance."
+            suggestion = "No active tasks. Call awf_brief for the next step."
 
     # RUN3 #1: named pipelines — the active one (config) + how many exist.
     # Same rules as resolve_pipeline_file, so status never disagrees with
@@ -1210,6 +1210,7 @@ def get_status(project_dir: Path) -> StatusResult:
             has_active_todos=bool(active_ids),
             done_count=done_count,
             last_signal=last_signal,
+            current_stage_name=current_stage_name,
         )
 
     # DF5-4: salvage state — read from state file even if pipeline not running

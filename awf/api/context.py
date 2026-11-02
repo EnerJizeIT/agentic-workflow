@@ -1,22 +1,16 @@
-"""Supervisor context loader: one-shot aggregate for session bootstrap.
+"""Helpers of the supervisor status: stage info and expected action.
 
-``load_supervisor_context`` returns everything a supervisor needs to act
-in a single call — no manual file reads, no multiple tool round-trips.
-Used at start of session or after long pause to rebuild mental model.
+The one-shot bootstrap aggregate (``load_supervisor_context``) is gone —
+``awf_brief`` is the single entry point. These helpers stay because
+``get_status`` imports them (AC47).
 """
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
-from .. import config as cfg_mod
 from .. import paths
 from ..pipeline import Stage, load_stages, resolve_pipeline_file
 from ..signals import is_review_decision
-from ._background import check_pipeline_running
-from ._helpers import read_file_text, require_agentic
-from ._results import SupervisorContextResult
-from .lifecycle import get_status
 
 
 def _load_pipeline_stages(project_dir: Path) -> list[Stage]:
@@ -130,6 +124,7 @@ def _compute_expected_action(
     has_active_todos: bool,
     done_count: int,
     last_signal: str | None = None,
+    current_stage_name: str | None = None,
 ) -> str | None:
     """Dogfood-6: structural determinism. Returns ONE instruction string
     telling supervisor what to do NOW, so they don't have to read execution
@@ -183,12 +178,14 @@ def _compute_expected_action(
         )
 
     if current_stage_kind == "execute":
-        return (
-            "worker stage running — auto-transition on worker DONE. Do NOT "
-            "intervene and do NOT poll in a loop: check awf_status once when "
-            "you need to act. In an active run, keep the run loop instead: "
-            "awf_wait_for_event(actionable_only=True)."
-        )
+        # R6/AC22–AC25: ONE waiting rule. The old text held both rules in
+        # one answer ("do NOT poll in a loop" + "keep the run loop") and
+        # the brief clipped the second half — status and card disagreed
+        # for the same state. ``running_wait_advice`` is the same owner
+        # ``next_action_from_status`` uses.
+        from ..brief import running_wait_advice
+
+        return running_wait_advice(current_stage_name or "?")
 
     if current_stage_kind == "verify":
         return (
@@ -222,292 +219,3 @@ def _compute_stage_kind(
             return s.kind
     return None
 
-
-def _read_role_prohibitions(project_dir: Path, role: str | None) -> str | None:
-    """Extract prohibitions section from role .md (first 1000 chars of any
-    section titled 'Prohibitions' / 'DO NOT' / 'Out of scope').
-
-    Returns None if role is None, file missing, or section not found.
-    """
-    if not role:
-        return None
-
-    role_md = project_dir / ".agentic" / "roles" / f"{role}.md"
-    if not role_md.is_file():
-        return None
-
-    try:
-        content = role_md.read_text(encoding="utf-8")
-    except OSError:
-        return None
-
-    # Find any section that looks like prohibitions
-    prohibitions_markers = (
-        "## Prohibitions",
-        "## What NOT to do",
-        "## Out of scope",
-        "## DO NOT",
-        "## Не делай",
-    )
-    for marker in prohibitions_markers:
-        idx = content.find(marker)
-        if idx == -1:
-            continue
-        # Take until next ## section or end
-        rest = content[idx:]
-        next_section = rest.find("\n## ", len(marker))
-        if next_section != -1:
-            rest = rest[:next_section]
-        # Trim to 1000 chars to keep payload small
-        if len(rest) > 1000:
-            rest = rest[:1000] + "\n...[truncated]"
-        return rest.strip()
-
-    return None
-
-
-def _is_plan_stub(plan_md: str) -> bool:
-    """Dogfood-9: detect if plan.md is the init template stub.
-
-    init_project writes a stub with markers:
-      - '# {project_name} — Plan'
-      - 'supervisor заполнит после изучения vision'
-      - OR 'supervisor заполнит'
-      - OR 'Спроси пользователя о контексте'
-
-    apply_increment_plan replaces stub with real plan + frontmatter.
-    No frontmatter + stub markers → True.
-    """
-    if not plan_md:
-        return True
-    # Has frontmatter → already materialized (not stub)
-    if plan_md.lstrip().startswith("---"):
-        return False
-    stub_markers = [
-        "supervisor заполнит",
-        "Спроси пользователя о контексте",
-        "(supervisor заполнит",
-    ]
-    return any(marker in plan_md for marker in stub_markers)
-
-
-def _get_final_stage_commit_policy(project_dir: Path) -> str | None:
-    """Dogfood-9: read on_approved from last stage of pipeline.yaml.
-
-    Returns 'commit_and_next' / 'commit_and_report' / 'next' / None.
-    Supervisor needs to know if auto-commit will fire.
-    """
-    stages = _load_pipeline_stages(project_dir)
-    if not stages:
-        return None
-    last = stages[-1]
-    # AUD16-03: on_passed is gone (no TEST-PASSED signal) — on_approved alone.
-    return last.on_approved
-
-
-def _pipeline_exists(project_dir: Path) -> bool:
-    """Check if pipeline.yaml exists with non-supervisor stages."""
-    stages = _load_pipeline_stages(project_dir)
-    return any(s.role != "supervisor" for s in stages)
-
-
-def load_supervisor_context(project_dir: Path) -> SupervisorContextResult:
-    """Aggregate everything a supervisor needs in one call.
-
-    Replaces 5-6 separate tool calls at session start:
-    - vision excerpt
-    - plan.md content
-    - supervisor.md content (role instruction)
-    - active_todos + progress
-    - pipeline state (running, current_stage, log_tail)
-    - next_stage_role + its prohibitions excerpt
-    - git diff stat
-
-    Designed for these moments:
-    - Start of new supervisor session (after awf_init)
-    - After long pause (rebuild mental model)
-    - Before writing next TODO (need full context)
-
-    Args:
-        project_dir: awf project root.
-
-    Returns:
-        SupervisorContextResult with all fields populated.
-    """
-    project_dir = Path(project_dir).resolve()
-    require_agentic(project_dir)
-
-    config_data = cfg_mod.load(project_dir)
-    project_name = (
-        cfg_mod.get(config_data, "project.name", "Project") or "Project"
-    )
-
-    # Vision
-    vision_path = paths.find_vision_file(project_dir)
-    vision_excerpt = read_file_text(vision_path, max_chars=4000) if vision_path else ""
-
-    # Plan + supervisor.md
-    plan_path = project_dir / ".agentic" / "phases" / "plan.md"
-    plan_md = read_file_text(plan_path) if plan_path.is_file() else ""
-
-    # SMO: detect phase + return compact prompt (not full 639-line supervisor.md).
-    # Dogfood finding: supervisor reads full supervisor.md and ignores phase system.
-    try:
-        from ..phase import detect_phase, get_phase_prompt
-        phase = detect_phase(project_dir)
-        phase_prompt = get_phase_prompt(phase, project_dir)
-    except Exception:
-        phase = "unknown"
-        phase_prompt = ""
-
-    supervisor_md = phase_prompt  # compact, not full
-
-    # Status (active todos, done/blocked counts)
-    status = get_status(project_dir)
-
-    # Pipeline state
-    pipeline_running, pipeline_pid, _log_tail_bg = check_pipeline_running(project_dir)
-
-    # Stage info from logs + pipeline.yaml
-    current_stage, next_role, last_signal, log_tail_stage, _cp, _cpp, _cfurl = _extract_stage_info(project_dir)
-    # Prefer log_tail from check_pipeline_running (more recent)
-    log_tail = _log_tail_bg or log_tail_stage
-
-    # Role prohibitions for next stage
-    next_role_prohibitions = _read_role_prohibitions(project_dir, next_role)
-
-    # Git diff stat
-    diff_result = subprocess.run(
-        ["git", "diff", "--stat"],
-        cwd=str(project_dir),
-        capture_output=True,
-        text=True,
-        errors="replace",
-        check=False,
-        timeout=30,
-    )
-    git_diff_stat = diff_result.stdout if diff_result.returncode == 0 else ""
-
-    warnings: list[str] = []
-    if not vision_path:
-        warnings.append("Vision/README not found in project root")
-    if not plan_md:
-        warnings.append("plan.md is empty or missing")
-    if not supervisor_md:
-        warnings.append("supervisor.md is empty or missing")
-    if next_role and not next_role_prohibitions:
-        warnings.append(
-            f"next_stage_role='{next_role}' has no prohibitions section in .md"
-        )
-
-    # ORCH M1.2: the SAME shared run record the brief card renders
-    # (awf/run_plan_read.py — one reader, two views): here the full view —
-    # all decisions (which, why, when), unclipped goal, sources. A
-    # corrupted run.yaml degrades to "no run" with a warning, no traceback.
-    from ..run_plan_read import (
-        decision_line,
-        next_action_for_record,
-        read_run_record,
-    )
-
-    run_record = read_run_record(project_dir)
-    if run_record.warning:
-        warnings.append(run_record.warning)
-    # The run-aware action (after a reject in a run: awf_run_next). Empty
-    # when the run does not force one — the MCP surface keeps the phase
-    # hint as the fallback, so behavior outside a run is unchanged.
-    run_next_action = next_action_for_record(run_record, "")
-    # ORCH M1.3: the done (approved) side of the run-aware step — the same
-    # shared helper the brief card uses (one implementation, two views):
-    # after the current item is approved, the next step is awf_run_next.
-    from ..run_state import run_step_after_done
-
-    step = run_step_after_done(run_record.state)
-    if step:
-        run_next_action = step
-
-    # TODO-0242 (A.3): the engine-death fact is part of the bootstrap. The
-    # advice ORDER has one owner (``next_action_from_status`` ranks
-    # expected_action / salvage / BLOCKED above the resume); asking it —
-    # rather than re-reading those three fields here — means a future
-    # higher-priority fact the owner learns is not silently outranked.
-    engine_dead = str(status.engine_dead or "")
-    engine_dead_todo = str(status.engine_dead_todo or "")
-    if engine_dead:
-        from .._engine_liveness import engine_dead_hint
-        from ..brief import next_action_from_status
-
-        resume = engine_dead_hint(engine_dead, engine_dead_todo)
-        if next_action_from_status(status) == resume:
-            run_next_action = resume
-
-    # TODO-0307 (PA-0306-1): a frozen stage reaches the bootstrap exactly
-    # like engine death — the fact travels, the advice comes from the one
-    # owner. When the owner ranks a higher-priority fact (salvage, blocked)
-    # its answer differs from the structural ``expected_action`` and wins
-    # here too; the calm "go idle" is never kept next to a frozen stage.
-    stale_stage = str(status.stale_stage or "")
-    if stale_stage:
-        from ..brief import next_action_from_status
-
-        stale_advice = next_action_from_status(status)
-        if stale_advice and stale_advice != str(status.expected_action or ""):
-            run_next_action = stale_advice
-
-    # Dogfood-9: structural triggers for increment planning + commit visibility
-    pipeline_configured = _pipeline_exists(project_dir)
-    increment_planning_needed = (
-        pipeline_configured
-        and not pipeline_running
-        and not status.active_todos  # no active TODOs in flight
-        and _is_plan_stub(plan_md)
-    )
-    final_commit_policy = _get_final_stage_commit_policy(project_dir)
-
-    return SupervisorContextResult(
-        project_name=project_name,
-        project_dir=str(project_dir),
-        vision_path=str(vision_path) if vision_path else None,
-        vision_excerpt=vision_excerpt,
-        plan_md=plan_md,
-        supervisor_md=supervisor_md,
-        phase=phase,
-        phase_prompt=phase_prompt,
-        active_todos=status.active_todos,
-        done_count=status.done_count,
-        blocked_count=status.blocked_count,
-        pipeline_running=pipeline_running,
-        pipeline_pid=pipeline_pid,
-        log_tail=log_tail,
-        next_stage_role=next_role,
-        next_role_prohibitions=next_role_prohibitions,
-        current_stage_name=current_stage,
-        last_signal=last_signal,
-        git_diff_stat=git_diff_stat,
-        warnings=warnings,
-        increment_planning_needed=increment_planning_needed,
-        final_stage_commit_policy=final_commit_policy,
-        run_active=run_record.active,
-        run_goal=run_record.goal,
-        run_criteria=list(run_record.criteria),
-        run_position=run_record.position,
-        run_budget_minutes=run_record.budget_minutes,
-        run_budget_left_minutes=run_record.budget_left_minutes,
-        run_note=run_record.note,
-        run_last_decision=decision_line(run_record.last_decision),
-        run_decisions=[dict(d) for d in run_record.decisions],
-        run_sources=list(run_record.sources),
-        run_warning=run_record.warning,
-        # ORCH M2.3: the current/last element's evidence plan (the full
-        # view of what the brief card renders compactly).
-        run_evidence_plan=(
-            dict(run_record.evidence_plan) if run_record.evidence_plan else None
-        ),
-        engine_dead=engine_dead,
-        engine_dead_todo=engine_dead_todo,
-        stale_stage=stale_stage,
-        next_action=run_next_action,
-    )
-
-
-__all__ = ["load_supervisor_context"]

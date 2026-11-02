@@ -13,7 +13,6 @@ rejected twice, or the previous TODO is not finished.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 import threading
@@ -23,6 +22,7 @@ from pathlib import Path
 from .. import budget as budget_mod
 from .. import config as cfg_mod
 from .. import git_utils, paths, pipeline_state, run_state, stage_timeout, todos
+from ..commit_gate import read_commit_audit
 from ..infra import state_store
 from ..todo_ids import is_valid_todo_id
 from ..unit_history import forget_unit_history
@@ -884,20 +884,6 @@ def _goal_check_lines(state: dict, reason: str, salvage: int) -> list[str]:
     return lines
 
 
-def _read_commit_audit(project_dir: Path, todo_id: str) -> dict | None:
-    """TODO-0195: ``context/COMMIT-AUDIT-{todo}.json`` — the commit gate's
-    per-unit fact (excluded paths + reasons, worker-staged, the refused
-    silent skip). None when absent or unreadable (degrade, not crash)."""
-    f = paths.context_dir(project_dir) / f"COMMIT-AUDIT-{todo_id}.json"
-    if not f.is_file():
-        return None
-    try:
-        data = json.loads(f.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
-
-
 def _outside_commit_lines(project_dir: Path, todo_ids) -> list[str]:
     """TODO-0195: the RUN-REPORT section «вне коммита остались» — the
     per-unit commit audits: the paths left outside the commit with the
@@ -912,7 +898,7 @@ def _outside_commit_lines(project_dir: Path, todo_ids) -> list[str]:
         if not todo or todo in seen:
             continue
         seen.add(todo)
-        audit = _read_commit_audit(project_dir, todo)
+        audit = read_commit_audit(project_dir, todo)
         if not audit:
             continue
         excluded = [
@@ -982,7 +968,7 @@ def _publication_lines(project_dir: Path, todo_ids) -> list[str]:
             # «the commit OID has ONE home in status / RUN-REPORT» false.
             # The audit line is the home for a resumed unit; the receipt
             # still contributes its own disposition / archive lines.
-            audit = _read_commit_audit(project_dir, todo) or {}
+            audit = read_commit_audit(project_dir, todo) or {}
             resumed_commit = str(audit.get("commit") or "")
             if not (
                 audit.get("resumed")

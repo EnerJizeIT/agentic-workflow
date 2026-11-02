@@ -204,7 +204,7 @@ class TestGetPhasePrompt:
         was not read by a running project.
 
         Surface (AUD-0299-3): this asserts the FULL prompt
-        (``get_phase_prompt``, served by ``awf_current_step``). The
+        (``get_phase_prompt``, the full phase read). The
         ``awf_brief`` card clips the same text to 45 words and is NOT
         covered here — a line visible in the card needs its own assertion
         on ``build_brief``/card text.

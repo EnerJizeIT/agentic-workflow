@@ -129,12 +129,6 @@ class TestCatchAllExceptionHandlers:
         result = asyncio.run(awf_mod.awf_dispatch_todo(content="# Test", project_dir=str(project)))
         assert result["status"] == "error"
 
-    def test_load_context_unexpected(self, project, monkeypatch):
-        from agent_workflow_ui.tools import awf as awf_mod
-        monkeypatch.setattr(awf_mod.api, "load_supervisor_context", lambda *a, **kw: (_ for _ in ()).throw(OSError("read")))
-        result = asyncio.run(awf_mod.awf_load_supervisor_context(project_dir=str(project)))
-        assert result["status"] == "error"
-
     def test_kill_unexpected(self, project, monkeypatch):
         from agent_workflow_ui.tools import awf as awf_mod
         monkeypatch.setattr(awf_mod.api, "kill_pipeline", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("signal")))

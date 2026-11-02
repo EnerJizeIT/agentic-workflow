@@ -45,6 +45,6 @@ You (verify) write:
 
 ## Phase flow
 
-`awf_current_step(project_dir)` tells you which phase you're in.
+The phase is in the brief's State — call `awf_brief(project_dir)`.
 Phases: init → goal → form → normalize → brief → run → verify → done.
 Each phase has its own compact instructions.

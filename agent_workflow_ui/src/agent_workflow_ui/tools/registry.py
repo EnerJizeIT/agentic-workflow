@@ -73,9 +73,8 @@ TOOLS: tuple[ToolSpec, ...] = (
     _spec("awf_reset", awf.awf_reset),
     _spec("awf_add_role", awf.awf_add_role),
     _spec("awf_analyze_roles", awf.awf_analyze_roles),
-    # Dogfood-2 automation: dispatch + context
+    # Dogfood-2 automation: dispatch
     _spec("awf_dispatch_todo", awf.awf_dispatch_todo),
-    _spec("awf_load_supervisor_context", awf.awf_load_supervisor_context),
     # Dogfood-5: shortcut tools (deterministic UX, no prompt-only guidance)
     _spec("awf_open_project_setup_form", awf.awf_open_project_setup_form),
     # Dogfood-7: increment planning (user picks decomposition variant)
@@ -90,8 +89,6 @@ TOOLS: tuple[ToolSpec, ...] = (
     _spec("awf_doctor", awf.awf_doctor),
     # Kill pipeline (SELF-2)
     _spec("awf_kill", awf.awf_kill),
-    # SMO: Phase-aware supervisor tools
-    _spec("awf_current_step", awf.awf_current_step),
     # RUN4 #1: supervisor onboarding/recovery card (live state + tool map)
     _spec("awf_brief", awf.awf_brief),
     _spec("awf_set_goal", awf.awf_set_goal),
@@ -137,6 +134,16 @@ TOOLS: tuple[ToolSpec, ...] = (
     # REPORTS26 F6: workflow definitions commit (the units that commit nothing)
     _spec("awf_commit_workflow", awf.awf_commit_workflow),
 )
+
+
+#: Удалённые MCP-имена → имя-замена. НЕ входят в ``TOOLS``: ``list_tools``,
+#: ``tool_names()`` и docs-счётчики их не видят. Сервер (``server.py``)
+#: отвечает на вызов своим текстом, а не ``Unknown tool``: вызывающий
+#: должен узнать, что тула больше нет, и куда идти (AC10).
+REMOVED_TOOLS: dict[str, str] = {
+    "awf_current_step": "awf_brief",
+    "awf_load_supervisor_context": "awf_brief",
+}
 
 
 def tool_specs() -> tuple[ToolSpec, ...]:
