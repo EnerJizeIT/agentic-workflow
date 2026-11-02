@@ -193,12 +193,20 @@ class TestCardSections:
         assert "- no active run, tasks, or flags" in r.text
 
     def test_tool_map_section(self, live_project):
+        """IMP5/D8: the card prints the ≤5 situational row, not the wall.
+
+        The full inventory stays in the ``tool_map`` field and in
+        ``awf/data/tool_map.yaml`` (AC20/AC21); ``map_coverage`` above keeps
+        the registry check.
+        """
         r = api.brief(live_project)
         assert "## Tool map" in r.text
-        for title in ("launch", "check", "run", "hygiene", "forms", "metrics", "context"):
-            assert f"**{title}**" in r.text
-        assert "`awf_start`/`start`" in r.text
-        assert "`awf tree-sha`" in r.text
+        section = r.text.split("## Tool map", 1)[1].split("## ", 1)[0]
+        rows = [ln for ln in section.splitlines() if ln.startswith("- `")]
+        assert 1 <= len(rows) <= 6  # ≤5 tools + the inventory pointer
+        assert r.tools and len(r.tools) <= 5
+        assert r.tools[0]["tool"] == r.advice_tool
+        assert "full inventory" in section
 
     def test_rituals_section(self, live_project):
         r = api.brief(live_project)

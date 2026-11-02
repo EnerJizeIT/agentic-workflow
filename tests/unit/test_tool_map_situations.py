@@ -220,8 +220,8 @@ class TestCoverage:
 
 
 class TestOldCard:
-    def test_card_still_prints_the_full_map(self, tmp_path: Path):
-        """IMP5 owns the situational render; the current card is unchanged."""
+    def test_card_prints_the_situational_row(self, tmp_path: Path):
+        """IMP5 owns the situational render: ≤5 tools, advice tool first."""
         project = tmp_path / "proj"
         (project / ".agentic" / "state").mkdir(parents=True)
         (project / ".agentic" / "pipelines").mkdir(parents=True)
@@ -232,20 +232,15 @@ class TestOldCard:
         done = project / ".agentic" / "done" / "TODO-0001"
         done.mkdir(parents=True)
         (done / "TODO.md").write_text("# TODO-0001\n", encoding="utf-8")
-        text = api.brief(project).text
+        result = api.brief(project)
+        text = result.text
         assert "## Tool map" in text
-        for title in (
-            "launch",
-            "check",
-            "run",
-            "hygiene",
-            "forms",
-            "metrics",
-            "context",
-        ):
-            assert f"**{title}**" in text
-        assert "`awf_start`/`start`" in text
-        assert "`awf tree-sha`" in text
+        assert result.tools and len(result.tools) <= 5
+        assert result.tools[0]["tool"] == result.advice_tool
+        assert "full inventory" in text
+        for title in ("launch", "check", "run", "hygiene"):
+            # Group headings belong to the full inventory, not the card.
+            assert f"**{title}**" not in text
 
 
 # ─── QA review (TODO-0347): the renderer contract ────────────────────────

@@ -12,6 +12,11 @@
 Это лиственный модуль: бизнес-логика (status, run) приходит извне
 (``awf.api.brief``), чтобы не тянуть тяжёлый ``awf.api`` на уровне
 импорта (AUD14-05).
+
+TODO-0348 (IMP5): ситуационная половина карточки — таблица ситуаций,
+классификатор, факты verify/коммита и правило ожидания — живёт в
+``awf/brief_sections.py``; здесь остаётся сборка и рендер. Модуль был
+1689 строк, supervisor review-fix просил не растить его дальше.
 """
 from __future__ import annotations
 
@@ -25,6 +30,28 @@ from typing import Any
 import yaml
 
 from . import paths
+
+# The situational half lives in ``awf.brief_sections`` (TODO-0348 IMP5).
+# The table and the classifier stay importable from ``awf.brief`` — the
+# card's public surface (tests and callers read them here).
+from .brief_sections import (  # noqa: F401
+    ENTRY_FIELD,
+    SETUP_LINE_NO_AGENTIC,
+    SETUP_LINE_NO_HISTORY,
+    SITUATION_ADVICE,
+    SITUATION_ALIASES,
+    SITUATION_LINES,
+    SITUATION_ORDER,
+    WAIT_RULE_REACTIVE,
+    WAIT_RULE_RUN,
+    classify_status,
+    entry_field,
+    refine_with_run,
+    situation_for,
+    status_field,
+    verify_facts,
+    wait_block,
+)
 
 MAX_WORDS = 900
 # RUN6 #5 (TODO-0060): the card grew Defaults + Scenarios sections — the
@@ -58,10 +85,6 @@ SETUP_HINT = (
     "→ first TODO (`awf_dispatch_todo`)."
 )
 LIVE_LINE = "Live project: continue the working cycle."
-# R6/AC22–AC25: ONE waiting rule for a live pipeline — the same phrase on
-# every surface (``awf_status``, ``awf_brief``, the wait tool's docstring).
-# The literal is the requirement's key phrase; do not paraphrase it.
-WAIT_RULE_RUN = "wait only inside an active run"
 
 
 def running_wait_advice(stage: str) -> str:
@@ -199,6 +222,23 @@ class BriefResult:
     # result (NOT rendered in the card text, which has a fixed section
     # order and a word budget).
     office: list[dict[str, Any]] = field(default_factory=list)
+    # TODO-0348 (IMP5): the situational card (K1). ``entry`` is the single
+    # entry question answered in every state; ``situation``/``situation_line``
+    # name the state; ``advice_tool``/``tools`` carry the ≤5-tool row;
+    # ``verify`` is the current pass's verdict ({} outside a live cycle);
+    # ``phase_prompt`` is the FULL phase text (the card only points here);
+    # ``budget`` is filled by ``render_brief`` (words/clipped/pointer).
+    situation: str = "S0"
+    situation_line: str = ""
+    entry: dict[str, Any] = field(default_factory=entry_field)
+    advice_tool: str = ""
+    mode: str = "reactive"
+    run_active: bool = False
+    wait: dict[str, Any] = field(default_factory=dict)
+    phase_prompt: str = ""
+    verify: dict[str, Any] = field(default_factory=dict)
+    tools: list[dict[str, str]] = field(default_factory=list)
+    budget: dict[str, Any] = field(default_factory=dict)
     text: str = field(default="")
 
     def as_dict(self) -> dict[str, Any]:
@@ -212,43 +252,9 @@ def _data_file(name: str) -> Path:
     return Path(__file__).resolve().parent / "data" / name
 
 
-# TODO-0347 (IMP4): the coarse names the advice uses, resolved to the fine
-# situation codes of D5. The fine codes stay the data keys; the aliases let
-# the card ask by the advice's own vocabulary (verify / run / blocked /
-# salvage / hygiene / setup).
-SITUATION_ALIASES = {
-    "setup": "S0",
-    "salvage": "S1",
-    "blocked": "S2",
-    "run": "S7",
-    "verify": "S8",
-    "hygiene": "S10",
-}
-
-# The first tool of each situation's row — and the tool the advice names
-# (AC19). The key order is also the canonical order of situation codes
-# (``S1a`` right after ``S1``, ``S11a``/``S11b`` after ``S11``).
-SITUATION_ADVICE = {
-    "S0": "awf_init",
-    "S1": "awf_retry_stage",
-    "S1a": "awf_rollback",
-    "S2": "awf_continue",
-    "S3": "awf_todo_retire",
-    "S4": "awf_continue",
-    "S5": "awf_kill",
-    "S6": "awf_continue",
-    "S7": "awf_wait_for_event",
-    "S8": "awf_approve",
-    "S9": "awf_start",
-    "S10": "awf_dispatch_todo",
-    "S11": "awf_review_append",
-    "S11a": "awf_run_revise",
-    "S11b": "awf_dispatch_todo",
-    "S12": "awf_run_next",
-    "S13": "read_submit",
-}
-
-SITUATION_ORDER = tuple(SITUATION_ADVICE)
+# TODO-0347 (IMP4): the situation table and its views live in
+# ``awf.brief_sections`` (the card's situational half, TODO-0348 IMP5);
+# this module keeps the assembly and the rendering.
 
 
 def _group_situations(tools: list[dict[str, Any]]) -> list[str]:
@@ -306,7 +312,9 @@ def load_tool_map() -> list[dict[str, Any]]:
 
 
 def situational_tools(
-    situation: str, advice_tool: str = ""
+    situation: str,
+    advice_tool: str = "",
+    groups: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     """Tools for one situation: ≤5 entries, the advice tool first.
 
@@ -315,6 +323,11 @@ def situational_tools(
     full ``tool_map`` list — AC20). ``why`` is the entry's ``when`` line,
     so the card never prints an empty reason (INV3). The advice tool comes
     first even when the file lists it later (AC19).
+
+    ``groups`` is the already-loaded map: ``build_brief`` reads the YAML
+    once for both the row and the ``tool_map`` field, so the card cannot
+    mix two snapshots of the file (AUD7). Omitted (tests, single callers) —
+    the map is loaded here.
 
     An advice tool that no entry of the situation names cannot be moved to
     the front: the row keeps the file order. That is data drift, not a
@@ -325,7 +338,7 @@ def situational_tools(
     advice = advice_tool or SITUATION_ADVICE.get(code, "")
     picked: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
-    for group in load_tool_map():
+    for group in groups if groups is not None else load_tool_map():
         for t in group["tools"]:
             if t["inventory_only"] or code not in t["situations"]:
                 continue
@@ -577,19 +590,6 @@ def doctrine_lines(project_dir: Path) -> list[str]:
     return lines
 
 
-def _tool_line(t: dict[str, str]) -> str:
-    """One map line. Both names are kept (spec) but rendered compact:
-    `` `awf_start`/`start` `` — the card has a word budget."""
-    mcp, cli, when = t.get("mcp", ""), t.get("cli", ""), t.get("when", "")
-    if mcp and cli:
-        name = f"`{mcp}`/`{cli}`"
-    elif mcp:
-        name = f"`{mcp}`"
-    else:
-        name = f"`awf {cli}`"
-    return f"- {name} — {when}"
-
-
 def _state_lines(r: BriefResult) -> list[str]:
     lines: list[str] = []
     if r.run:
@@ -702,14 +702,100 @@ def _demote_headings(text: str) -> str:
     return "\n".join(out)
 
 
+def _verify_lines(r: BriefResult) -> list[str]:
+    """The verify/commit verdict lines (K1) — never clipped by the budget."""
+    v = r.verify
+    if not v:
+        return []
+    unit = v.get("unit", "?")
+    status = v.get("status", "missing")
+    if status == "missing":
+        line = f"- verify: {unit} — no pack yet (`awf verify-pack`)"
+    elif status == "error":
+        # AC29/T8: the engine's crash note is the reason — the card names
+        # it instead of the bare "did not run" (IMP3 keeps it in ``note``).
+        line = f"- verify: {unit} — the pack did not run"
+        if v.get("note"):
+            line += f": {v['note']}"
+    else:
+        failed = ", ".join(v.get("failed_sections") or []) or "none"
+        line = f"- verify: {unit} — {status}; failed sections: {failed}"
+    lines = [line]
+    if v.get("first_failure"):
+        lines.append(f"- first failure: {v['first_failure']}")
+    commit = v.get("commit") or {}
+    commit_status = commit.get("status", "missing")
+    if commit_status == "missing":
+        lines.append("- commit: no attempt yet")
+    else:
+        reason = f" — {commit.get('reason')}" if commit.get("reason") else ""
+        lines.append(f"- commit: {commit_status}{reason}")
+    waiting = v.get("waiting_on") or "none"
+    close_with = v.get("close_with") or ""
+    if waiting == "commit":
+        lines.append("- waiting on: the commit gate (the engine closes it)")
+    elif close_with:
+        lines.append(f"- waiting on: {waiting}; close with `{close_with}`")
+    else:
+        lines.append(f"- waiting on: {waiting}")
+    return lines
+
+
+def _tool_map_lines(r: BriefResult) -> list[str]:
+    """The ≤5 situational row (AC18–AC20); the full list stays in the field."""
+    lines = [f"- `{t['tool']}` — {t['why']}" for t in r.tools]
+    # The count comes from the result (``build_brief`` fills ``tool_map``),
+    # not from the YAML: the render stays a function of its input.
+    lines.append(
+        f"- full inventory ({len(r.tool_map)} groups): `awf/data/tool_map.yaml`"
+    )
+    return lines
+
+
+def _drop_section(text: str, header: str) -> str:
+    """Remove one verbose section; used only by the budget (D9)."""
+    start = text.find(header)
+    if start < 0:
+        return text
+    end = text.find("\n## ", start + len(header))
+    return text[:start].rstrip() + "\n" + (text[end + 1:] if end >= 0 else "")
+
+
+# D9: the order sections give up their words and the marker each one starts
+# with. ``doctrine`` is a bold block inside Recovery, not a ``##`` section —
+# the table says so, instead of the cutter special-casing it. State,
+# next_action, tools, verify and the entry line never appear here.
+_CLIP_ORDER = (
+    ("What's new", "## What's new"),
+    ("Defaults", "## Defaults"),
+    ("Scenarios", "## Scenarios"),
+    ("doctrine", "**Doctrine**"),
+    ("Recovery", "## Recovery"),
+)
+
+
 def render_brief(r: BriefResult) -> str:
-    """Render the card as markdown. Pure function of the result fields."""
+    """Render the card as markdown — deterministic for the same result.
+
+    Reads only the result fields (no files, no clock) and fills ``budget``
+    while enforcing it.
+
+    TODO-0348 (IMP5)/D9: the budget is enforced by dropping whole verbose
+    sections in ``_CLIP_ORDER``; the card names what did not fit and where
+    to get it (AC32), and the dropped names land in ``budget.clipped``.
+    """
     L: list[str] = [f"# awf brief — {r.project}", ""]
     L.append(f"- awf: {r.version} · phase: {r.phase} · date: {r.date}")
+    L.append(
+        "- entry: `awf_brief` is the single entry — recall it on: "
+        + ", ".join(r.entry.get("recall_when") or [])
+    )
     L.append(f"- {r.live_line}")
     L.append("")
     L.append("## What's next")
     L.append("")
+    if r.situation_line:
+        L.append(f"- situation: {r.situation_line}")
     if r.is_live_project or r.actionable_fact:
         if r.next_action:
             # TODO-0346 (IMP2): the FIELD carries the whole shared advice
@@ -732,13 +818,32 @@ def render_brief(r: BriefResult) -> str:
             L.append("")
             L.append(_demote_headings(r.phase_summary))
             if r.phase_clipped:
-                L.append("(… excerpt; the full prompt is `supervisor_md` of `awf_init`)")
+                # TODO-0348 (IMP5)/D3: the full text is the FIELD, not a
+                # removed tool and not a clipped excerpt.
+                words = len(r.phase_prompt.split())
+                L.append(
+                    f"(… excerpt; the full prompt is field `phase_prompt` "
+                    f"({words} words))"
+                )
     else:
         L.append(r.setup_hint)
+    # The advice tool and the waiting rule describe the state, not only a
+    # live project: S0 (setup chain) carries them too. The rule is its own
+    # sentence, so the bullet adds no "wait:" prefix (AUD8).
+    if r.advice_tool:
+        L.append(f"- tool: `{r.advice_tool}`")
+    if r.wait.get("rule"):
+        suffix = ""
+        if r.wait.get("loop"):
+            timeout = r.wait.get("timeout")
+            per_call = f", ~{timeout}s each" if timeout else ""
+            suffix = f" — the call repeats until an event{per_call}"
+        L.append(f"- {r.wait['rule']}{suffix}")
     L.append("")
     L.append("## State")
     L.append("")
     L.extend(_state_lines(r) or ["- no active run, tasks, or flags"])
+    L.extend(_verify_lines(r))
     L.append("")
     if r.defaults:
         L.append("## Defaults")
@@ -755,13 +860,8 @@ def render_brief(r: BriefResult) -> str:
         L.append("")
     L.append("## Tool map")
     L.append("")
-    for group in r.tool_map:
-        if group.get("hidden"):
-            continue
-        L.append(f"**{group['title']}**")
-        for t in group["tools"]:
-            L.append(_tool_line(t))
-        L.append("")
+    L.extend(_tool_map_lines(r))
+    L.append("")
     L.append("## Rituals")
     L.append("")
     for ritual in r.rituals:
@@ -783,19 +883,40 @@ def render_brief(r: BriefResult) -> str:
     L.append("## Feedback")
     L.append("")
     L.append(FEEDBACK_LINE)
-    return "\n".join(L).rstrip() + "\n"
+    body = "\n".join(L).rstrip() + "\n"
 
+    # The pointer is part of the card: the budget must count it while it
+    # decides which sections to drop, or the final append crosses the limit
+    # (AUD4: 909/900 and 902/900 in the narrow band). The cuts apply to
+    # ``body``; the pointer is re-derived after each drop.
+    clipped: list[str] = []
 
-def _status_get(s: Any, name: str, default: Any = None) -> Any:
-    """Read one field from a status (dataclass or its ``as_dict`` form).
+    def with_pointer(text: str, names: list[str]) -> tuple[str, str]:
+        if not names:
+            return text, ""
+        pointer = (
+            f"- budget: {len(text.split())}/{MAX_WORDS} words — dropped: "
+            f"{', '.join(names)}; full text: `awf brief --json`."
+        )
+        return text.rstrip() + "\n\n" + pointer + "\n", pointer
 
-    The advice owner and the card used to carry a private copy of this
-    lookup next to each other; one reader keeps their view of a status
-    identical by construction.
-    """
-    if isinstance(s, dict):
-        return s.get(name, default)
-    return getattr(s, name, default)
+    text, pointer = with_pointer(body, clipped)
+    for name, header in _CLIP_ORDER:
+        if len(text.split()) <= MAX_WORDS:
+            break
+        trimmed = _drop_section(body, header)
+        if trimmed == body:
+            continue
+        body = trimmed
+        clipped.append(name)
+        text, pointer = with_pointer(body, clipped)
+    r.budget = {
+        "words": len(text.split()),
+        "limit": MAX_WORDS,
+        "clipped": clipped,
+        "pointer": pointer,
+    }
+    return text
 
 
 # The facts that need the owner's hand. ``_actionable_fact`` gates the
@@ -848,9 +969,9 @@ def _actionable_fact(s: Any, *, include_expected: bool = True) -> bool:
     names = _ACTIONABLE_FIELDS if include_expected else _HARD_ADVICE_FIELDS
     for name in names:
         if name == "blocked_ids":
-            if list(_status_get(s, name) or []):
+            if list(status_field(s, name) or []):
                 return True
-        elif str(_status_get(s, name) or ""):
+        elif str(status_field(s, name) or ""):
             return True
     return False
 
@@ -865,7 +986,7 @@ def next_action_from_status(s: Any) -> str:
     dataclass or its ``as_dict()`` form.
     """
     def _get(name: str, default: Any = None) -> Any:
-        return _status_get(s, name, default)
+        return status_field(s, name, default)
 
     expected = _get("expected_action")
     # TODO-0306 (architect review, round 3): ``expected_action`` is built
@@ -985,7 +1106,7 @@ def advice_for(status: Any, run_record: Any | None = None) -> str:
     if run_record is None or not getattr(run_record, "active", False):
         return advice
     if _actionable_fact(status, include_expected=False) or bool(
-        _status_get(status, "checkpoint_pending")
+        status_field(status, "checkpoint_pending")
     ):
         return advice
     from . import run_state as _run_state
@@ -998,6 +1119,10 @@ def advice_for(status: Any, run_record: Any | None = None) -> str:
     return advice
 
 
+# TODO-0348 (IMP5): the classifier, the verify facts and the waiting
+# rule moved to ``awf.brief_sections`` (the card's situational half).
+
+
 def _card_advice(status: Any, run_record: Any | None) -> str:
     """The card's advice — the status field when the API already filled it.
 
@@ -1008,7 +1133,7 @@ def _card_advice(status: Any, run_record: Any | None) -> str:
     status built by hand (tests, callers without the field) falls back to
     the same owner, so the card never goes empty.
     """
-    filled = _status_get(status, "next_action")
+    filled = status_field(status, "next_action")
     if filled:
         return str(filled)
     return advice_for(status, run_record)
@@ -1166,7 +1291,7 @@ def build_brief(
         # BD-36: the form waits for the USER (the plan confirmation), not
         # for a worker. The card's NEXT line says "WAIT for user
         # confirmation" — the header must not call it a working cycle.
-        checkpoint_pending = bool(_status_get(status, "checkpoint_pending"))
+        checkpoint_pending = bool(status_field(status, "checkpoint_pending"))
         # TODO-0262 REVIEW (CTX1): the exhausted-unit fact from the same read.
         budget_exhausted_todo = str(
             status.get("budget_exhausted_todo") or ""
@@ -1209,6 +1334,46 @@ def build_brief(
         # ORCH M2.3: the compact view of the current/last element's
         # evidence plan (one shared helper, same as the decisions line).
         run_evidence_plan_lines = evidence_plan_lines(run_record, compact=True)
+
+    # TODO-0348 (IMP5): the situational card (K1) — one situation id, its
+    # words, the ≤5-tool row and the current pass's verify facts. The id
+    # comes from the same status the advice reads; the run record owns only
+    # its own branches (reject/approve). ``phase_prompt`` is the FULL text
+    # (D3): the card points at this field instead of cutting it into the
+    # word budget.
+    situation = situation_for(status, run_record)
+    # A project without work history gets the setup chain whatever its
+    # files say — S0 is that answer, matching the advice (``awf_init``).
+    if setup_chain:
+        situation = "S0"
+    situation_line = SITUATION_LINES.get(situation, "")
+    # AUD3: S0 is also the state of a project that has ``.agentic/`` but no
+    # work history — the "no .agentic/ yet" words would be false there.
+    if situation == "S0":
+        situation_line = (
+            SETUP_LINE_NO_HISTORY if has_agentic else SETUP_LINE_NO_AGENTIC
+        )
+    advice_tool = SITUATION_ADVICE.get(situation, "")
+    # One YAML read per card: the row and the ``tool_map`` field come from
+    # the same snapshot (AUD7).
+    tool_groups = load_tool_map()
+    tools = situational_tools(situation, advice_tool, tool_groups)
+    if run_record is not None:
+        run_active = bool(getattr(run_record, "active", False))
+    elif status is not None:
+        run_active = bool(status_field(status, "run_active"))
+    else:
+        run_active = False
+    wait = wait_block(run_active, project_dir)
+    verify = verify_facts(project_dir, status, situation, advice_tool)
+    phase_prompt = ""
+    # D3: S0 has no phase prompt — the setup chain is the answer, and the
+    # card does not print the excerpt for it either.
+    if has_agentic and situation != "S0":
+        try:
+            phase_prompt = _phase.get_phase_prompt(phase, project_dir)
+        except Exception:
+            phase_prompt = ""
 
     # TODO-0309 (AUD-0308-1): a running pipeline outranks the
     # actionable-only line — ``expected_action`` is non-empty whenever the
@@ -1255,7 +1420,7 @@ def build_brief(
         current_stage=current_stage,
         defaults=load_brief_defaults(),
         scenarios=load_scenarios(),
-        tool_map=load_tool_map(),
+        tool_map=tool_groups,
         rituals=list(RITUALS),
         recovery=load_recovery(),
         doctrine=doctrine_lines(project_dir),
@@ -1271,6 +1436,16 @@ def build_brief(
         engine_dead_todo=engine_dead_todo,
         stale_stage=stale_stage,
         budget_exhausted_todo=budget_exhausted_todo,
+        situation=situation,
+        situation_line=situation_line,
+        entry=entry_field(),
+        advice_tool=advice_tool,
+        mode="run" if run_active else "reactive",
+        run_active=run_active,
+        wait=wait,
+        phase_prompt=phase_prompt,
+        verify=verify,
+        tools=tools,
     )
     result.text = render_brief(result)
     return result

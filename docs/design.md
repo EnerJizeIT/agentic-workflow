@@ -110,6 +110,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `config_keys.py` | R5: реестр ключей `.agentic/config.yaml`, которые читает код; `dead_keys` называет листья без читателя (OPS7, храповик в тестах) |
 | `doctor.py` | R5: `run_doctor` — отчёт ok/WARN (версии с коммитами, модели, мёртвые ключи), rc 0/1/2, запуск не блокирует; `cmd_doctor.py` его печатает |
 | `api/wait_event.py` | `wait_for_event` (supervisor wake-up, chunked sleep) |
+| `wait_policy.py` | Листовой дом кэпа одного ожидания (`wait_cap`: env `AWF_WAIT_CAP` > `wait.cap_seconds` > `TRANSPORT_CAP`); `api/wait_event.py` ре-экспортирует имена |
 | `api/hygiene.py` | `reset`, `restore`, `unblock`, todo remove/retire/update, `blocked_draft` (драфт REVIEW-фикса из BLOCKED-заметки) |
 | `_markdown.py` | Разбор markdown-заголовков и тел секций для `dispatch` (source_ref), `blocked_draft` и чек-листа (TODO-0244); на корне пакета, чтобы `checklists` не тянул за собой весь `awf.api` |
 | `api/workflow_commit.py` | `commit_workflow` + dry-run `uncommitted_workflow_files`: workflow-определения `.agentic/` в git изолированным индексом (REPORTS26 F6) |
@@ -136,6 +137,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `session_store.py` | R6/R7 (CTX8–CTX9): файл пары `SESSION-<todo>-<stage>.json`, захват id из sqlite opencode по точному `title` и окну `time_created` (`directory` — тай-брейк) под бюджетом 1 с, решение reused/fresh по `engine.reuse_session` |
 | `phase.py` | SMO: `detect_phase`, `get_phase_prompt`, `advance_phase` |
 | `brief.py` | Данные brief-карточки (`data/*.yaml`: tool_map, scenarios, recovery) |
+| `brief_sections.py` | Ситуационная половина карточки (TODO-0348 IMP5): таблица ситуаций и слова, классификатор `classify_status`/`refine_with_run`, факты verify/коммита, правило ожидания; лист без импорта `awf.brief`/`awf.api` |
 | `signal_watch.py` | File-based signal detection (`run_subprocess_until_signal`) |
 | `_worker_exit.py` | Единый диагностический билдер `worker-exit:` для тихих смертей (нормальный выход и kill-пути) |
 | `_engine_liveness.py` | Живучесть движка (TODO-0241/0242): `engine.heartbeat` (старт/смена стадии/тик, клэмп `engine.heartbeat_seconds` ≤30, порог `max(3×interval, 120)`), `ENGINE-EXIT-<ts>-<pid>.md` (rc/сигнал/стадия/трейсбек + ретеншн), parent-death ПО УМОЛЧАНИЮ ВЫКЛЮЧЕН (`engine.kill_with_parent: true` — опция), детектор `engine_dead` для статуса и `stale_stage` (`StaleStage`: мёртвый pid или `updated_at` старше `automation.stale_stage_minutes`, по умолчанию 15 мин) |
