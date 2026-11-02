@@ -309,7 +309,8 @@ def test_auditor_probes_are_checked_and_counted_apart(tmp_path):
     """A27: PROBES is read too, and the report names it separately."""
     project = _project(tmp_path)
     _done(project, [{"cmd": "python3 -c 'print(1)'", "result": "1 passed"}])
-    _probes(project, [{"cmd": "python3 -c 'print(2)'", "result": "1 passed"}])
+    _probes(project, [{"cmd": "python3 -c 'print(2)'", "result": "1 passed",
+                       "cwd": str(project)}])
 
     report = verify_pack.check_done_claims(project, "TODO-0001")
 
@@ -325,7 +326,8 @@ def test_a_false_probe_is_a_contradiction_too(tmp_path):
     """A green probe that no longer reproduces fails the pack section."""
     project = _project(tmp_path)
     _done(project, [{"cmd": "python3 -c 'print(1)'", "result": "1 passed"}])
-    _probes(project, [{"cmd": "python3 -c 'import sys; sys.exit(1)'", "result": "9 passed"}])
+    _probes(project, [{"cmd": "python3 -c 'import sys; sys.exit(1)'",
+                       "result": "9 passed", "cwd": str(project)}])
 
     report = verify_pack.check_done_claims(project, "TODO-0001")
     section = verify_pack._done_json_section(project, "TODO-0001", project / ".agentic")
@@ -340,7 +342,8 @@ def test_the_pack_passes_a_unit_with_honest_auditor_probes(tmp_path):
     """Acceptance: DONE + a separate PROBES file give ``done_json: PASS``."""
     project = _project(tmp_path)
     _done(project, [{"cmd": "python3 -c 'print(1)'", "result": "1 passed"}])
-    _probes(project, [{"cmd": "python3 -c 'print(2)'", "result": "1 passed"}])
+    _probes(project, [{"cmd": "python3 -c 'print(2)'", "result": "1 passed",
+                       "cwd": str(project)}])
 
     section = verify_pack._done_json_section(project, "TODO-0001", project / ".agentic")
 
@@ -352,7 +355,8 @@ def test_an_audit_only_unit_still_checks_its_probes(tmp_path):
     """A unit with PROBES and no DONE: the probes are rerun and named; the
     section does not claim a DONE it never had."""
     project = _project(tmp_path)
-    _probes(project, [{"cmd": "python3 -c 'print(1)'", "result": "1 passed"}])
+    _probes(project, [{"cmd": "python3 -c 'print(1)'", "result": "1 passed",
+                       "cwd": str(project)}])
 
     section = verify_pack._done_json_section(project, "TODO-0001", project / ".agentic")
 
@@ -364,7 +368,8 @@ def test_an_audit_only_unit_still_checks_its_probes(tmp_path):
 def test_an_audit_only_unit_with_a_lying_probe_fails_the_section(tmp_path):
     """No author DONE is not a hiding place for a probe that does not reproduce."""
     project = _project(tmp_path)
-    _probes(project, [{"cmd": "python3 -c 'import sys; sys.exit(2)'", "result": "7 passed"}])
+    _probes(project, [{"cmd": "python3 -c 'import sys; sys.exit(2)'",
+                       "result": "7 passed", "cwd": str(project)}])
 
     section = verify_pack._done_json_section(project, "TODO-0001", project / ".agentic")
 

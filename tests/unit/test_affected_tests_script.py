@@ -12,6 +12,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tests.unit._gate_scripts import copy_scripts
+
 REPO_ROOT = Path(__file__).parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "affected-tests.sh"
 
@@ -180,6 +182,36 @@ def test_run_keeps_the_callers_parallelism(tmp_path):
     line = _pytest_line(tmp_path / "fake.log")
     assert "-n 0" in line
     assert "auto" not in line
+
+
+def test_no_awf_cli_still_asks_through_python_dash_m(tmp_path):
+    """A28: a project with the package but no `awf` script keeps its interpreter.
+
+    The selector used to fall back to `python -m awf` when no CLI answered;
+    skipping that branch demoted a configured interpreter to `python3` from
+    PATH — the exact failure the contract gate just stopped having.
+    """
+    project = _project_with_fake_interpreter(
+        tmp_path, "./bin/fake-python -m pytest tests/ -q"
+    )
+    copied = tmp_path / "copy" / "scripts"
+    copy_scripts(copied, "affected-tests.sh")
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    (shim / "python3").symlink_to(sys.executable)
+    log = tmp_path / "fake.log"
+
+    result = subprocess.run(
+        ["bash", str(copied / "affected-tests.sh"), "--project", str(project)],
+        cwd=project,
+        env={"PATH": f"{shim}:/usr/bin:/bin", "FAKE_PYTHON_LOG": str(log)},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert "-m awf.test_selection" in log.read_text(encoding="utf-8")
+    assert result.returncode == 2, result.stderr  # empty selection, not a crash
 
 
 def test_a_missing_awf_python_names_the_interpreter_not_the_cli(tmp_path):

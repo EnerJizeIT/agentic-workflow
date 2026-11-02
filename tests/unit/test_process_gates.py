@@ -15,7 +15,6 @@ Covered surfaces:
 """
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -27,8 +26,8 @@ from awf import api, run_state
 from awf.api import hygiene
 from awf.unit_contract import parse_todo_contract
 from awf.verify_pack import verify_pack
+from tests.unit._gate_scripts import copy_gate_scripts
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 T1, T2, T3, T4 = "TODO-0001", "TODO-0002", "TODO-0003", "TODO-0004"
 
 
@@ -803,11 +802,9 @@ class TestQueueReferencesOnEveryRemover:
 def _contracts_project(tmp_path: Path, matrix: str) -> Path:
     project = tmp_path / "contracts"
     (project / "docs" / "contracts").mkdir(parents=True)
-    (project / "scripts").mkdir()
-    shutil.copy(
-        REPO_ROOT / "scripts" / "check-contracts.sh",
-        project / "scripts" / "check-contracts.sh",
-    )
+    # A28: the gate and the interpreter resolver in ``scripts/lib/`` travel
+    # together — a copy of the script without it cannot start.
+    copy_gate_scripts(project)
     (project / "x.py").write_text("x = 1\n", encoding="utf-8")
     (project / "docs" / "contracts" / "x.md").write_text(
         "# Contract: x\n\nOwns: x\nPath: `x.py`\nNever: no eval\nGate: true\n",

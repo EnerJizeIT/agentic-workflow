@@ -7,7 +7,6 @@ are monkeypatched.
 """
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +14,7 @@ from types import SimpleNamespace
 from awf import verify_pack as vp
 from awf.cmd_verify_pack import run as cmd_run
 from awf.todos import archive_todo
+from tests.unit._gate_scripts import copy_gate_scripts
 
 TODOS = "TODO-0001"
 OK_GATE = 'python3 -c "import calc; assert calc.add(1, 2) == 3"'
@@ -31,9 +31,6 @@ def _sha(repo: Path) -> str:
     ).stdout.strip()
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-
-
 def _proj(tmp_path: Path, contract: str | None = None, gate: str = OK_GATE,
           name: str = "proj") -> Path:
     """Git repo: committed calc.py baseline + a contract gate in docs/contracts."""
@@ -42,10 +39,8 @@ def _proj(tmp_path: Path, contract: str | None = None, gate: str = OK_GATE,
     (repo / ".agentic" / "inbox").mkdir(parents=True)
     (repo / ".agentic" / "outbox").mkdir(parents=True)
     (repo / ".agentic" / "context").mkdir(parents=True)
-    # The real gate script (the temp repo has the precondition, docs/contracts)
-    (repo / "scripts").mkdir()
-    shutil.copy(REPO_ROOT / "scripts" / "check-contracts.sh",
-                repo / "scripts" / "check-contracts.sh")
+    # The real gate script and its shared interpreter helper (A28).
+    copy_gate_scripts(repo)
     (repo / ".gitignore").write_text(".agentic/\n__pycache__/\n")
     _git(repo, "init", "-q")
     _git(repo, "config", "user.email", "t@t.t")

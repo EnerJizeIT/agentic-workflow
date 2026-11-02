@@ -1175,6 +1175,10 @@ _SKIP_WORDS: dict[str, tuple[str, str]] = {
     # command. Rerunning it produced FileNotFoundError and a false
     # contradiction; it belongs in the skipped half, named as what it is.
     "prose": ("line that is not a command", "lines that are not commands"),
+    # REVIEW-0337: an auditor probe is a demonstration in a directory the
+    # auditor built, not a claim about this project. It is rerun only when
+    # it names an existing `cwd`; the rest are named, never executed.
+    "probe": ("probe not rerun (demonstration)", "probes not rerun (demonstrations)"),
 }
 
 
@@ -1259,6 +1263,15 @@ class ClaimsReport:
         if self.has_probes():
             out.append(f"A8: {self.probes_summary()}")
             out.extend(f"  - {line}" for line in self.probes_unverified)
+            demonstrations = self.probes_skipped.get("probe", 0)
+            if demonstrations:
+                # REVIEW-0337: a probe without an existing `cwd` is an
+                # auditor's demonstration, not a claim about this project.
+                out.append(
+                    "A8: auditor probes: "
+                    f"{_counted(demonstrations, 'entry', 'entries')} "
+                    "not rerun (demonstrations)"
+                )
         return out
 
 
@@ -1287,9 +1300,11 @@ def check_done_claims(
 ) -> ClaimsReport:
     """A8: rerun the commands ``DONE-<todo>.json`` says the worker ran.
 
-    A27: ``PROBES-<todo>.json`` (the reviewer/auditor's own file) is checked
-    the same way and counted apart — the author's facts are never read from
-    a file another stage overwrote.
+    A27: ``PROBES-<todo>.json`` (the reviewer/auditor's own file) is read
+    apart from the author's facts — one file never overwrites the other.
+    REVIEW-0337: a probe is evidence, not a claim about this repository:
+    it is rerun only when it names an existing ``cwd``; the rest are
+    counted as demonstrations and never executed from the repository root.
 
     Returns a report: one line per CONTRADICTION (a claimed green whose
     command now fails), the number of claims rerun, the ones that outlived
@@ -1357,8 +1372,31 @@ def _is_command(token: str, project: Path) -> bool:
     looks_like_path = "/" in token or token.startswith((".", "~"))
     if looks_like_path:
         candidate = Path(token).expanduser()
-        return (candidate if candidate.is_absolute() else project / candidate).exists()
+        resolved = candidate if candidate.is_absolute() else project / candidate
+        # A folder is not a program: `exists()` let a prose line naming a
+        # directory reach `subprocess.run`, and the PermissionError became a
+        # contradiction the rerun never made. Same predicate as the shell
+        # gates' interpreter check (`-f`), for the same reason.
+        return resolved.is_file()
     return shutil.which(token) is not None
+
+
+def _probe_cwd(entry: dict, project: Path) -> Path | None:
+    """The directory an auditor probe runs in, or None for a demonstration.
+
+    REVIEW-0337: a probe is often a command run inside a scratch project the
+    auditor assembled ("doctor --project-dir /tmp/…"). Rerunning it from the
+    repository root contradicts a claim nobody made. The optional ``cwd``
+    makes a probe reproducible: an existing directory means "run it there",
+    anything else keeps the probe out of the rerun — named, not executed.
+    """
+    cwd = entry.get("cwd")
+    if not isinstance(cwd, str) or not cwd.strip():
+        return None
+    candidate = Path(cwd).expanduser()
+    if not candidate.is_absolute():
+        candidate = project / candidate
+    return candidate if candidate.is_dir() else None
 
 
 def _rerun_claims(
@@ -1409,9 +1447,19 @@ def _rerun_claims(
         if any(token in _SHELL_OPERATORS for token in argv):
             report.skip("shell", probes=probes)
             continue
+        # REVIEW-0337: an auditor probe runs in its own directory when it
+        # names one. Without an existing `cwd` it is a demonstration — the
+        # repository root is the wrong place to rerun it.
+        cwd = project
+        if probes:
+            probe_dir = _probe_cwd(entry, project)
+            if probe_dir is None:
+                report.skip("probe", probes=True)
+                continue
+            cwd = probe_dir
         # A27: prose is not a command. A line like "reused canonical suite
         # artifact …" names a fact, not an argv — it is skipped, not rerun.
-        if not _is_command(argv[0], project):
+        if not _is_command(argv[0], cwd):
             report.skip("prose", probes=probes)
             continue
         remaining = deadline - time.monotonic()
@@ -1423,7 +1471,7 @@ def _rerun_claims(
         try:
             done = subprocess.run(
                 argv,
-                cwd=project,
+                cwd=cwd,
                 capture_output=True,
                 text=True,
                 timeout=budget,

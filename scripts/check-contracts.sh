@@ -30,6 +30,62 @@ DIR="${1:-docs/contracts}"
 files=$(ls "$DIR"/*.md 2>/dev/null || true)
 [ -n "$files" ] || { echo "check-contracts: no contracts in $DIR/"; exit 2; }
 
+# A28: `Gate:` commands say `python3`, and `python3` first in PATH is often not
+# the project's interpreter (no pytest-timeout, no project plugins) — the gate
+# then goes red on a green tree and hides real failures. Resolve the
+# interpreter the project names, once, with the same shared function the test
+# selectors use, and run every gate through it.
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 2
+root=$(CDPATH= cd -- "$script_dir/.." && pwd) || exit 2
+project=$(pwd)
+lib="$script_dir/lib/python-interp.sh"
+if [ ! -f "$lib" ]; then
+  # Sourcing a missing file makes dash exit by itself, so the test comes
+  # first — an `|| echo …` after `.` would never print.
+  echo "check-contracts: no $lib" >&2
+  exit 2
+fi
+. "$lib"
+
+# `awf` CLI: source tree first, then a working one on PATH (shared lookup —
+# the test selector asks the same question). No CLI but an importable package:
+# ask through `python3 -m awf`, as the selector does. Without either the shared
+# function falls back to `python3` from PATH (a project that never configured
+# a test command).
+awf_cli=$(awf_find_cli "$root")
+py_boot=${AWF_PYTHON:-python3}
+if [ -n "$awf_cli" ]; then
+  awf_python_resolve "$project" "$awf_cli" || exit 2
+elif "$py_boot" -c 'import awf' >/dev/null 2>&1; then
+  awf_python_resolve "$project" "$py_boot" -m awf || exit 2
+else
+  awf_python_resolve "$project" || exit 2
+fi
+
+# The interpreter's own directory helps only when `python3` lives there (venv
+# layouts do); the substitution below is what makes the name resolve.
+case "$AWF_PY" in
+  */*)
+    py_dir=$(dirname -- "$AWF_PY")
+    if [ -x "$py_dir/python3" ]; then
+      PATH=$py_dir:$PATH
+      export PATH
+    fi
+    ;;
+esac
+
+# `python3` as a whole word in a Gate: command means the project interpreter.
+# The path becomes one shell word: `sh -c` splits an unquoted path at a space
+# ("My Projects", a venv inside the tree), so the word is single-quoted first
+# (a quote inside the path as '\''). Then it goes into a sed replacement: `&`,
+# `#` (the delimiter) and `\` must be escaped, or the substitution itself
+# breaks the command.
+py_sq=$(printf '%s' "$AWF_PY" | sed "s/'/'\\\\''/g")
+py_repl=$(printf "'%s'" "$py_sq" | sed 's/[&#\\]/\\&/g')
+gate_command() {
+  printf '%s' "$1" | sed -E "s#(^|[[:space:]])python3([[:space:]]|\$)#\\1$py_repl\\2#g"
+}
+
 fail=0
 n_contracts=0
 n_tokens=0
@@ -93,7 +149,7 @@ for f in $files; do
     echo "note: $name: Gate: review — no script check, an incident must back this rule"
   else
     n_gates=$((n_gates + 1))
-    if ! gate_out=$(sh -c "$gate" 2>&1); then
+    if ! gate_out=$(sh -c "$(gate_command "$gate")" 2>&1); then
       echo "FAIL: $name: gate reports a violation: $gate"
       printf '%s\n' "$gate_out" | head -10
       fail=1

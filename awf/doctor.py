@@ -39,13 +39,14 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from . import command_parse, config_keys, paths, versions, xdg
+from . import command_parse, config_keys, paths, suite_command, versions, xdg
 from . import config as cfg_mod
 from .supervisor import argv_agent_flag
 
@@ -418,6 +419,61 @@ def _check_verification(config: dict[str, Any], out: _Lines) -> None:
     )
 
 
+def _check_contract_gate(root: Path, out: _Lines) -> None:
+    """A28: name the interpreter the contract gate's ``Gate:`` commands use.
+
+    ``scripts/check-contracts.sh`` resolves the project interpreter from
+    ``verification.test_cmd`` (``AWF_PYTHON`` first). The operator asked
+    "will the gate run the same python I test with?" gets one line, not a
+    guess — a wrong interpreter used to paint the gate red on a green tree.
+    """
+    if not (root / "scripts" / "check-contracts.sh").is_file():
+        # No gate in this project: a line about "Gate: commands" would promise
+        # behaviour of a script that never runs (`awf init` does not ship one).
+        return
+    interp, source = _contract_gate_interpreter(root)
+    if "/" in interp:
+        # Same test the shell resolver applies: `[ -x "$AWF_PY" ]`, and for a
+        # relative path that means "relative to where the gate runs" — the
+        # project root, not the doctor's cwd (the interpreter is resolved
+        # against ``root`` above for exactly that reason).
+        # `X_OK` alone is true for a directory: a config naming the venv's
+        # `bin` folder passed here while every gate died with "Permission
+        # denied". A named interpreter is a file you can run.
+        found = os.path.isfile(interp) and os.access(interp, os.X_OK)
+    else:
+        found = shutil.which(interp) is not None
+    fact = f"Gate: commands run through {interp} ({source})"
+    if found:
+        out.ok("contracts gate", fact)
+    else:
+        out.warn("contracts gate", f"{fact} — not found, the gate refuses (rc=2)")
+
+
+def _contract_gate_interpreter(root: Path) -> tuple[str, str]:
+    """The interpreter plus where the answer came from, as the shell reads it.
+
+    A relative path is resolved against ``root`` — the gate runs ``Gate:``
+    commands from the project root, so ``./bin/py`` means ``<root>/bin/py``
+    even when the doctor is invoked from somewhere else.
+    """
+    env = os.environ.get("AWF_PYTHON")
+    if env:
+        return _against_root(root, env), "AWF_PYTHON"
+    resolved = suite_command.resolve(root)
+    parts = resolved.command.split() if resolved is not None else []
+    if len(parts) >= 2 and parts[1] == "-m":
+        return _against_root(root, parts[0]), "verification.test_cmd"
+    return "python3", "PATH"
+
+
+def _against_root(root: Path, interp: str) -> str:
+    """A relative interpreter in the config means "relative to the project"."""
+    if "/" in interp and not os.path.isabs(interp):
+        return str(root / interp)
+    return interp
+
+
 def _check_config_keys(config: dict[str, Any], out: _Lines) -> None:
     """Config keys row: every key of the live config has a reader."""
     dead = config_keys.dead_keys(config)
@@ -483,6 +539,7 @@ def run_doctor(project_dir: str | Path = ".") -> DoctorReport:
     else:
         _check_verification(config, out)
         _check_config_keys(config, out)
+    _check_contract_gate(root, out)
     return DoctorReport(
         rc=1 if out.warnings else 0,
         lines=out.lines,
