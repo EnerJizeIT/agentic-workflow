@@ -16,9 +16,9 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .. import arbiter, git_utils, paths, stage_timeout, todos
 from .. import budget as budget_mod
 from .. import config as cfg_mod
-from .. import git_utils, paths, stage_timeout, todos
 from .._proc import caller_ancestry, child_pids, kill_pid_tree, ppid_of, run_tree
 from ..infra import managed_fs
 from ..pipeline_state import read_state
@@ -1030,6 +1030,9 @@ def approve_commit(
             files = _commit_plan.plan_files(project_dir, baseline_sha, todo_id)
             files_digest = _commit_plan.files_digest(files)
         binding = {
+            # A29: the verdict's source — a human approve outranks the
+            # verify subprocess's own verdict for the same attempt.
+            "source": arbiter.HUMAN,
             "generation": gen,
             "verified_sha": verified_fp,
             "files_digest": files_digest,
@@ -1058,6 +1061,7 @@ def approve_commit(
         # set follows from (baseline, tree) that are both pinned.
         if verified_fp:
             binding = {
+                "source": arbiter.HUMAN,
                 "baseline_sha": baseline_sha,
                 "verified_sha": verified_fp,
             }
@@ -1070,7 +1074,13 @@ def approve_commit(
             # K9: the marker is written no-follow too — a symlink swapped onto
             # the leaf between the preflight and the write is replaced, never
             # followed (the preflight already refused an existing one).
-            managed_write_api_text(signal, "", operation="write approve signal")
+            # A29: the marker still names its source, so the verify stage can
+            # tell the owner's decision from the subprocess's hand-made file.
+            managed_write_api_text(  # A29: the approve marker names its source
+                signal,
+                json.dumps({"source": arbiter.HUMAN}, sort_keys=True) + "\n",
+                operation="write approve signal",
+            )
 
     # RUN5 #1 (Part B): failsafe — list rejected-attempt files that would be
     # SILENTLY excluded from this commit (still untracked AND in the
@@ -1151,7 +1161,7 @@ def reject_commit(project_dir: Path, todo_id: str, reason: str) -> RejectResult:
     review_file = outbox / f"REVIEW-{todo_id}.md"
     managed_write_api_text(
         review_file,
-        f"# REVIEW — {todo_id}\n\n## Reason\n{reason.strip()}\n",
+        arbiter.mark_human_review(f"# REVIEW — {todo_id}\n\n## Reason\n{reason.strip()}\n"),
         operation=f"reject {todo_id}",
     )
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -18,6 +19,12 @@ from . import config as cfg_mod
 from . import paths
 from ._errors import AwfApiError
 from ._log import log as _log
+from .arbiter import (
+    decision_is_stale,
+    discard_overruled,
+    human_verify_decision,
+    overruled_auto_verdicts,
+)
 from .doctrine import materialize_doctrine
 from .pipeline import Stage, load_stages, resolve_pipeline_file
 from .todo_ids import is_valid_todo_id
@@ -557,37 +564,6 @@ def _decision_signal_fresh(
             f"(mtime predates this wait — previous cycle's decision)",
         )
     return False
-
-
-def _decision_is_stale(
-    path: Path,
-    signal: str,
-    accepted_decision: str | None,
-    accepted_decision_mtime: float | None,
-) -> bool:
-    """U6b: cycle-aware gate for the auto-verify fallback.
-
-    ``accepted_decision``/``accepted_decision_mtime`` is the decision the
-    engine ACCEPTED in a previous verify cycle (recorded at acceptance,
-    cleared at consumption — pipeline_engine._record_verify_decision /
-    _consume_verify_decision). A kill between acceptance and consumption
-    leaves the decision file on disk; the next cycle's fallback would
-    re-accept it by mere existence (auto-commit on a dead approval).
-
-    The leftover is the SAME physical file as the accepted one: same signal
-    name, mtime no newer than the recorded one (whole-second resolution,
-    same convention as _decision_signal_fresh). A newer mtime means the
-    owner re-approved — that is a fresh decision, not the leftover.
-    """
-    if not accepted_decision or accepted_decision_mtime is None:
-        return False
-    if accepted_decision != signal:
-        return False
-    try:
-        mtime = path.stat().st_mtime
-    except OSError:
-        return False
-    return int(mtime) <= int(accepted_decision_mtime)
 
 
 def _run_evidence_ok(project_dir: Path, todo_id: str) -> bool:
@@ -1228,6 +1204,54 @@ def _verify_grace_seconds(config: dict, logs_dir: Path) -> float:
     return grace
 
 
+def _human_decision_line(signal: str, mtime: float, outcome: str) -> str:
+    """A29: the one log format for "the owner's verdict was taken"."""
+    return f"verify decision: human ({signal}, mtime {int(mtime)}) — {outcome}"
+
+
+def _prefer_human_verdict(
+    kind: str,
+    todo_id: str,
+    project_dir: Path,
+    auto_signal: str,
+    wait_start: float,
+    logs_dir: Path,
+) -> str:
+    """A29: the owner's verdict wins over the auto subprocess's.
+
+    Called with the subprocess's answer. A valid human decision for the
+    same attempt replaces it and the swap is logged in the required form:
+    ``verify decision: human (<signal>, mtime <t>) — auto verdict <s>
+    ignored``. No decision, or the same one — the auto answer stands.
+    """
+    if kind != "verify" or not todo_id:
+        return auto_signal
+    human = human_verify_decision(project_dir, todo_id, wait_start, logs_dir)
+    if human is None:
+        return auto_signal
+    signal, mtime = human
+    if signal == auto_signal:
+        # The scan picked the owner's own file up (the fallback reads REVIEW
+        # first), so the file to overrule is not ``auto_signal`` — sweep the
+        # other decisions by name, or the auto APPROVE stays in the inbox.
+        overruled = overruled_auto_verdicts(project_dir, todo_id, signal)
+        if overruled:
+            line = _human_decision_line(
+                signal, mtime, f"auto verdict {' + '.join(overruled)} ignored"
+            )
+            print(line)
+            _log(logs_dir, line)
+        discard_overruled(project_dir, todo_id, signal, logs_dir)
+        return auto_signal
+    line = _human_decision_line(
+        signal, mtime, f"auto verdict {auto_signal or 'none'} ignored"
+    )
+    print(line)
+    _log(logs_dir, line)
+    discard_overruled(project_dir, todo_id, signal, logs_dir)
+    return signal
+
+
 def run_supervisor_via_subprocess(
     kind: str,
     todo_id: str,
@@ -1250,6 +1274,24 @@ def run_supervisor_via_subprocess(
     - verify: ACK-TODO-NNNN, APPROVE-TODO-NNNN, or REVIEW-TODO-NNNN
     - empty string if skipped.
     """
+    # A29: the owner may have decided already. A valid human verdict for
+    # this attempt means the subprocess has nothing to arbitrate — do not
+    # spawn it, and hand the human answer to the engine. Read BEFORE the
+    # role file: a project whose supervisor role is missing used to return
+    # "" here, and the verify stage aborts the pipeline on an empty signal
+    # — a green owner approval must not die on a missing prompt file.
+    wait_start = time.time()
+    if kind == "verify" and todo_id:
+        human = human_verify_decision(project_dir, todo_id, wait_start, logs_dir)
+        if human is not None:
+            signal, mtime = human
+            line = _human_decision_line(
+                signal, mtime, "supervisor subprocess skipped"
+            )
+            print(line)
+            _log(logs_dir, line)
+            return signal
+
     try:
         role_file = resolve_role_file("supervisor", project_dir)
     except RuntimeError as e:
@@ -1387,7 +1429,9 @@ def run_supervisor_via_subprocess(
         signal_name = fired.rsplit(".", 1)[0] if "." in fired else fired
         _log(logs_dir, f"Supervisor {kind} produced signal (from watcher): {signal_name!r}")
         _log_replan_pickup(logs_dir, kind, signal_name, todo_id, inbox)
-        return signal_name
+        return _prefer_human_verdict(
+            kind, todo_id, project_dir, signal_name, wait_start, logs_dir
+        )
 
     # U6b: pass the previous cycle's accepted decision (pipeline state) so
     # the fallback can reject a leftover from a kill between acceptance and
@@ -1405,7 +1449,9 @@ def run_supervisor_via_subprocess(
     )
     _log(logs_dir, f"Supervisor {kind} produced signal (fallback): {signal_name!r}")
     _log_replan_pickup(logs_dir, kind, signal_name, todo_id, inbox)
-    return signal_name
+    return _prefer_human_verdict(
+        kind, todo_id, project_dir, signal_name, wait_start, logs_dir
+    )
 
 
 def _detect_supervisor_signal(
@@ -1427,7 +1473,7 @@ def _detect_supervisor_signal(
     ``accepted_decision_mtime`` (from the pipeline state) carry the decision
     the engine already accepted in a previous cycle; a decision file matching
     that record at the same or older mtime is the leftover of a killed cycle
-    and is rejected (see _decision_is_stale). A pre-approval with no record
+    and is rejected (see ``arbiter.decision_is_stale``). A pre-approval with no record
     (BD-8) and a fresh re-approval (newer mtime) are accepted as before.
 
     AUD11-03: ``run_evidence_ok`` is the run-mode gate — inside an active
@@ -1437,7 +1483,7 @@ def _detect_supervisor_signal(
     if kind == "verify" and todo_id:
         # Check REVIEW first (most recent decision wins)
         review = outbox / f"REVIEW-{todo_id}.md"
-        if review.exists() and not _decision_is_stale(
+        if review.exists() and not decision_is_stale(
             review, f"REVIEW-{todo_id}", accepted_decision, accepted_decision_mtime
         ):
             return f"REVIEW-{todo_id}"
@@ -1445,12 +1491,12 @@ def _detect_supervisor_signal(
             return ""
         # Then ACK and APPROVE
         ack = inbox / f"ACK-{todo_id}.ready"
-        if ack.exists() and not _decision_is_stale(
+        if ack.exists() and not decision_is_stale(
             ack, f"ACK-{todo_id}", accepted_decision, accepted_decision_mtime
         ):
             return f"ACK-{todo_id}"
         approve = inbox / f"APPROVE-{todo_id}.ready"
-        if approve.exists() and not _decision_is_stale(
+        if approve.exists() and not decision_is_stale(
             approve, f"APPROVE-{todo_id}", accepted_decision, accepted_decision_mtime
         ):
             return f"APPROVE-{todo_id}"
