@@ -124,6 +124,7 @@ def _compute_expected_action(
     has_active_todos: bool,
     done_count: int,
     last_signal: str | None = None,
+    current_stage_name: str | None = None,
 ) -> str | None:
     """Dogfood-6: structural determinism. Returns ONE instruction string
     telling supervisor what to do NOW, so they don't have to read execution
@@ -177,12 +178,14 @@ def _compute_expected_action(
         )
 
     if current_stage_kind == "execute":
-        return (
-            "worker stage running — auto-transition on worker DONE. Do NOT "
-            "intervene and do NOT poll in a loop: check awf_status once when "
-            "you need to act. In an active run, keep the run loop instead: "
-            "awf_wait_for_event(actionable_only=True)."
-        )
+        # R6/AC22–AC25: ONE waiting rule. The old text held both rules in
+        # one answer ("do NOT poll in a loop" + "keep the run loop") and
+        # the brief clipped the second half — status and card disagreed
+        # for the same state. ``running_wait_advice`` is the same owner
+        # ``next_action_from_status`` uses.
+        from ..brief import running_wait_advice
+
+        return running_wait_advice(current_stage_name or "?")
 
     if current_stage_kind == "verify":
         return (

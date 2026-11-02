@@ -2942,18 +2942,16 @@ async def awf_wait_for_event(
     timeout: int = 30,
     actionable_only: bool = False,
 ) -> dict[str, Any]:
-    """Check for pipeline events (reactive, NOT for proactive polling).
+    """Check for pipeline events.
 
-    R6 sleep mode: Do NOT call this in a loop after ``awf_start``.
-    Instead: open dashboard → go idle → respond to user messages.
-    Use this tool ONLY when the user writes you about a pipeline event
-    (e.g. "pipeline finished", "salvage", "blocked") to get structured
-    event details before acting.
-
-    SPEC A-run (забег): inside an active run the supervisor DOES wait in a
-    loop. Call it with ``actionable_only=True`` and ``timeout`` from the
-    previous result's ``suggested_timeout`` (awf sizes it from measured stage
-    durations — sleep in chunks instead of hammering every 30s).
+    Waiting rule: wait only inside an active run (``run_active=true`` in the
+    answer — keep the wait loop; ``timeout`` is not an exit, call again with
+    the result's ``suggested_timeout`` and ``actionable_only=True``). Outside
+    a run react to the user, no loop: go idle and call this tool when the
+    owner writes about a pipeline event (e.g. "pipeline finished", "salvage",
+    "blocked"). ``run_active`` comes from the run record, not from
+    ``pipeline_running`` — a single ``awf_start`` runs a pipeline without a
+    run.
 
     Returns immediately when:
 
@@ -3004,10 +3002,12 @@ async def awf_wait_for_event(
     Returns:
         Dict with: event_type (verify/blocked/salvage/checkpoint/done/
         timeout/stage_changed/idle/engine_dead), message (instruction for supervisor),
-        state_snapshot, suggested_timeout (recommended wait size for the
-        next call, never above the project's wait cap), next_action
-        (instruction + the actual single-wait cap), timeout_clamped (true
-        when the requested timeout exceeded the wrapper cap).
+        run_active (true — an active run: keep the wait loop; false — reactive
+        mode: react to the user, no loop), state_snapshot, suggested_timeout
+        (recommended wait size for the next call, never above the project's
+        wait cap), next_action (instruction + the actual single-wait cap),
+        timeout_clamped (true when the requested timeout exceeded the
+        wrapper cap).
     """
     # AUD08-07: a non-numeric timeout used to raise ValueError OUTSIDE the
     # try below — the module contract is "never escape with an exception".
@@ -3053,18 +3053,13 @@ async def awf_wait_for_event(
 
         # SPEC A-run: inside an active run the supervisor keeps waiting;
         # outside it stays idle (R6 reactive mode).
-        # RUN10 #1: the "run active" decision comes from the single source
-        # (awf.run_state.run_is_active, exported as api.run_is_active) —
-        # the old run_brief probe was a duplicated, heavier check.
-        run_active = False
-        try:
-            run_active = bool(
-                await asyncio.to_thread(
-                    api.run_is_active, _resolve_project_dir(project_dir)
-                )
-            )
-        except Exception:
-            pass
+        # IMP6 (TODO-0344): the mode is a FACT of the API answer
+        # (``WaitEventResult.run_active``, stamped once in
+        # ``api.wait_for_event`` from ``awf.run_state.run_is_active``). The
+        # old second probe is gone: two reads of the same fact could return
+        # ``run_active: true`` in the body and pick the reactive advice here
+        # if the run closed between them.
+        run_active = bool(response.get("run_active", False))
 
         if run_active:
             _EVENT_ACTIONS = {

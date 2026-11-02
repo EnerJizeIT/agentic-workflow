@@ -517,6 +517,12 @@ class WaitEventResult:
     # passive events (timeout/idle/done/stage_changed), which keep their
     # instruction in ``message``.
     next_action: str = ""
+    # R6/AC23: which waiting rule applies to the answer — True inside an
+    # active run (забег: the supervisor keeps the wait loop), False in the
+    # reactive mode (react to the owner's message, no loop). Comes from the
+    # ONE run-active source (``run_state.run_is_active``), never from
+    # ``pipeline_running``: a single ``awf_start`` also runs a pipeline.
+    run_active: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

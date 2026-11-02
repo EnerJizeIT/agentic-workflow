@@ -485,7 +485,7 @@ def _cycle_done_event(project_dir: Path) -> WaitEventResult | None:
     )
 
 
-def wait_for_event(
+def _wait_for_event_impl(
     project_dir: Path,
     *,
     timeout: int = 30,
@@ -669,6 +669,36 @@ def wait_for_event(
         state_snapshot=_state_to_dict(final_state),
         suggested_timeout=suggested,
     )
+
+
+def wait_for_event(
+    project_dir: Path,
+    *,
+    timeout: int = 30,
+    poll_interval: int = 3,
+    actionable_only: bool = False,
+) -> WaitEventResult:
+    """Block until pipeline event or timeout.
+
+    Waiting rule (R6/AC22–AC25): wait only inside an active run
+    (``run_active=True`` — keep the wait loop, ``timeout`` is not an exit);
+    outside a run react to the user, no loop — go idle and call this tool
+    when the owner writes about a pipeline event. ``run_active`` in the
+    answer is the mode fact the caller follows.
+
+    The event details live in :func:`_wait_for_event_impl`; this wrapper
+    stamps the run mode on EVERY answer (one place, no branch can miss it).
+    """
+    result = _wait_for_event_impl(
+        project_dir,
+        timeout=timeout,
+        poll_interval=poll_interval,
+        actionable_only=actionable_only,
+    )
+    from ..run_state import run_is_active
+
+    result.run_active = run_is_active(project_dir)
+    return result
 
 
 def _stale_decision_hint(project_dir: Path, todo_id: str) -> str:

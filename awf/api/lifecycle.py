@@ -1210,6 +1210,7 @@ def get_status(project_dir: Path) -> StatusResult:
             has_active_todos=bool(active_ids),
             done_count=done_count,
             last_signal=last_signal,
+            current_stage_name=current_stage_name,
         )
 
     # DF5-4: salvage state — read from state file even if pipeline not running
