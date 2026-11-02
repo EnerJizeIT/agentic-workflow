@@ -28,6 +28,12 @@ log = logging.getLogger(__name__)
 # R1/AC1: prompt names this many latest completed units, never the archive.
 _PRIOR_TODO_LIMIT = 8
 
+# TODO-0338 (A35): after the verify verdict is on disk the supervisor
+# subprocess gets this long to exit on its own before the engine TERMs it.
+# Overridable via `wait.verify_grace_seconds`; 0 means TERM as soon as the
+# signal is seen, a negative value falls back to this default.
+VERIFY_GRACE_DEFAULT = 90.0
+
 # Archive directory names, not public IDs: `TODO-9` is a legal directory
 # name here even though the public ID contract asks for four digits.
 _DONE_DIR_NAME_RE = re.compile(r"TODO-(\d+)")
@@ -362,7 +368,11 @@ def build_prompt(
             f".agentic/context/BASELINE-{todo_id}.sha. Decide: is the work complete and correct? "
             "If yes, write ACK signal at "
             f".agentic/inbox/ACK-{todo_id}.ready. If no, do NOT ack — leave a note in "
-            f".agentic/outbox/REVIEW-{todo_id}.md explaining what's wrong."
+            f".agentic/outbox/REVIEW-{todo_id}.md explaining what's wrong.\n\n"
+            "## Signal ends your work\n"
+            "Your work ends when you write the signal file. Do NOT poll `awf status` "
+            "and do NOT wait for the commit — the engine commits on its own as soon "
+            "as it sees your signal."
         )
     elif kind == "salvage":
         base = (
@@ -1187,6 +1197,35 @@ def _log_replan_pickup(
     )
 
 
+def _verify_grace_seconds(config: dict, logs_dir: Path) -> float:
+    """A35: how long the verify subprocess may outlive its own verdict.
+
+    Reads ``wait.verify_grace_seconds`` (default
+    ``VERIFY_GRACE_DEFAULT``). A non-number or a negative window falls back
+    to the default with a log line: a negative window would mean "give up
+    before the signal" — nonsense — and a silent endless wait would restore
+    the very deadlock A35 removes.
+    """
+    raw = cfg_mod.get(config, "wait.verify_grace_seconds", VERIFY_GRACE_DEFAULT)
+    try:
+        grace = float(raw)
+    except (TypeError, ValueError):
+        _log(
+            logs_dir,
+            f"wait.verify_grace_seconds={raw!r} is not a number — "
+            f"using {VERIFY_GRACE_DEFAULT:g}s",
+        )
+        return VERIFY_GRACE_DEFAULT
+    if grace < 0:
+        _log(
+            logs_dir,
+            f"wait.verify_grace_seconds={raw!r} is negative — "
+            f"using {VERIFY_GRACE_DEFAULT:g}s",
+        )
+        return VERIFY_GRACE_DEFAULT
+    return grace
+
+
 def run_supervisor_via_subprocess(
     kind: str,
     todo_id: str,
@@ -1295,6 +1334,13 @@ def run_supervisor_via_subprocess(
 
     signal_holder: dict[str, str] = {}
 
+    # TODO-0338 (A35): only the verify subprocess can deadlock with the
+    # engine (it waits for the commit the engine waits to run). The other
+    # kinds keep the old natural-exit wait.
+    signal_exit_grace: float | None = None
+    if kind == "verify":
+        signal_exit_grace = _verify_grace_seconds(config, logs_dir)
+
     # RUN8 #2: same worker-pid record as the agent stage — the supervisor
     # subprocess is an opencode process in its own group and an
     # awf_kill mid-stage would orphan it the same way.
@@ -1324,6 +1370,7 @@ def run_supervisor_via_subprocess(
         preflight_timeout=0,
         no_output_timeout=0,
         on_spawn=_record_worker_pid,
+        signal_exit_grace=signal_exit_grace,
     )
 
     _log(logs_dir, f"Supervisor {kind} subprocess finished (exit={result.returncode})")

@@ -73,6 +73,10 @@ READ_KEYS: frozenset[str] = frozenset({
     # nothing reads them (that is what doctor reports).
     "retry.silent_work_attempts",
     "wait.cap_seconds",
+    # TODO-0338 (A35): how long the verify supervisor subprocess may keep
+    # running after its verdict signal before the engine TERMs it. 0 — TERM
+    # immediately; a negative value falls back to the 90s default.
+    "wait.verify_grace_seconds",
     "dashboard.auto_open",
     "run.stall_minutes",
     # ── phases / supervisor / context / feedback ─────────────────────────

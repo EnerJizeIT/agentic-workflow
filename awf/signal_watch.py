@@ -4,10 +4,17 @@ Extracted from orchestrator.py (A6 refactor) — keeps signal-watch logic
 isolated from the pipeline state machine.
 
 Design (BD-20 redesign): detecting a signal file means "work is logically
-done". We do NOT kill the subprocess — it may still be flushing buffers,
-closing connections, writing metadata. We poll until natural exit. The
-only safety net is ``hard_timeout`` (default 3600s) which SIGKILLs a
-hung process.
+done". By default we do NOT kill the subprocess — it may still be flushing
+buffers, closing connections, writing metadata. We poll until natural exit;
+the safety net is ``hard_timeout`` (default 3600s) which SIGKILLs a hung
+process.
+
+A35: a signal is not always enough to end the wait. The verify supervisor
+used to poll the engine after writing its verdict, while the engine waited
+for that same subprocess to exit — a deadlock only ``hard_timeout`` could
+break, and it broke it by failing the run. Callers that act on the signal
+themselves may pass ``signal_exit_grace``: the signal stays the verdict,
+the subprocess just gets a bounded window to leave on its own.
 """
 from __future__ import annotations
 
@@ -107,9 +114,9 @@ def _late_signal_done(
 ) -> subprocess.CompletedProcess | None:
     """TODO-0226 (F2): a signal found after a kill is a normal finish.
 
-    All three kill paths (both watchdog branches, hard timeout) share this
-    decision: the signal landed while the tree was being killed, so the
-    stage is done — not a ``class=timeout`` death.
+    Every kill path (both watchdog branches, hard timeout, A35 grace) shares
+    this decision: a signal is on disk, so the stage is done — not a
+    ``class=timeout`` death.
     """
     if not late:
         return None
@@ -210,12 +217,15 @@ def run_subprocess_until_signal(
     opencode_config: str | Path | None = None,
     log_name: str | None = None,
     on_spawn: Callable[[int], None] | None = None,
+    signal_exit_grace: float | None = None,
 ) -> subprocess.CompletedProcess:
     """BD-20: run subprocess, watch for signal files, wait for natural exit.
 
     Polls every ``BD20_POLL_INTERVAL`` seconds. As soon as ANY of these
     conditions fires, the subprocess is considered "logically done" — we
-    keep waiting for its natural exit (no SIGTERM/SIGKILL):
+    keep waiting for its natural exit (no SIGTERM/SIGKILL). A caller that
+    acts on the signal itself can bound that wait with
+    ``signal_exit_grace`` (see below):
 
     - any path in ``watch_paths`` exists AFTER subprocess start (BD-22 fix:
       snapshot-based — stale files that existed before subprocess launch
@@ -267,6 +277,15 @@ def run_subprocess_until_signal(
             group, so a pipeline-only kill leaves it running (the
             2026-09-23 orphan incident). Best-effort: a raising callback
             is swallowed — recording must never break the run.
+        signal_exit_grace: TODO-0338 (A35) — after a signal is detected,
+            wait at most this many seconds for a natural exit. A
+            subprocess still alive after the window is TERM-ed in its own
+            process group and the run returns success — the decision is
+            already on disk, so its liveness must not fail the stage.
+            ``0`` — no window at all: TERM as soon as the signal is seen
+            (a negative value behaves the same — the window is already
+            over). None (default) keeps the natural-exit wait for callers
+            that do not act on the signal themselves.
     """
     watch_paths = watch_paths or []
     # KAUD-4: handle hard_timeout=None (use default)
@@ -413,6 +432,44 @@ def run_subprocess_until_signal(
                             f"BD-20: signal detected ({fired_name}), waiting for "
                             f"natural exit (pid={proc.pid})",
                         )
+
+            # TODO-0338 (A35): the signal is the verdict; the subprocess's
+            # lifetime must not hold the stage hostage. Both used to wait
+            # for each other (engine waits for exit, supervisor waits for
+            # the commit). After the grace window the decision on disk wins:
+            # TERM the worker's OWN group (never killpg(1) — the guard lives
+            # in _proc.kill_process_tree) and return success. The success
+            # verdict goes through the same helper as every other kill path —
+            # one home for "a signal found after a kill is a normal finish".
+            if (
+                signal_seen_at is not None
+                and signal_exit_grace is not None
+                and now - signal_seen_at >= signal_exit_grace
+            ):
+                if logs_dir:
+                    _log(
+                        logs_dir,
+                        f"verify subprocess did not exit within "
+                        f"{signal_exit_grace:g}s — decision already recorded, "
+                        f"proceeding to commit",
+                    )
+                    _log(
+                        logs_dir,
+                        f"A35: verify subprocess still alive (pid={proc.pid}) — "
+                        f"terminating its process group",
+                    )
+                _proc.kill_process_tree(proc)
+                late_name = (
+                    signal_holder.get("signal") if signal_holder else None
+                ) or _late_signal()
+                done = _late_signal_done(
+                    cmd, late_name, signal_holder, logs_dir,
+                )
+                if done is not None:
+                    return done
+                # The file vanished between detection and the re-read (an
+                # outside consumer); the verdict was seen, the stage is done.
+                return subprocess.CompletedProcess(cmd, 0)
 
             # U6c: watchdog — a worker that stops producing output is hung.
             # Kill the tree well before the hard timeout, but never after a
