@@ -604,7 +604,12 @@ def render_brief(r: BriefResult) -> str:
     L.append("")
     if r.is_live_project or r.actionable_fact:
         if r.next_action:
-            L.append(f"- next: {r.next_action}")
+            # TODO-0346 (IMP2): the FIELD carries the whole shared advice
+            # (the same sentence ``awf_status`` returns); the card line
+            # stays in its long-standing 26-word slot so the 900-word
+            # budget holds.
+            shown, clipped = _clip_by_words(r.next_action, _NEXT_ACTION_MAX_WORDS)
+            L.append(f"- next: {shown}{' …' if clipped else ''}")
         if r.phase_summary and r.run is None:
             # TODO-0208 (REPORTS33): a continued card (work history,
             # e.g. an active run) now renders next_action + phase_summary
@@ -706,16 +711,34 @@ _ACTIONABLE_FIELDS = (
     "zombie_state",
 )
 
+# TODO-0346 (IMP2): the facts that OUTRANK the run-aware layer. The run
+# record's reject/approve steps own the queue position, but only while the
+# run is otherwise healthy — a foreign commit, a pending salvage, a blocked
+# unit, an exhausted budget or a dead/frozen engine is the owner's call
+# first (the same order the core advice keeps). ``expected_action`` is not
+# here: it is the running-stage tail (and the BD-36 checkpoint text), which
+# the run-aware step may legitimately replace.
+_HARD_ADVICE_FIELDS = tuple(
+    name for name in _ACTIONABLE_FIELDS if name != "expected_action"
+)
 
-def _actionable_fact(s: Any) -> bool:
+
+def _actionable_fact(s: Any, *, include_expected: bool = True) -> bool:
     """True when the status carries a fact that needs the owner's hand.
 
     The brief gates the setup chain on this answer: a configured project
     whose first unit blocked or crashed must hear the answer/resume step,
     not the goal → form → normalize walkthrough. The advice ORDER still
     belongs to ``next_action_from_status`` alone.
+
+    ``include_expected=False`` drops ``expected_action`` — the running-stage
+    tail (and the BD-36 checkpoint text), which the run-aware layer of
+    ``advice_for`` may legitimately replace. The run step must not bury a
+    real cause, so the same reader answers both questions; a second loop
+    next to this one drifted once already.
     """
-    for name in _ACTIONABLE_FIELDS:
+    names = _ACTIONABLE_FIELDS if include_expected else _HARD_ADVICE_FIELDS
+    for name in names:
         if name == "blocked_ids":
             if list(_status_get(s, name) or []):
                 return True
@@ -728,8 +751,10 @@ def next_action_from_status(s: Any) -> str:
     """Derive the supervisor's next step from live state (RUN6 #5).
 
     Every answer must lead to the next step — ``awf_status`` / ``awf_brief``
-    responses carry a concrete ``next_action`` instead of raw state. Works
-    on a ``StatusResult`` dataclass or its ``as_dict()`` form.
+    responses carry a concrete ``next_action`` instead of raw state. This is
+    the STATE ORDER only: both surfaces call ``advice_for``, which wraps it
+    with the run-aware layer (TODO-0346 IMP2). Works on a ``StatusResult``
+    dataclass or its ``as_dict()`` form.
     """
     def _get(name: str, default: Any = None) -> Any:
         return _status_get(s, name, default)
@@ -825,6 +850,62 @@ def next_action_from_status(s: Any) -> str:
     )
 
 
+# TODO-0346 (IMP2): no separate "hard fact" loop — the run-aware layer asks
+# the same reader as the setup gate (``_actionable_fact``) with
+# ``include_expected=False``, so the fact names live in one place.
+
+
+def advice_for(status: Any, run_record: Any | None = None) -> str:
+    """The ONE supervisor advice: the state order plus the run-aware layer.
+
+    ``awf_status`` and ``awf_brief`` both call this — the card used to add
+    the run-aware steps itself (``next_action_for_record`` and
+    ``run_step_after_done``), so the two surfaces could disagree for the
+    same state. The core order and its texts stay in
+    ``next_action_from_status``; this function only layers the run record
+    on top:
+
+    - after a REJECT — ``awf_run_revise`` (close the decision) then
+      ``awf_run_next`` (the queue position belongs to the run);
+    - after an APPROVE — ``awf_run_next``;
+    - an actionable fact (foreign commit, salvage, blocked, budget,
+      dead/frozen engine) keeps its advice — the run step must not bury
+      the cause. A BD-36 checkpoint keeps its "WAIT for user
+      confirmation" text for the same reason.
+    """
+    advice = next_action_from_status(status)
+    if run_record is None or not getattr(run_record, "active", False):
+        return advice
+    if _actionable_fact(status, include_expected=False) or bool(
+        _status_get(status, "checkpoint_pending")
+    ):
+        return advice
+    from . import run_state as _run_state
+    from .run_plan_read import next_action_for_record
+
+    advice = next_action_for_record(run_record, advice)
+    step = _run_state.run_step_after_done(getattr(run_record, "state", None))
+    if step:
+        advice = step
+    return advice
+
+
+def _card_advice(status: Any, run_record: Any | None) -> str:
+    """The card's advice — the status field when the API already filled it.
+
+    ``get_status`` fills ``next_action`` through ``advice_for`` (one owner,
+    one sentence). Reading that field instead of deriving again makes the
+    card and ``awf_status`` agree BY CONSTRUCTION: a re-derivation could
+    still disagree when the run record moves between the two reads. A
+    status built by hand (tests, callers without the field) falls back to
+    the same owner, so the card never goes empty.
+    """
+    filled = _status_get(status, "next_action")
+    if filled:
+        return str(filled)
+    return advice_for(status, run_record)
+
+
 def build_brief(
     project_dir: Path,
     *,
@@ -839,12 +920,10 @@ def build_brief(
     import awf as _awf
 
     from . import phase as _phase
-    from . import run_state as _run_state
     from .run_plan_read import (
         clip_goal,
         decision_line,
         evidence_plan_lines,
-        next_action_for_record,
     )
     from .stall_detect import detect_stage_stall, stall_line
 
@@ -903,13 +982,10 @@ def build_brief(
         # TODO-0241 D1: the advice ORDER has one owner. The card used to
         # take ``expected_action or suggestion`` first, which let a stale
         # suggestion outrank a BLOCKED closure (and the engine-dead hint).
-        # ``next_action_from_status`` already prefers ``expected_action``,
-        # then salvage → blocked → engine_dead → running → active →
-        # suggestion; deriving through it keeps the three surfaces in step.
-        raw_action = next_action_from_status(status)
-        next_action, clipped_action = _clip_by_words(raw_action, _NEXT_ACTION_MAX_WORDS)
-        if clipped_action:
-            next_action += " …"
+        # TODO-0346 (IMP2): the run-aware steps moved into ``advice_for``
+        # too — ``awf_status`` and the card now read the SAME sentence, so
+        # they cannot drift for the same state.
+        next_action = _card_advice(status, run_record)
         # TODO-0308 (architect review): the phase prompt belongs to the
         # working-cycle card alone. An actionable-only card (no history) is
         # not rendered with it, so computing it here would park the
@@ -1005,12 +1081,13 @@ def build_brief(
     if setup_chain and not next_action:
         next_action = "New project — run the setup chain (above); start with `awf_init`."
     elif not next_action:
-        next_action = next_action_from_status(status) if status is not None else LIVE_LINE
+        next_action = _card_advice(status, run_record) if status is not None else LIVE_LINE
 
     # ORCH M1.2: the card's compact view of the shared run record — the
     # goal clipped to the card budget, the last decision in one line,
     # links to the sources (not a retelling of long texts). Outside a run
-    # every field stays empty and next_action keeps the pre-M1.2 value.
+    # every field stays empty; the run-aware advice (reject/approve) is
+    # layered by ``advice_for`` above.
     run_goal = ""
     run_last_decision = ""
     run_sources: list[str] = []
@@ -1024,15 +1101,6 @@ def build_brief(
         # ORCH M2.3: the compact view of the current/last element's
         # evidence plan (one shared helper, same as the decisions line).
         run_evidence_plan_lines = evidence_plan_lines(run_record, compact=True)
-        next_action = next_action_for_record(run_record, next_action)
-        # ORCH M1.3: the done (approved) side of the run-aware step — after
-        # the current item is approved, the next step is awf_run_next (the
-        # run owns the queue position), not the generic "plan the next
-        # TODO" fallback. One shared helper (awf.run_state), same as the
-        # context surface.
-        step = _run_state.run_step_after_done(run_record.state)
-        if step:
-            next_action = step
 
     # TODO-0309 (AUD-0308-1): a running pipeline outranks the
     # actionable-only line — ``expected_action`` is non-empty whenever the

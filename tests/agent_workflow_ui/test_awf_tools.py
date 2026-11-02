@@ -147,6 +147,28 @@ class TestAwfStatus:
         assert len(result["active_todos"]) == 1
         assert result["active_todos"][0]["todo_id"] == "TODO-0001"
 
+    def test_advice_matches_brief_and_api_after_reject(self, mcp_project):
+        """TODO-0346 (IMP2/T3): the MCP surface carries the SAME sentence.
+
+        The old wrapper re-derived a run-unaware advice and only filled an
+        empty field; after a reject the card (run-aware) and ``awf_status``
+        could disagree. Three surfaces — MCP, Python API, card — must name
+        one step, char for char.
+        """
+        from awf import api as _api
+
+        _api.run_start(mcp_project, queue=["TODO-0001"], goal="One advice")
+        _api.reject_commit(mcp_project, "TODO-0001", "tests red")
+
+        result = run(awf.awf_status(project_dir=str(mcp_project)))
+        status = _api.get_status(mcp_project)
+        card = _api.brief(mcp_project)
+
+        assert result["status"] == "ok"
+        assert "awf_run_revise" in result["next_action"]
+        assert result["next_action"] == status.next_action
+        assert status.next_action == card.next_action
+
 
 # ─── awf_baseline ───────────────────────────────────────────────────────
 

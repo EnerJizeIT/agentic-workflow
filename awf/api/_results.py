@@ -113,6 +113,13 @@ class StatusResult:
     # model and where it comes from ({role, model, source}); source is
     # "config" / "md" / "none". See role_model_office.
     office: list[dict[str, Any]] = field(default_factory=list)
+    # TODO-0346 (IMP2): the live unit of the cycle — ``current.yaml``'s
+    # ``todo_id`` and ``updated_at`` (the card's "unit" and freshness
+    # clock, D7). ``next_action`` is the ONE advice (``brief.advice_for``)
+    # the card renders too, so the two surfaces cannot disagree.
+    current_todo: str | None = None
+    state_updated_at: str | None = None
+    next_action: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

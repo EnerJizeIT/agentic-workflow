@@ -1217,8 +1217,11 @@ def get_status(project_dir: Path) -> StatusResult:
     # (orchestrator may have crashed after setting salvage_needed)
     salvage_needed = False
     salvage_stage: str | None = None
+    from ..pipeline_state import parse_updated_at
     from ..pipeline_state import read_state as _read_state
+
     _state = _read_state(project_dir)
+    _state_ts = parse_updated_at((_state or {}).get("updated_at"))
     if _state:
         salvage_needed = bool(_state.get("salvage_needed", False))
         salvage_stage = _state.get("salvage_stage")
@@ -1230,7 +1233,11 @@ def get_status(project_dir: Path) -> StatusResult:
             if not current_stage_name:
                 current_stage_name = _state.get("stage_name")
             current_stage_kind = _compute_stage_kind(project_dir, current_stage_name)
-        if salvage_needed:
+        # TODO-0346 (QA): a FOREIGN COMMIT outranks salvage (AC46/INV10: the
+        # combination resolves to S1a, not S1). ``next_action_from_status``
+        # ranks ``expected_action`` above ``foreign_commit``, so the salvage
+        # prefill below would bury the recovery the owner must see first.
+        if salvage_needed and not _state.get(head_guard.FOREIGN_COMMIT_KEY):
             # B5 (dogfood-11): salvage overrides the computed action even when
             # the orchestrator process is alive — it waits for the supervisor,
             # it is NOT running a worker. The old text ("worker stage running —
@@ -1349,7 +1356,7 @@ def get_status(project_dir: Path) -> StatusResult:
     # and the two fields are consumed together ("closed run ≠ no run").
     run_brief_state = _run_brief(project_dir)
 
-    return StatusResult(
+    result = StatusResult(
         project_name=project_name,
         active_todos=active_todos_list,
         done_count=done_count,
@@ -1384,7 +1391,17 @@ def get_status(project_dir: Path) -> StatusResult:
         uncommitted_workflow_files=uncommitted_wf,
         standalone_todos=standalone_todos_list,
         office=office,
+        current_todo=(_state or {}).get("todo_id") or None,
+        state_updated_at=_state_ts.isoformat() if _state_ts else None,
     )
+    # TODO-0346 (IMP2): ONE advice owner — the same sentence the card
+    # renders (``brief.advice_for``: state order + the run-aware layer).
+    # The old MCP wrapper re-derived a run-unaware answer on its own.
+    from ..brief import advice_for
+    from ..run_plan_read import read_run_record
+
+    result.next_action = advice_for(result, read_run_record(project_dir))
+    return result
 
 
 # ─── get_report ─────────────────────────────────────────────────────────
