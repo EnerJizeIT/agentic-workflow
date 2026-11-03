@@ -1383,6 +1383,7 @@ def get_status(project_dir: Path) -> StatusResult:
         stale_stage=stale_stage,
         replan_error=(_state or {}).get("replan_error") or None,
         foreign_commit=(_state or {}).get(head_guard.FOREIGN_COMMIT_KEY) or None,
+        upstream_sync=(_state or {}).get(head_guard.UPSTREAM_SYNC_KEY) or None,
         budget_exhausted_todo=budget_exhausted_todo,
         active_pipeline=active_pipeline,
         pipeline_count=pipeline_count,

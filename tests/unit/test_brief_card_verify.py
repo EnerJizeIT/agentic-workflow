@@ -5,6 +5,8 @@ missing one is a fact, and the commit-gate refusal carries its reason.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from awf.brief import build_brief
 
 from .brief_card_support import (
@@ -53,14 +55,22 @@ class TestVerifyFacts:
         assert "no pack yet" in r.text
 
     def test_old_artifact_is_hidden_outside_verify(self, tmp_path):
+        """QA A39: the state clock must come from ``now``, not a fixed date.
+
+        The artifact is written with an mtime of ``now - 24h``; a hardcoded
+        state timestamp is "fresh" as soon as the calendar passes it (this
+        test went red at 2026-11-03 00:00 UTC with no code change). The two
+        sides now share one clock, which is the fact the reader compares.
+        """
         root = project(tmp_path)
-        write_state(root, updated="2026-11-02T00:00:00+00:00")
+        now = datetime.now(timezone.utc).isoformat()
+        write_state(root, updated=now)
         write_gates(root, FAILED_PACK, old=True)
         state = verify_status(
             expected_action="plan stage — wait",
             current_stage_name="plan",
             current_stage_kind="plan",
-            state_updated_at="2026-11-02T00:00:00+00:00",
+            state_updated_at=now,
         )
         r = build_brief(root, status=state)
         assert r.verify == {}

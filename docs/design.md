@@ -120,7 +120,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `pipeline_state.py` | `.agentic/state/current.yaml` persistence |
 | `orchestrator.py` | Pipeline dispatch loop (thin entry: setup → stage loop → complete) |
 | `pipeline_engine.py` | Stage handlers + transition logic |
-| `head_guard.py` | A31: сверка HEAD до/после стадии, запись коммита гейта, FOREIGN COMMIT (строка в лог и `awf status`) |
+| `head_guard.py` | A31/A39: сверка HEAD до/после стадии, запись коммита гейта; форма сдвига решает исход — FOREIGN COMMIT (ран стоп) или UPSTREAM SYNC (ран идёт), строка в лог и `awf status` |
 | `rejection.py` | A32/A34: решения отказа — остаться в юните или отдать replan, куда возвращать (политика, владелец отчёта, ближайший автор), ограниченный контекст и бюджет replan-промпта, заметка о снятом юните и `PROGRESS` |
 | `arbiter.py` | A29: один арбитр на юнит — метка источника в сигнале (human vs auto), готовый человеческий вердикт отменяет спавн verify-субпроцесса, а пришедший во время прогона выигрывает у авто-вердикта; перебитый авто-вердикт снимается с диска, чтобы не уехать в replan |
 | `spec_package.py` | Пакет спецификации (K1/K2): шапки, матрица покрытия, отпечаток, предикат готовности |
