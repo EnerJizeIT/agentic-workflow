@@ -53,6 +53,7 @@ from .signals import (
     stage_signal_paths,
     wait_for_signal,
 )
+from .supervisor import VerifyWaitStopped as _VerifyWaitStopped
 from .supervisor import run_supervisor_stage as _run_supervisor_stage
 from .transitions import resolve_transition
 from .verify_pack import verify_pack as _verify_pack_fn
@@ -1618,6 +1619,13 @@ def execute_supervisor_stage(
             sup_signal = _run_supervisor_stage(
                 stage, current_todo, auto, project_dir, logs_dir, pipeline_name
             )
+        except _VerifyWaitStopped as e:
+            # A41: the run's own stop surface ended the verify wait. Print
+            # the cause the wait recorded — a stop is an explicit event,
+            # not a silent "supervisor stage crashed".
+            print(f"STOP: {e}", file=sys.stderr)
+            _log(logs_dir, f"verify: wait stopped — {e}")
+            return current_todo, 0, 1
         except (RuntimeError, TimeoutError) as e:
             print(
                 f"ERROR: supervisor stage '{s_name}' crashed. Pipeline stopped.",

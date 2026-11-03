@@ -1,13 +1,18 @@
-"""A35: doubles shared by the verify-grace tests.
+"""A35/A41: doubles shared by the verify-grace and verify-wait tests.
 
 ``test_verify_signal_grace.py`` and ``test_verify_signal_prompt.py`` were
 split to stay under the ratchet line budget; the fakes both need live here,
 so one fix to a double reaches both files (the ``_gate_scripts.py``
-precedent).
+precedent). A41 split ``test_run_verify_wait.py`` the same way — its
+approve/log/spawn doubles live here too, for the same reason.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from subprocess import CompletedProcess
+
+import pytest
 
 
 class Clock:
@@ -40,6 +45,51 @@ def make_project(tmp_path: Path) -> Path:
     phases.mkdir()
     (phases / "plan.md").write_text("# Plan\n")
     return proj
+
+
+def approve(proj: Path, todo: str) -> Path:
+    """The owner's verdict on disk: an APPROVE signal for ``todo``."""
+    path = proj / ".agentic" / "inbox" / f"APPROVE-{todo}.ready"
+    path.write_text(json.dumps({"source": "human"}), encoding="utf-8")
+    return path
+
+
+def log_text(proj: Path) -> str:
+    """The project's orchestrator log — the surface the wait reports on."""
+    return (proj / ".agentic" / "logs" / "orchestrator.log").read_text(
+        encoding="utf-8"
+    )
+
+
+def run_verify(proj: Path, monkeypatch, todo: str, **kwargs):
+    """Run the auto verify stage with a subprocess that exits 0 and no signal."""
+    from awf import supervisor
+
+    monkeypatch.setattr(
+        "awf.signal_watch.run_subprocess_until_signal",
+        lambda cmd, cwd=None, **kw: CompletedProcess(cmd, 0),
+        raising=True,
+    )
+    return supervisor.run_supervisor_via_subprocess(
+        "verify",
+        todo,
+        proj,
+        {},
+        str(proj / ".agentic" / "phases" / "plan.md"),
+        proj / ".agentic" / "logs",
+        **kwargs,
+    )
+
+
+@pytest.fixture(autouse=True)
+def opencode_ok(monkeypatch):
+    """Every test here spawns the supervisor: the version gate must pass."""
+    from awf import opencode_version as ov
+
+    monkeypatch.setattr(
+        "awf.opencode_version.probe_version",
+        lambda *a, **kw: ov.Probe("ok", (1, 19, 4)),
+    )
 
 
 def hanging_popen(signal_file: Path):

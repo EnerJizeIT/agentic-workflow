@@ -129,6 +129,12 @@ def _patch_subprocess_for_awf(monkeypatch):
     monkeypatch.setattr("awf.signal_watch.subprocess.Popen", _FakePopen)
     monkeypatch.setattr("awf.signal_watch.subprocess.run", _fake_run)
     monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
+    # A41: a verify stage without a verdict now waits for the decision, and
+    # this fake clock never advances (sleep is a no-op). These tests assert
+    # the spawned argv only — the wait is covered by test_run_verify_wait.py.
+    monkeypatch.setattr(
+        "awf.supervisor.wait_for_supervisor_signal", lambda *_a, **_kw: ""
+    )
 
 
 class TestResolveRoleFile:

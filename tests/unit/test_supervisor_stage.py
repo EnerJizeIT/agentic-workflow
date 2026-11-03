@@ -72,6 +72,12 @@ def _supervisor_argv(
         "awf.signal_watch.run_subprocess_until_signal",
         _fake_run(captured), raising=True,
     )
+    if kind == "verify":
+        # A41: a verdict-less verify stage now waits for the decision; these
+        # tests own the argv only (the wait has its own file).
+        monkeypatch.setattr(
+            supervisor, "wait_for_supervisor_signal", lambda *a, **kw: ""
+        )
     phases = proj / ".agentic" / "phases" / "plan.md"
     supervisor.run_supervisor_via_subprocess(
         kind, todo_id, proj, config, str(phases), proj / ".agentic" / "logs"

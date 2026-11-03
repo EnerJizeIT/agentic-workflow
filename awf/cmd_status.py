@@ -47,6 +47,17 @@ def run(args: Any) -> int:
         print(result.stale_stage)
         print()
 
+    # A41: a verify stage that is waiting for the decision is visible — the
+    # silent case used to look like a frozen engine (or, worse, rc=1).
+    if result.verify_waiting:
+        vw = result.verify_waiting
+        print(
+            f"verify_waiting: {vw.get('todo_id', '?')} — waiting for "
+            f"APPROVE/REVIEW ({vw.get('elapsed_seconds', 0)}s of "
+            f"{vw.get('deadline_seconds', 0)}s, reason: {vw.get('reason', 'waiting')})"
+        )
+        print()
+
     if result.replan_error:
         print(f"Replan: FAILED — {result.replan_error}")
         print()
