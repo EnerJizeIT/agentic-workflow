@@ -21,8 +21,9 @@ import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import commit_delta, git_utils, paths, run_state, stage_manifest
+from . import commit_delta, dispatch_policy, git_utils, paths, run_state, stage_manifest
 from ._log import log as _log
+from .infra import git_model
 
 # R2.3: the baseline-fact readers, the file-set computation and the delta
 # algorithm now live in the DeltaAssembler module (one home); re-exported
@@ -44,6 +45,13 @@ OUTCOME_ERROR = "error"
 #: must refuse to archive an unexplained empty plan — the strict path keys
 #: on this constant, never on a copied prose prefix.
 NO_CHANGES_REASON = "no changes to commit"
+
+#: A30 (TODO-0352): the plan and the diff disagreed about the unit's work.
+#: ONE prefix for the audit record and the RUN-REPORT, like
+#: ``plan-skip-inconsistent``: an empty plan over a tree that HAS changes is
+#: a stale plan (the unit's work would be archived without its commit), not
+#: a "no changes to commit" skip.
+PLAN_STALE_PREFIX = "plan-stale"
 
 PROCEED_STATUSES = (OUTCOME_COMMITTED, OUTCOME_SKIPPED)
 
@@ -427,6 +435,63 @@ def build_commit_plan(
         generation=generation,
         verified_sha=verified,
         files=tuple(commit_delta.worktree_file_set(project_dir)),
+    )
+
+
+def plan_stale_refusal(plan: CommitPlan, project_dir: Path) -> str:
+    """A30 (TODO-0352): an empty plan must not silently drop the work.
+
+    The plan's file set and the staged diff come from ONE source — the
+    unit's baseline plus the changed files — so a dispatched unit with work
+    in the tree cannot have an empty plan. When it does (the live change set
+    holds something the baseline did not), the plan is stale: a rebuilt
+    baseline, a moved HEAD or an old plan. The gate's "no changes
+    to commit" skip would archive the unit without its work, so the stale
+    plan is refused with the rebuild instruction instead.
+
+    What the baseline ALREADY carried is not the unit's work, and it is
+    subtracted from the live set instead of switching the check off — BOTH
+    columns: tracked dirt (``baseline_dirty_paths``) and the files that were
+    already untracked at dispatch (``read_untracked_snapshot``, the same
+    facts ``_raw_file_set`` uses to leave them out of the plan). A dirty tree
+    at dispatch therefore still detects NEW work, and a no-code unit over a
+    stray file is an honest "no changes to commit" skip, not a stale plan.
+    A legacy baseline without the status snapshot cannot tell the two apart
+    — it returns "" (no refusal). Best effort: a git read error reads as
+    "no divergence", same as the other plan checks.
+    """
+    if plan.files or plan.refusal or not plan.baseline_sha or not plan.todo_id:
+        return ""
+    dirty = commit_delta.baseline_dirty_paths(project_dir, plan.todo_id)
+    if dirty is None:
+        return ""
+    pre_existing = set(dirty) | set(
+        git_model.read_untracked_snapshot(project_dir, plan.todo_id) or ()
+    )
+    # The engine's own runtime surface is never part of a unit commit (the
+    # write fence), so runtime artifacts appearing during a no-code unit are
+    # not "the unit's work". The exclusion is the canonical managed set
+    # (``dispatch_policy.MANAGED_RUNTIME_PREFIXES``, derived from
+    # ``paths.RUNTIME_DIRS``) — NOT all of ``.agentic/``: roles, pipelines,
+    # phases and config.yaml are committed definitions that belong to the
+    # user, and hiding them here would re-open the silent skip for a unit
+    # whose only work is a pipeline edit.
+    live = [
+        path
+        for path in commit_delta.worktree_file_set(project_dir)
+        if path not in pre_existing
+        and not path.startswith(dispatch_policy.MANAGED_RUNTIME_PREFIXES)
+    ]
+    if not live:
+        return ""
+    shown = ", ".join(live[:5]) + (" …" if len(live) > 5 else "")
+    return (
+        f"{PLAN_STALE_PREFIX}: the commit plan is empty but the tree holds "
+        f"{len(live)} change(s) against HEAD ({shown}) — the plan and the "
+        "diff came from different sources. The plan is stale: rebuild it "
+        "(re-dispatch the unit so its baseline matches the work) and "
+        "re-approve. An empty-plan skip would archive the unit without its "
+        "work"
     )
 
 

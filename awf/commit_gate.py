@@ -304,9 +304,10 @@ def _commit_via_isolated_index(
                         "outside the unit (a catch-up commit, or HEAD moved "
                         "since the baseline). The silent archive is "
                         "refused: the TODO stays active. Inspect "
-                        "`git log` (baseline..HEAD) for the plan's files, "
-                        "then re-verify (or re-dispatch when the work is "
-                        "genuinely missing).",
+                        "`git log` (baseline..HEAD) for the plan's files: "
+                        "when they are there, re-verify; when the work is "
+                        "genuinely missing, re-dispatch. Either way the "
+                        "plan is stale, rebuild it before re-approving.",
                     )
             # R2.5: the commit object, the intent, the CAS ref move, the
             # owned-index sync and the receipt are one resumable protocol
@@ -611,27 +612,32 @@ def maybe_commit(
             head_guard.record_gate_commit(project_dir, outcome.sha, logs_dir)
         return outcome
 
-    # R2.3: a model refusal (unsupported gitlink / unmerged / sparse / split
-    # index, or a mixed-ownership rename pair) blocks the plan — refuse
-    # explicitly, never a silent legacy commit.
-    if plan.refusal:
-        print(
-            f"REFUSING unit commit for {todo_id}: {plan.refusal}. "
-            "Nothing was staged; the working tree is left for manual review.",
-            file=sys.stderr,
-        )
-        _log(logs_dir, f"R2.3: commit refused for {todo_id} — {plan.refusal}")
-        return _finalize(commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, plan.refusal))
+    def _refuse(refusal: str, audit_tag: str) -> commit_plan.CommitOutcome:
+        """ONE refusal shape for every plan check (A-04/A-15/M2.1/R2.4/A37/A30).
 
-    refusal = commit_plan.verdict_refusal(plan, project_dir)
-    if refusal:
+        The check modules own the WHY (``*_refusal``); this owns the HOW a
+        refusal reaches the user and the audit — one message, one log line,
+        one typed outcome, so a new check cannot invent another variant.
+        """
         print(
             f"REFUSING unit commit for {todo_id}: {refusal}. "
             "Nothing was staged; the working tree is left for manual review.",
             file=sys.stderr,
         )
-        _log(logs_dir, f"A-04: commit refused for {todo_id} — {refusal}")
-        return _finalize(commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal))
+        _log(logs_dir, f"{audit_tag}: commit refused for {todo_id} — {refusal}")
+        return _finalize(
+            commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal)
+        )
+
+    # R2.3: a model refusal (unsupported gitlink / unmerged / sparse / split
+    # index, or a mixed-ownership rename pair) blocks the plan — refuse
+    # explicitly, never a silent legacy commit.
+    if plan.refusal:
+        return _refuse(plan.refusal, "R2.3")
+
+    refusal = commit_plan.verdict_refusal(plan, project_dir)
+    if refusal:
+        return _refuse(refusal, "A-04")
 
     # BD-17: accept either APPROVE-{todo}.ready (from `awf approve` /
     # human) or ACK-{todo}.ready (from supervisor verify subprocess in
@@ -676,26 +682,14 @@ def maybe_commit(
 
     refusal = commit_plan.fingerprint_refusal(plan, project_dir)
     if refusal:
-        print(
-            f"REFUSING unit commit for {todo_id}: {refusal}. "
-            "Nothing was staged; the working tree is left for manual review.",
-            file=sys.stderr,
-        )
-        _log(logs_dir, f"A-15: commit refused for {todo_id} — {refusal}")
-        return _finalize(commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal))
+        return _refuse(refusal, "A-15")
 
     # M2.1: the approval's binding — which run generation it was made in,
     # and the file set it covered. Runs after A-15 so a moved tree still
     # gets the (more actionable) re-verify message first.
     refusal = commit_plan.binding_refusal(plan, project_dir, which)
     if refusal:
-        print(
-            f"REFUSING unit commit for {todo_id}: {refusal}. "
-            "Nothing was staged; the working tree is left for manual review.",
-            file=sys.stderr,
-        )
-        _log(logs_dir, f"M2.1: commit refused for {todo_id} — {refusal}")
-        return _finalize(commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal))
+        return _refuse(refusal, "M2.1")
 
     # R2.4: the approval's candidate binding — the run generation and the
     # file set are pinned by M2.1, but the CANDIDATE (its tree, contract,
@@ -704,13 +698,7 @@ def maybe_commit(
     # invalidates the evidence → refuse (HEAD moved means REPLAN).
     refusal = commit_plan.candidate_refusal(plan, project_dir)
     if refusal:
-        print(
-            f"REFUSING unit commit for {todo_id}: {refusal}. "
-            "Nothing was staged; the working tree is left for manual review.",
-            file=sys.stderr,
-        )
-        _log(logs_dir, f"R2.4: commit refused for {todo_id} — {refusal}")
-        return _finalize(commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal))
+        return _refuse(refusal, "R2.4")
 
     # A37 (TODO-0349): a red verify pack for THIS tree closes the gate. The
     # pack was only a report before — TODO-0339 failed its pack and still
@@ -721,13 +709,15 @@ def maybe_commit(
     )
     refusal = commit_plan.pack_refusal(plan, project_dir, pack_override_sections)
     if refusal:
-        print(
-            f"REFUSING unit commit for {todo_id}: {refusal}. "
-            "Nothing was staged; the working tree is left for manual review.",
-            file=sys.stderr,
-        )
-        _log(logs_dir, f"A37: commit refused for {todo_id} — {refusal}")
-        return _finalize(commit_plan.CommitOutcome(commit_plan.OUTCOME_REFUSED, refusal))
+        return _refuse(refusal, "A37")
+
+    # A30 (TODO-0352): the plan and the diff are one source. An EMPTY plan
+    # over a tree that HAS changes is a stale plan — the "no changes to
+    # commit" skip below would write a no-code receipt and archive the unit
+    # without its work. Refuse with the rebuild instruction instead.
+    refusal = commit_plan.plan_stale_refusal(plan, project_dir)
+    if refusal:
+        return _refuse(refusal, "A30")
 
     if not plan.files:
         print(f"No changes to commit — skip commit at '{stage_name}'.", file=sys.stderr)
