@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 
-from awf import _proc
+from awf import _proc, _proc_cpu
 from awf.signal_watch import run_subprocess_until_signal
 
 POLL = 0.5  # patched over awf.signal_watch.BD20_POLL_INTERVAL
@@ -211,24 +211,18 @@ class TestWatchdogCpuAware:
         )
 
 
-# ─── the CPU helper (skipped while the helper itself is not implemented) ────
+# ─── the CPU helper ────────────────────────────────────────────────────────
 
 
-_HAS_TREE_CPU = hasattr(_proc, "cpu_time_of_tree")
-
-
-@pytest.mark.skipif(
-    not _HAS_TREE_CPU, reason="cpu_time_of_tree not implemented yet"
-)
 class TestCpuTimeOfTree:
 
     def test_refuses_pid_le_1(self) -> None:
         """Safety pin: init's tree is never measured (the 2026-09-20 rule —
         nothing may ever target pid 1)."""
-        assert _proc.cpu_time_of_tree(1) is None
-        assert _proc.cpu_time_of_tree(0) is None
-        assert _proc.cpu_time_of_tree(-5) is None
-        assert _proc.cpu_time_of_tree(None) is None  # type: ignore[arg-type]
+        assert _proc_cpu.cpu_time_of_tree(1) is None
+        assert _proc_cpu.cpu_time_of_tree(0) is None
+        assert _proc_cpu.cpu_time_of_tree(-5) is None
+        assert _proc_cpu.cpu_time_of_tree(None) is None  # type: ignore[arg-type]
 
     def test_grows_for_busy_tree(self) -> None:
         root = subprocess.Popen(
@@ -243,9 +237,9 @@ class TestCpuTimeOfTree:
         )
         try:
             time.sleep(0.2)  # let the child start burning
-            t0 = _proc.cpu_time_of_tree(root.pid)
+            t0 = _proc_cpu.cpu_time_of_tree(root.pid)
             time.sleep(0.5)
-            t1 = _proc.cpu_time_of_tree(root.pid)
+            t1 = _proc_cpu.cpu_time_of_tree(root.pid)
             assert t0 is not None and t1 is not None
             assert t1 > t0, "a burning tree must accumulate CPU"
         finally:
@@ -259,9 +253,9 @@ class TestCpuTimeOfTree:
         )
         try:
             time.sleep(0.3)  # let startup CPU settle into the sleep
-            t0 = _proc.cpu_time_of_tree(root.pid)
+            t0 = _proc_cpu.cpu_time_of_tree(root.pid)
             time.sleep(0.5)
-            t1 = _proc.cpu_time_of_tree(root.pid)
+            t1 = _proc_cpu.cpu_time_of_tree(root.pid)
             assert t0 is not None and t1 is not None
             assert t1 == t0, "a stalled tree must not accumulate CPU"
         finally:

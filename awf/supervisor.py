@@ -16,7 +16,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from . import config as cfg_mod
-from . import paths
+from . import paths, worker_tree
 from ._errors import AwfApiError
 from ._log import log as _log
 from .arbiter import (
@@ -1606,7 +1606,6 @@ def run_supervisor_via_subprocess(
         ]
 
     from ._env import awf_subprocess_env
-    from .pipeline_state import write_state
     from .signal_watch import run_subprocess_until_signal
 
     signal_holder: dict[str, str] = {}
@@ -1624,35 +1623,53 @@ def run_supervisor_via_subprocess(
     # RUN8 #2: same worker-pid record as the agent stage — the supervisor
     # subprocess is an opencode process in its own group and an
     # awf_kill mid-stage would orphan it the same way.
-    def _record_worker_pid(pid: int) -> None:
-        try:
-            write_state(
-                project_dir, logs_dir=logs_dir,
-                worker_pid=pid, worker_role="supervisor", worker_todo=todo_id,
-            )
-        except Exception:
-            pass
+    # A44 (TODO-0359): the pid/group of this spawn — the reap needs them even
+    # when the wait ends with an exception. The token is the env marker the
+    # whole tree inherits, the only anchor that survives ``setsid``.
+    anchor_token = worker_tree.new_anchor_token()
+    anchor = worker_tree.SpawnAnchor(anchor_token)
 
-    result = run_subprocess_until_signal(
-        cmd,
-        cwd=str(project_dir),
-        watch_paths=watch_paths,
-        watch_new_glob=watch_new_glob,
-        new_glob_accept=new_glob_accept,
-        logs_dir=logs_dir,
-        # W7: role-aware env (the supervisor can also be listed in
-        # automation.readonly_roles — same mechanism as worker roles).
-        env=awf_subprocess_env(role="supervisor", project_dir=project_dir),
-        signal_holder=signal_holder,
-        log_holder=log_holder,
-        # U6a/U6c are worker-only (TODO-0017): the supervisor subprocess can
-        # be legitimately long-silent (verify waits), so no watchdog; no
-        # preflight either — keep the supervisor flow exactly as before.
-        preflight_timeout=0,
-        no_output_timeout=0,
-        on_spawn=_record_worker_pid,
-        signal_exit_grace=signal_exit_grace,
-    )
+    def _record_worker_pid(pid: int) -> None:
+        anchor(pid)
+        worker_tree.record_worker_state(
+            project_dir, logs_dir, anchor, role="supervisor", todo_id=todo_id
+        )
+
+    # A44: name a previous stage's leftovers before this one adds more.
+    worker_tree.log_stage_leftovers(project_dir, logs_dir)
+
+    try:
+        result = run_subprocess_until_signal(
+            cmd,
+            cwd=str(project_dir),
+            watch_paths=watch_paths,
+            watch_new_glob=watch_new_glob,
+            new_glob_accept=new_glob_accept,
+            logs_dir=logs_dir,
+            # W7: role-aware env (the supervisor can also be listed in
+            # automation.readonly_roles — same mechanism as worker roles).
+            env=awf_subprocess_env(
+                role="supervisor",
+                project_dir=project_dir,
+                # A44: the tree marker — ``setsid`` children keep it.
+                stage_anchor=anchor_token,
+            ),
+            signal_holder=signal_holder,
+            log_holder=log_holder,
+            # U6a/U6c are worker-only (TODO-0017): the supervisor subprocess can
+            # be legitimately long-silent (verify waits), so no watchdog; no
+            # preflight either — keep the supervisor flow exactly as before.
+            preflight_timeout=0,
+            no_output_timeout=0,
+            on_spawn=_record_worker_pid,
+            signal_exit_grace=signal_exit_grace,
+        )
+    finally:
+        # A44: plan/verify workers start MCP servers too — reap the tree on
+        # both the normal and the exception path.
+        worker_tree.reap_stage_tree(
+            anchor, logs_dir, label=f"supervisor/{todo_id}"
+        )
 
     _log(logs_dir, f"Supervisor {kind} subprocess finished (exit={result.returncode})")
     if kind == "verify":

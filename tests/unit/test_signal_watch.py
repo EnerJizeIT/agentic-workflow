@@ -972,7 +972,7 @@ class TestWorkerExitDiagnostic:
             "awf.signal_watch.subprocess.Popen", _SignalAtKillPopen
         )
         # frozen tree CPU: both readings equal → the CPU-frozen branch fires
-        monkeypatch.setattr("awf._proc.cpu_time_of_tree", lambda pid: 1.0)
+        monkeypatch.setattr("awf._proc_cpu.cpu_time_of_tree", lambda pid: 1.0)
         monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)
 
         result = run_subprocess_until_signal(

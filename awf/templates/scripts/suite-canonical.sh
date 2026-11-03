@@ -201,7 +201,9 @@ if [ "$mode" = background ]; then
   fi
   force_arg=""
   [ "$force" -eq 1 ] && force_arg="--force"
-  setsid nohup "$0" $force_arg --project "$project" >"$run_log" 2>&1 </dev/null &
+  # A44 (TODO-0359): a detached suite run is not part of the stage that
+  # started it — drop the stage marker so the stage-exit reap leaves it be.
+  env -u AWF_STAGE_ANCHOR setsid nohup "$0" $force_arg --project "$project" >"$run_log" 2>&1 </dev/null &
   child=$!
   echo "$child" > "$pid_file"
   echo "suite-canonical: started (pid $child, tree-sha $sha); poll with --status"

@@ -25,7 +25,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from . import _net, _proc, paths
+from . import _net, _proc, _proc_cpu, paths
 from ._env import awf_subprocess_env
 from ._log import log as _log
 from ._worker_exit import signal_present_line, worker_exit_line
@@ -499,7 +499,7 @@ def run_subprocess_until_signal(
                         last_activity = max(last_activity, last_cpu_busy_at)
                     silent_for = time.time() - last_activity
                     if silent_for > no_output_timeout:
-                        cpu_now = _proc.cpu_time_of_tree(proc.pid)
+                        cpu_now = _proc_cpu.cpu_time_of_tree(proc.pid)
                         if cpu_now is None:
                             # /proc unreadable — the tree cannot be proven
                             # busy; the legacy log-only decision stands.

@@ -1384,6 +1384,23 @@ def get_status(project_dir: Path) -> StatusResult:
     if verify_waiting:
         verify_waiting = _with_live_elapsed(verify_waiting)
 
+    # A44 (TODO-0359): the unit's worker-tree liveness — 0 after the stage
+    # reap. Read-only: a status call never signals anything.
+    worker_processes: dict[str, Any] | None = None
+    # ``has_anchor``/``live_members_of_state`` own the anchor rules (pid > 1,
+    # pgid fallback, marker token); a copy here is how the two surfaces drift
+    # apart (CTX2).
+    from ..worker_tree import has_anchor, live_members_of_state
+
+    if has_anchor(_state):
+        _members = live_members_of_state(_state)
+        worker_processes = {
+            "count": len(_members),
+            "pids": [info.pid for info in _members],
+            "role": _state.get("worker_role"),
+            "todo_id": _state.get("worker_todo"),
+        }
+
     result = StatusResult(
         project_name=project_name,
         active_todos=active_todos_list,
@@ -1413,6 +1430,7 @@ def get_status(project_dir: Path) -> StatusResult:
         replan_error=(_state or {}).get("replan_error") or None,
         foreign_commit=(_state or {}).get(head_guard.FOREIGN_COMMIT_KEY) or None,
         upstream_sync=(_state or {}).get(head_guard.UPSTREAM_SYNC_KEY) or None,
+        worker_processes=worker_processes,
         budget_exhausted_todo=budget_exhausted_todo,
         active_pipeline=active_pipeline,
         pipeline_count=pipeline_count,
