@@ -22,6 +22,5 @@ markdown-отчёт на рабочий стол.
 - Guard `proc.pid > 1` в `awf/_proc.py` и tripwire `_forbid_session_kill`
   в `tests/conftest.py` — не убирать, не ослаблять. `os.killpg(1, sig)` —
   это `kill(-1, sig)`, вся сессия пользователя.
-- Перед полным `pytest tests/` — green-light:
-  `grep -n "pid > 1" awf/_proc.py` и `grep -n "_forbid_session_kill" tests/conftest.py`.
-- Разбор — в архиве программы аудита 2026-09.
+- Их наличие проверяют ворота `docs/contracts/process-safety.md`;
+  полный `pytest tests/` — только после зелёного `scripts/check-contracts.sh`.

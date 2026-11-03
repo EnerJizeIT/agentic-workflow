@@ -13,7 +13,15 @@ from jinja2 import TemplateNotFound
 from ..browser import open_path
 from ..opencode_config import scan_global_roles, scan_global_skills
 from ..render.engine import render_template
-from ..state import FormRecord, get_config, get_http_port, get_jinja_env, get_registry
+from ..state import (
+    FormRecord,
+    get_config,
+    get_http_port,
+    get_instance_mode,
+    get_jinja_env,
+    get_registry,
+    serves_forms,
+)
 
 log = logging.getLogger(__name__)
 
@@ -318,6 +326,20 @@ async def open_form(
             "browser_opened": False,
             "submit_url": "",
             "error": f"Unknown template '{template}'. Available: {', '.join(sorted(_ALLOWED_TEMPLATES))}",
+        }
+
+    if not serves_forms():
+        # A45 (TODO-0360): only the lock owner serves the form HTTP endpoint.
+        # A reused port would point at a registry this process does not have,
+        # so hand out an honest refusal instead of a dead submit link.
+        return {
+            "form_id": "",
+            "browser_opened": False,
+            "submit_url": "",
+            "error": (
+                f"Form server is owned by another plugin instance "
+                f"(this process is '{get_instance_mode()}')."
+            ),
         }
 
     if port is None:

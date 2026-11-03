@@ -105,6 +105,15 @@ class TestMainWiring:
     def test_startup_runs_all_three_installs_in_order(self, monkeypatch):
         import agent_workflow_ui.__main__ as m
 
+        # A45: startup now reads the instance markers. Under an awf worker the
+        # whole pytest process inherits AWF_BACKGROUND_CHILD=1, and main() would
+        # pick tool-only: no HTTP attempt at all, so the patched start_http_server
+        # below never fires and main() goes on to run a real stdio MCP server —
+        # that closes the captured streams and every later test errors with
+        # "I/O operation on closed file". The test owns its environment.
+        monkeypatch.delenv("AWF_BACKGROUND_CHILD", raising=False)
+        monkeypatch.delenv("AWF_TOOL_ONLY", raising=False)
+
         calls: list[str] = []
         monkeypatch.setattr(m, "ensure_skill_installed", lambda: calls.append("skill"))
         monkeypatch.setattr(

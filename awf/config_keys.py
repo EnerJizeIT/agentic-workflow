@@ -77,6 +77,10 @@ READ_KEYS: frozenset[str] = frozenset({
     # running after its verdict signal before the engine TERMs it. 0 — TERM
     # immediately; a negative value falls back to the 90s default.
     "wait.verify_grace_seconds",
+    # TODO-0364 (A29): the overlap window between the auto verify verdict
+    # and the owner's — a human decision issued inside it wins. 0 turns the
+    # window off; a negative value falls back to the 60s default.
+    "wait.human_override_seconds",
     "dashboard.auto_open",
     "run.stall_minutes",
     # ── plan batch (A25) ─────────────────────────────────────────────────

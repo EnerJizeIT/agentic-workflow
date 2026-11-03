@@ -94,6 +94,28 @@ class PipelineArgs:
     no_checkpoints: bool = False
 
 
+def build_background_child_env(
+    extra: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Environment of a detached background child.
+
+    A detached engine is NOT part of the stage that launched it and must
+    outlive that stage: the inherited stage marker is dropped so the
+    stage-exit reap cannot collect it (A44 regression, CTX1). The same
+    applies to the parent's ``AWF_NO_CHECKPOINTS`` — it is transport for
+    one child, not for every launch that child later spawns.
+    """
+    child_env = {**os.environ, "AWF_BACKGROUND_CHILD": "1"}
+    child_env.pop("AWF_NO_CHECKPOINTS", None)
+    if extra:
+        child_env.update(extra)
+    # The marker is dropped LAST: the invariant belongs to the boundary, not
+    # to the caller, so no ``extra`` key can smuggle it back in.
+    from ..worker_tree import without_anchor
+
+    return without_anchor(child_env)
+
+
 def start_in_background(
     project_dir: Path,
     *,
@@ -206,10 +228,9 @@ def start_in_background(
     # passed the flag. The contract (plan_checkpoint.launch_no_checkpoints):
     # the flag is set for the duration of the pipeline process and dies
     # with it — the next launch is unaffected.
-    child_env = {**os.environ, "AWF_BACKGROUND_CHILD": "1"}
-    child_env.pop("AWF_NO_CHECKPOINTS", None)
-    if no_checkpoints:
-        child_env["AWF_NO_CHECKPOINTS"] = "1"
+    child_env = build_background_child_env(
+        {"AWF_NO_CHECKPOINTS": "1"} if no_checkpoints else None
+    )
     # R1.4 (F-R1): hand the child the ExecutionId of the launch that owns
     # the project right now. The launcher published it (lease acquire)
     # before spawning; the child verifies it at start (pipeline.py) and

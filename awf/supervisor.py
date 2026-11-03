@@ -16,10 +16,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 from . import config as cfg_mod
-from . import paths
+from . import paths, worker_tree
 from ._errors import AwfApiError
 from ._log import log as _log
 from .arbiter import (
+    await_human_override,
     decision_is_stale,
     discard_overruled,
     human_verify_decision,
@@ -40,6 +41,12 @@ _PRIOR_TODO_LIMIT = 8
 # Overridable via `wait.verify_grace_seconds`; 0 means TERM as soon as the
 # signal is seen, a negative value falls back to this default.
 VERIFY_GRACE_DEFAULT = 90.0
+
+# A29 (TODO-0364): after taking an auto verdict the engine gives the owner
+# this long to overrule it before the verdict's side effects (replan, new
+# unit) start. Overridable via `wait.human_override_seconds`; 0 turns the
+# window off, a negative value falls back to this default.
+HUMAN_OVERRIDE_DEFAULT = 60.0
 
 # Archive directory names, not public IDs: `TODO-9` is a legal directory
 # name here even though the public ID contract asks for four digits.
@@ -1419,6 +1426,34 @@ def _verify_grace_seconds(config: dict, logs_dir: Path) -> float:
     return grace
 
 
+def _human_override_seconds(config: dict, logs_dir: Path) -> float:
+    """A29: how long the owner may overrule an already-taken auto verdict.
+
+    Reads ``wait.human_override_seconds`` (default
+    ``HUMAN_OVERRIDE_DEFAULT``). A non-number falls back to the default
+    with a log line; 0 disables the window; a negative value falls back to
+    the default (the same rule as ``wait.verify_grace_seconds``).
+    """
+    raw = cfg_mod.get(config, "wait.human_override_seconds", HUMAN_OVERRIDE_DEFAULT)
+    try:
+        window = float(raw)
+    except (TypeError, ValueError):
+        _log(
+            logs_dir,
+            f"wait.human_override_seconds={raw!r} is not a number — "
+            f"using {HUMAN_OVERRIDE_DEFAULT:g}s",
+        )
+        return HUMAN_OVERRIDE_DEFAULT
+    if window < 0:
+        _log(
+            logs_dir,
+            f"wait.human_override_seconds={raw!r} is negative — "
+            f"using {HUMAN_OVERRIDE_DEFAULT:g}s",
+        )
+        return HUMAN_OVERRIDE_DEFAULT
+    return window
+
+
 def _human_decision_line(signal: str, mtime: float, outcome: str) -> str:
     """A29: the one log format for "the owner's verdict was taken"."""
     return f"verify decision: human ({signal}, mtime {int(mtime)}) — {outcome}"
@@ -1431,6 +1466,7 @@ def _prefer_human_verdict(
     auto_signal: str,
     wait_start: float,
     logs_dir: Path,
+    config: dict,
 ) -> str:
     """A29: the owner's verdict wins over the auto subprocess's.
 
@@ -1438,10 +1474,24 @@ def _prefer_human_verdict(
     same attempt replaces it and the swap is logged in the required form:
     ``verify decision: human (<signal>, mtime <t>) — auto verdict <s>
     ignored``. No decision, or the same one — the auto answer stands.
+
+    TODO-0364: when the auto verdict exists and the owner has not decided
+    yet, the engine does not apply it at once. It waits
+    ``wait.human_override_seconds`` (``await_human_override``) so a verdict
+    issued seconds later still wins; the auto verdict is applied only
+    after the window expires. A decision already on disk skips the wait —
+    the normal approve stays instant.
     """
     if kind != "verify" or not todo_id:
         return auto_signal
-    human = human_verify_decision(project_dir, todo_id, wait_start, logs_dir)
+    # A29: one read of "did the owner decide?" covers both cases — with an
+    # auto verdict to overrule the read repeats during the window, without
+    # one there is nothing to wait for and ``window=0`` asks exactly once
+    # (the ordinary approve stays instant).
+    window = _human_override_seconds(config, logs_dir) if auto_signal else 0.0
+    human = await_human_override(
+        project_dir, todo_id, auto_signal, wait_start, window, logs_dir
+    )
     if human is None:
         return auto_signal
     signal, mtime = human
@@ -1606,7 +1656,6 @@ def run_supervisor_via_subprocess(
         ]
 
     from ._env import awf_subprocess_env
-    from .pipeline_state import write_state
     from .signal_watch import run_subprocess_until_signal
 
     signal_holder: dict[str, str] = {}
@@ -1624,35 +1673,53 @@ def run_supervisor_via_subprocess(
     # RUN8 #2: same worker-pid record as the agent stage — the supervisor
     # subprocess is an opencode process in its own group and an
     # awf_kill mid-stage would orphan it the same way.
-    def _record_worker_pid(pid: int) -> None:
-        try:
-            write_state(
-                project_dir, logs_dir=logs_dir,
-                worker_pid=pid, worker_role="supervisor", worker_todo=todo_id,
-            )
-        except Exception:
-            pass
+    # A44 (TODO-0359): the pid/group of this spawn — the reap needs them even
+    # when the wait ends with an exception. The token is the env marker the
+    # whole tree inherits, the only anchor that survives ``setsid``.
+    anchor_token = worker_tree.new_anchor_token()
+    anchor = worker_tree.SpawnAnchor(anchor_token)
 
-    result = run_subprocess_until_signal(
-        cmd,
-        cwd=str(project_dir),
-        watch_paths=watch_paths,
-        watch_new_glob=watch_new_glob,
-        new_glob_accept=new_glob_accept,
-        logs_dir=logs_dir,
-        # W7: role-aware env (the supervisor can also be listed in
-        # automation.readonly_roles — same mechanism as worker roles).
-        env=awf_subprocess_env(role="supervisor", project_dir=project_dir),
-        signal_holder=signal_holder,
-        log_holder=log_holder,
-        # U6a/U6c are worker-only (TODO-0017): the supervisor subprocess can
-        # be legitimately long-silent (verify waits), so no watchdog; no
-        # preflight either — keep the supervisor flow exactly as before.
-        preflight_timeout=0,
-        no_output_timeout=0,
-        on_spawn=_record_worker_pid,
-        signal_exit_grace=signal_exit_grace,
-    )
+    def _record_worker_pid(pid: int) -> None:
+        anchor(pid)
+        worker_tree.record_worker_state(
+            project_dir, logs_dir, anchor, role="supervisor", todo_id=todo_id
+        )
+
+    # A44: name a previous stage's leftovers before this one adds more.
+    worker_tree.log_stage_leftovers(project_dir, logs_dir)
+
+    try:
+        result = run_subprocess_until_signal(
+            cmd,
+            cwd=str(project_dir),
+            watch_paths=watch_paths,
+            watch_new_glob=watch_new_glob,
+            new_glob_accept=new_glob_accept,
+            logs_dir=logs_dir,
+            # W7: role-aware env (the supervisor can also be listed in
+            # automation.readonly_roles — same mechanism as worker roles).
+            env=awf_subprocess_env(
+                role="supervisor",
+                project_dir=project_dir,
+                # A44: the tree marker — ``setsid`` children keep it.
+                stage_anchor=anchor_token,
+            ),
+            signal_holder=signal_holder,
+            log_holder=log_holder,
+            # U6a/U6c are worker-only (TODO-0017): the supervisor subprocess can
+            # be legitimately long-silent (verify waits), so no watchdog; no
+            # preflight either — keep the supervisor flow exactly as before.
+            preflight_timeout=0,
+            no_output_timeout=0,
+            on_spawn=_record_worker_pid,
+            signal_exit_grace=signal_exit_grace,
+        )
+    finally:
+        # A44: plan/verify workers start MCP servers too — reap the tree on
+        # both the normal and the exception path.
+        worker_tree.reap_stage_tree(
+            anchor, logs_dir, label=f"supervisor/{todo_id}"
+        )
 
     _log(logs_dir, f"Supervisor {kind} subprocess finished (exit={result.returncode})")
     if kind == "verify":
@@ -1707,7 +1774,8 @@ def run_supervisor_via_subprocess(
         _log(logs_dir, f"Supervisor {kind} produced signal (from watcher): {signal_name!r}")
         _log_replan_pickup(logs_dir, kind, signal_name, todo_id, inbox)
         return _prefer_human_verdict(
-            kind, todo_id, project_dir, signal_name, wait_start, logs_dir
+            kind, todo_id, project_dir, signal_name, wait_start, logs_dir,
+            config,
         )
 
     # U6b: pass the previous cycle's accepted decision (pipeline state) so
@@ -1750,7 +1818,7 @@ def run_supervisor_via_subprocess(
         )
     _log_replan_pickup(logs_dir, kind, signal_name, todo_id, inbox)
     return _prefer_human_verdict(
-        kind, todo_id, project_dir, signal_name, wait_start, logs_dir
+        kind, todo_id, project_dir, signal_name, wait_start, logs_dir, config
     )
 
 

@@ -9,14 +9,14 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import _net, paths, session_store, suite_guard
+from . import _net, paths, session_store, suite_guard, worker_tree
 from ._atomic import atomic_write_text
 from ._log import log as _log
 from ._worker_exit import signal_present_line, worker_exit_line, worker_log_tail
 from .doctrine import materialize_doctrine
 from .infra import managed_fs
 from .pipeline import Stage
-from .pipeline_state import bump_stage_attempt, write_state
+from .pipeline_state import bump_stage_attempt
 from .signals import (
     clean_stage_signals,
     expected_signal_prefixes,
@@ -316,14 +316,20 @@ def run_agent_stage(
     # orphan worker finishing the unit after the stop and its edits
     # landing in the NEXT unit's commit). Best-effort: a failed write
     # only degrades kill to the /proc child scan.
+    # A44: the pid/group of THIS spawn — the reap in ``finally`` needs them
+    # even when the wait ends with an exception. The token is the env marker
+    # the whole tree inherits, the only anchor that survives ``setsid``.
+    anchor_token = worker_tree.new_anchor_token()
+    anchor = worker_tree.SpawnAnchor(anchor_token)
+
     def _record_worker_pid(pid: int) -> None:
-        try:
-            write_state(
-                project_dir, logs_dir=logs_dir,
-                worker_pid=pid, worker_role=role, worker_todo=todo_id,
-            )
-        except Exception:
-            pass
+        anchor(pid)
+        worker_tree.record_worker_state(
+            project_dir, logs_dir, anchor, role=role, todo_id=todo_id
+        )
+
+    # A44: a previous stage's leftovers are named before this stage adds more.
+    worker_tree.log_stage_leftovers(project_dir, logs_dir)
 
     agent_start = time.monotonic()
     # K6: the window anchor is taken BEFORE Popen (2s of slack covers the
@@ -349,6 +355,8 @@ def run_agent_stage(
         # servers only (default: the control server).
         isolate_mcp=(kind == "execute"),
         proxy_facts=proxy_facts,
+        # A44: the tree marker — ``setsid`` children keep it after exit.
+        stage_anchor=anchor_token,
     )
     # A silently rewritten environment is not allowed — scheme and variable
     # names only, never a credential or a port.
@@ -357,22 +365,28 @@ def run_agent_stage(
         "proxy: "
         + (proxy_facts[0] if proxy_facts else "inherited from the parent env"),
     )
-    result = run_subprocess_until_signal(
-        cmd, cwd=project_dir, watch_paths=watch_paths, logs_dir=logs_dir,
-        env=worker_env,
-        hard_timeout=hard_timeout,
-        log_holder=log_holder,
-        on_spawn=_record_worker_pid,
-        # AUD16-06: explicit worker log name — role and todo_id are known
-        # exactly here. The dashboard glob awf-*-{todo_id}.out matches any
-        # role (previously only agent-* roles were visible).
-        log_name=f"awf-{role}-{todo_id}.out",
-        # U6a/U6c: automation.* settings, defaults from _net when absent.
-        preflight_timeout=cfg_mod.get(config, "automation.preflight_timeout_seconds",
-                                      _net.PREFLIGHT_TIMEOUT_DEFAULT),
-        no_output_timeout=cfg_mod.get(config, "automation.no_output_timeout_seconds",
-                                      _net.NO_OUTPUT_TIMEOUT_DEFAULT),
-    )
+    try:
+        result = run_subprocess_until_signal(
+            cmd, cwd=project_dir, watch_paths=watch_paths, logs_dir=logs_dir,
+            env=worker_env,
+            hard_timeout=hard_timeout,
+            log_holder=log_holder,
+            on_spawn=_record_worker_pid,
+            # AUD16-06: explicit worker log name — role and todo_id are known
+            # exactly here. The dashboard glob awf-*-{todo_id}.out matches any
+            # role (previously only agent-* roles were visible).
+            log_name=f"awf-{role}-{todo_id}.out",
+            # U6a/U6c: automation.* settings, defaults from _net when absent.
+            preflight_timeout=cfg_mod.get(config, "automation.preflight_timeout_seconds",
+                                          _net.PREFLIGHT_TIMEOUT_DEFAULT),
+            no_output_timeout=cfg_mod.get(config, "automation.no_output_timeout_seconds",
+                                          _net.NO_OUTPUT_TIMEOUT_DEFAULT),
+        )
+    finally:
+        # A44: a naturally exited worker leaves its MCP servers and
+        # ``opencode serve`` children in the group — they are reaped here,
+        # on both the normal and the exception path.
+        worker_tree.reap_stage_tree(anchor, logs_dir, label=f"{role}/{todo_id}")
     agent_elapsed = time.monotonic() - agent_start
     # R6 (K6): capture happens after the spawn, on both outcomes — a killed
     # entry leaves no row, the next entry still gets -a2 (AC40). A dead base

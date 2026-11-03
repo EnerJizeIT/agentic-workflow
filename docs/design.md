@@ -177,7 +177,10 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `config.py` | Чтение `.agentic/config.yaml` |
 | `paths.py` | Пути `.agentic/` |
 | `git_utils.py` | Git-операции: tree fingerprint (`awf tree-sha`), diff, reset |
-| `_proc.py` | `kill_process_tree` (guard `proc.pid > 1` — safety invariant) |
+| `_proc.py` | `kill_process_tree` (guard `proc.pid > 1` — safety invariant), `/proc`-факты (`snapshot_rows`, `stat_row`, `child_pids`, `caller_chain`) и общие правила процесса: `signalable_group` (группу можно сигналить), `is_live_state` (зомби — смерть) |
+| `_proc_cpu.py` | Read-only CPU-проба дерева (`cpu_time_of_tree`) для watchdog'а U6c — сигналов не шлёт |
+| `worker_tree.py` | A44: политика выхода стадии — кто принадлежит дереву воркера (метка стадии в env + своя группа + потомки по `ppid`, внуки включительно), хвосты прошлой стадии в лог; факты о процессах берёт из `_proc.py` |
+| `worker_reap.py` | A44: уборка дерева воркера — TERM→grace→KILL раундами по свежему снимку, отчёт в лог, путь выхода стадии `reap_stage_tree` |
 | `_safety_tripwire.py` | Pytest-плагин tripwire сессии для QA-файлов `context/` (Z1) |
 | `_env.py` | Worker-окружение: `OPENCODE_CONFIG_CONTENT`, `automation.readonly_roles`, реестр permission-ключей и мерж профиля tools стадии (ORCH M7.2) |
 | `_atomic.py`, `_lock.py` | Атомарные записи, file lock (read→merge→write) |

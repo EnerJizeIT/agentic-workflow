@@ -100,6 +100,20 @@ def _metadata_line(out: _Lines, check: str, dist: str, module: str) -> None:
         out.ok(check, meta)
 
 
+def _different_code(runner_dir: Path, commit: str, process: str) -> bool:
+    """Do the two recorded commits name DIFFERENT code? (A40)
+
+    ``--short`` picks its length per repository, so the same commit prints as
+    ``b2fa1840`` in one checkout and ``b2fa184`` in another. The rows still
+    show the recorded short forms; only the verdict compares one form per
+    side, and it is :func:`versions.commits_differ`'s — the same one the
+    launch handshake applies, so the two advisory surfaces cannot disagree.
+    """
+    return versions.commits_differ(
+        runner_dir, commit, versions.process_repo(), process
+    )
+
+
 def _check_versions(
     project_dir: Path,
     config: dict[str, Any],
@@ -159,7 +173,7 @@ def _check_versions(
                 )
             else:
                 out.ok("runner", f"{fact} (no commit evidence)")
-        elif process_commit and commit != process_commit:
+        elif process_commit and _different_code(runner_dir, commit, process_commit):
             out.warn(
                 "runner",
                 f"{fact}, process commit {process_commit} — same version, "
@@ -210,6 +224,34 @@ def _check_plugin(process: str, out: _Lines) -> None:
         out.ok("plugin", plugin)
 
     _metadata_line(out, "agent-workflow-ui metadata", "agent-workflow-ui", plugin)
+
+
+def _check_plugin_instances(root: Path, out: _Lines) -> None:
+    """Single-instance row: how many plugin instances serve this project.
+
+    A45: duplicates were two ``agent_workflow_ui`` processes under one
+    ``opencode serve``, each with its own HTTP port. The row reads the live
+    lock owners through the plugin's own reader (``instance.live_owners``):
+    the lock layout has one owner module, ``awf doctor`` must not restate it.
+    """
+    try:
+        from agent_workflow_ui.instance import live_owners
+    except ImportError:
+        return
+
+    live = live_owners(root)
+
+    ports = ", ".join(str(owner.port) for owner in live if owner.port) or "—"
+    pids = ", ".join(str(owner.pid) for owner in live) or "—"
+    fact = (
+        f"экземпляров {len(live)}, порт {ports}, "
+        f"владелец — {'да' if live else 'нет'}"
+        + (f" (pid {pids})" if live else "")
+    )
+    if len(live) > 1:
+        out.warn("plugin instances", fact + " — duplicates, expected one")
+    else:
+        out.ok("plugin instances", fact)
 
 
 def _load_opencode_root() -> tuple[dict[str, Any] | None, str]:
@@ -532,6 +574,7 @@ def run_doctor(project_dir: str | Path = ".") -> DoctorReport:
     _check_proxy(config, config_problem, out)
     _check_config_format(out)
     _check_dashboard(root, config, config_problem, out)
+    _check_plugin_instances(root, out)
     _check_models(root, config_problem, out)
     _check_agent_names(config, config_problem, out)
     if config_problem:

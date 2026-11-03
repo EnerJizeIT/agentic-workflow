@@ -4,8 +4,16 @@
 # Запускать на покоящемся дереве, в самом конце (trap-restore).
 
 # Guard pid>1 (инцидент 2026-09-20): фейк pid=1 должен уйти в proc.kill(),
-# а не в killpg(1). Мутация >0 пропускает pid=1 в killpg.
-awf/_proc.py @@ candidate is not None and candidate == proc.pid and proc.pid > 1 @@ candidate is not None and candidate == proc.pid and proc.pid > 0 @@ python3 -m pytest tests/negative/test_audit14_incidents.py::TestTimeoutKillsProcessGroup::test_kill_process_tree_never_targets_pid_1 -q
+# а не в killpg(1). Якорь — отказная ветка: когда групповая ветка guard'а
+# отклонена, сигнал идёт только в proc.kill(); мутация подменяет её на
+# killpg(proc.pid) — для фейка pid=1 это и есть killpg(1). Строка
+# proc.kill() в файле одна, поэтому короткий якорь однозначен; если ветку
+# переименуют, mutation-smoke упадёт с exit 2, а не промолчит.
+# Почему не «proc.pid > 1 → proc.pid > 0»: с A44 (сигнатура
+# signalable_group) условие стало конъюнкцией, и ослабление одного pid>1
+# ничего не меняет — signalable_group(1) всё равно отвечает False.
+# Одиночная однострочная мутация этого конъюнкта тестом не ловится.
+awf/_proc.py @@ proc.kill() @@ os.killpg(proc.pid, signal.SIGTERM) @@ python3 -m pytest tests/negative/test_audit14_incidents.py::TestTimeoutKillsProcessGroup::test_kill_process_tree_never_targets_pid_1 -q
 
 # update_run: mutator обязан видеть состояние С ДИСКА. Мутация передаёт
 # пустой словарь вместо on-disk state.

@@ -207,7 +207,11 @@ class TestStaleDecisionWiring:
         _fake_subprocess_no_signal(monkeypatch)
 
         signal = supervisor.run_supervisor_via_subprocess(
-            "verify", "TODO-0001", proj, {}, "phases/plan.md", logs
+            "verify", "TODO-0001", proj,
+            # TODO-0364: the window is not what this test measures — keep
+            # the run fast.
+            {"wait": {"human_override_seconds": 0}},
+            "phases/plan.md", logs
         )
         assert signal == "APPROVE-TODO-0001"
 

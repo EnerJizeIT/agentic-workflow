@@ -269,6 +269,18 @@ def initialized_project(empty_project: Path, awf_bin: str, awf_env: dict) -> Pat
         check=True,
         capture_output=True,
     )
+    # TODO-0364 (A29): every auto verify verdict now waits
+    # ``wait.human_override_seconds`` (default 60 s) for the owner before it
+    # is applied. The e2e supervisor is a stub that answers instantly and the
+    # tests budget 60 s per `awf start`, so the default window would blow the
+    # budget. A short window keeps the code path (wait, then apply) exercised
+    # instead of switching it off with 0.
+    config = empty_project / ".agentic" / "config.yaml"
+    with config.open("a", encoding="utf-8") as fh:
+        fh.write(
+            "\nwait:\n"
+            "  human_override_seconds: 2\n"
+        )
     # BD-28: write a minimal pipeline.yaml (UI form normally does this).
     pipeline = empty_project / ".agentic" / "pipelines" / "default.yaml"
     pipeline.write_text(

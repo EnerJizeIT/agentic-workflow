@@ -256,6 +256,11 @@ def repo_commit(path: str | Path) -> str:
     Best-effort by design (AUD-0293-2): a wheel install, a missing git binary
     or a repo without commits is "no commit evidence", not an error. The walk
     is ``git_utils``'s, so the git surface stays one home.
+
+    The short form is a DISPLAY fact, not an identity: ``--short`` picks its
+    length per repository, so one commit prints as 7 characters in one
+    checkout and 8 in another (A40). Comparison surfaces resolve it through
+    :func:`resolve_commit`; never compare this string with another one.
     """
     try:
         return git_utils.git_stdout(
@@ -265,9 +270,74 @@ def repo_commit(path: str | Path) -> str:
         return ""
 
 
+def process_repo() -> Path:
+    """The checkout the imported ``awf`` package lives in."""
+    return Path(__file__).resolve().parent.parent
+
+
 def process_commit() -> str:
     """Short commit of the tree the imported ``awf`` package lives in."""
-    return repo_commit(Path(__file__).resolve().parent.parent)
+    return repo_commit(process_repo())
+
+
+def resolve_commit(path: str | Path, rev: str) -> str:
+    """Full OID of ``rev`` (full, short, tag or ``HEAD``); ``""`` if unknown.
+
+    Resolution is per repository: a short id only means something where it
+    was recorded, so the caller passes the repo that recorded it. ``""`` —
+    not the recorded string — is the answer to "cannot tell", so a caller
+    can word the refusal instead of inventing a drift.
+    """
+    if not rev:
+        return ""
+    try:
+        return git_utils.git_stdout(
+            path, "rev-parse", "--verify", f"{rev}^{{commit}}", check=False
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def commit_identity(path: str | Path, recorded: str) -> str:
+    """One comparable form of a recorded commit: the full OID, else as recorded.
+
+    A recorded id can be full, short or a tag, and ``--short`` picks its
+    length per repository (A40), so this is the form surfaces compare and
+    store: ``head_guard`` records the gate commit through it, and
+    :func:`commits_differ` asks it for both sides. An unresolvable id keeps
+    its recorded text — dropping it to "" would lose the only evidence there
+    is, and "the id is not a commit here" is itself a fact worth comparing.
+    """
+    return resolve_commit(path, recorded) or recorded
+
+
+def commits_differ(
+    left_repo: str | Path, left: str, right_repo: str | Path, right: str
+) -> bool:
+    """Do two recorded commits name DIFFERENT code? (A40)
+
+    Two checkouts can record the same commit at different short lengths
+    (``b2fa1840`` vs ``b2fa184``), so each side is first reduced to one form
+    — its full OID, resolved in the repo that recorded it — and the forms are
+    compared. An id that does not resolve keeps its recorded text: the side
+    that has the commit and the side that does not cannot be the same code,
+    and "no evidence" is the caller's separate case (the launch gate words it
+    as an unknown commit instead of a drift).
+    """
+    left_form = commit_identity(left_repo, left)
+    right_form = commit_identity(right_repo, right)
+    if not left_form or not right_form:
+        return False
+    return left_form != right_form
+
+
+#: Characters of a full OID shown in a human-facing line (A40).
+SHORT_OID_LEN = 8
+
+
+def short_oid(oid: str) -> str:
+    """The human-facing form of a commit id (the sync command keeps the full one)."""
+    return oid[:SHORT_OID_LEN] if oid else ""
 
 
 def repo_dirty_count(path: str | Path) -> int:
@@ -390,7 +460,9 @@ def version_warning(
     return "version drift: " + ", ".join(parts) + f" — run awf doctor; {advice}"
 
 
-def _commit_identity_warning(process: str, runner: str) -> str:
+def _commit_identity_warning(
+    process_repo: Path, process: str, runner_repo: Path, runner: str
+) -> str:
     """The handshake's code-identity line (AUD-0293-2, AUD-0296d-2).
 
     A version string does not identify the code, so ``awf start`` also names
@@ -398,14 +470,18 @@ def _commit_identity_warning(process: str, runner: str) -> str:
     Only evidence against evidence is a drift: a checkout outside git (no
     commit) proves nothing and stays silent here — ``doctor`` reports that
     as its own row. A runner commit with no process commit is the audit's
-    CTX1 case and is named as such.
+    CTX1 case and is named as such. The verdict is :func:`commits_differ`'s,
+    so a full/short/tag pair of ONE commit never reads as a disagreement.
     """
     if not runner:
         return ""
     if not process:
-        return f"process has no commit evidence (runner commit {runner})"
-    if runner != process:
-        return f"runner commit {runner} differs from process commit {process}"
+        return f"process has no commit evidence (runner commit {short_oid(runner)})"
+    if commits_differ(process_repo, process, runner_repo, runner):
+        return (
+            f"runner commit {short_oid(runner)} differs from process commit "
+            f"{short_oid(process)}"
+        )
     return ""
 
 
@@ -430,7 +506,9 @@ def handshake(project_dir: str | Path, config: dict[str, Any]) -> dict[str, str]
         plugin_required=plugin_requirement(),
     )
     if path is not None:
-        identity = _commit_identity_warning(process_commit(), repo_commit(path))
+        identity = _commit_identity_warning(
+            process_repo(), process_commit(), path, repo_commit(path)
+        )
         if identity:
             warning = f"{warning}; {identity}" if warning else identity
     return {
@@ -466,6 +544,8 @@ __all__ = [
     "DRIFT_VERSION",
     "apply_handshake",
     "awf_satisfies",
+    "commit_identity",
+    "commits_differ",
     "handshake",
     "install_metadata",
     "pinned_version",
@@ -473,13 +553,16 @@ __all__ = [
     "plugin_requirement",
     "plugin_version",
     "process_commit",
+    "process_repo",
     "process_version",
     "repo_commit",
     "repo_dirty_count",
+    "resolve_commit",
     "runner_drift",
     "runner_path",
     "runner_setting_problem",
     "runner_version",
     "runner_version_problem",
+    "short_oid",
     "version_warning",
 ]

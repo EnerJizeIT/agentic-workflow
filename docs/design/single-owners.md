@@ -36,6 +36,7 @@ git пути, — красный: голая подкоманда, печата�
 | базовый снимок дерева (запись) | `awf/api/pipeline.py` | `grep -n "def create_baseline" awf/api/pipeline.py` | `def create_baseline` |
 | статус на baseline (`BASELINE-*.status`, печатный долг) | `awf/commit_delta.py` | `grep -n "def staged_at_baseline" awf/commit_delta.py` | `def staged_at_baseline` |
 | публикационные факты | `awf/publish.py` | `grep -n "class UnitReceipt" awf/publish.py` | `class UnitReceipt` |
+| идентичность коммита (full/short/tag) | `awf/versions.py` | `grep -n "def commits_differ" awf/versions.py` | `def commits_differ` |
 | состояние операции | `awf/infra/state_store/_ops.py` | `grep -n "def write_operation" awf/infra/state_store/_ops.py` | `def write_operation` |
 | печатные чтения путей — только в исключениях | `tests/negative/test_miniwave_m4_guards.py` | `grep -n "def find_printed_git_path_reads" tests/negative/test_miniwave_m4_guards.py` | `def find_printed_git_path_reads` |
 

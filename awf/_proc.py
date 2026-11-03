@@ -14,9 +14,34 @@ import os
 import signal
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 KILL_GRACE_SECONDS = 3.0
+
+# A /proc state letter that means "this process does no work". A defunct
+# member answers signal 0 and shows up in /proc, so every liveness answer
+# in this module and its tree callers must read it as dead — one rule.
+# (``api/_liveness.probe_alive`` keeps its own signal-0 answer; aligning it
+# is a separate surface, not this unit.)
+_DEAD_STATES = frozenset({"Z", "X"})
+
+
+@dataclass(frozen=True)
+class ProcRow:
+    """One ``/proc/<pid>/stat`` row — the parse the tree and kill paths share.
+
+    ``comm`` may contain spaces and parentheses; ``fields`` are the
+    post-comm fields (index 0 is state, 1 ppid, 2 pgrp, 11 utime, 12
+    stime) for callers that need more than identity.
+    """
+
+    pid: int
+    state: str
+    ppid: int | None
+    pgid: int | None
+    comm: str
+    fields: tuple[str, ...]
 
 
 def _own_session() -> bool:
@@ -52,8 +77,15 @@ def kill_process_tree(proc: subprocess.Popen, grace: float = KILL_GRACE_SECONDS)
         # init IS its own group leader (getpgid(1) == 1), so killpg(1, …)
         # becomes kill(-1, …) — SIGTERM/SIGKILL to every process the caller
         # may signal (the whole uid session). Hence the pid > 1 guard
-        # (2026-09-20 session-kill incident, full pytest run 3/3).
-        if candidate is not None and candidate == proc.pid and proc.pid > 1:
+        # (2026-09-20 session-kill incident, full pytest run 3/3). It stays
+        # explicit next to the shared rule: the doctrine names this guard,
+        # and ``signalable_group`` adds "not the caller's own group".
+        if (
+            candidate is not None
+            and candidate == proc.pid
+            and proc.pid > 1
+            and signalable_group(candidate)
+        ):
             pgid = candidate
 
     if pgid is not None:
@@ -84,19 +116,106 @@ def kill_process_tree(proc: subprocess.Popen, grace: float = KILL_GRACE_SECONDS)
         pass
 
 
-def _stat_state_and_fields(pid: int) -> tuple[str | None, list[str]]:
-    """(state, post-comm fields) from ``/proc/<pid>/stat``; (None, []) if
-    unreadable. comm may contain spaces/parens — split after the last ')'.
+def signal_pid(pid: int, sig: int) -> bool:
+    """Signal ONE pid — the single-pid path of the tree walkers here.
+
+    Tree reaps (``kill_pid_tree``, ``worker_reap``) go through it so the
+    ``pid <= 1`` refusal is applied in one place. ``awf kill``'s own
+    pipeline TERM is a separate surface and keeps its explicit guard.
+    ``pid <= 1`` is refused by rule (2026-09-20: pid 1 is the caller's
+    whole session, not init). True when delivered, False when refused or
+    the process is already gone.
+    """
+    if not isinstance(pid, int) or pid <= 1:
+        return False
+    try:
+        os.kill(pid, sig)
+    except (OSError, OverflowError):
+        return False
+    return True
+
+
+def signalable_group(pgid: int | None) -> bool:
+    """May ``pgid`` be signaled at all? The package's one group rule.
+
+    Refused: a number at or below 1 (group 1 is the caller's whole
+    session — the 2026-09-20 incident), and the caller's OWN group (a
+    signal there takes the caller down with the target). Callers still
+    add their own identity check — a group is only ours when the target
+    pid leads it — this function answers the safety half only.
+    """
+    if not isinstance(pgid, int) or pgid <= 1:
+        return False
+    try:
+        return pgid != os.getpgrp()
+    except OSError:
+        return False
+
+
+def is_live_state(state: str) -> bool:
+    """Does a /proc state letter mean the process still does work?"""
+    return state not in _DEAD_STATES
+
+
+def snapshot_rows() -> dict[int, ProcRow] | None:
+    """Every readable ``/proc`` row, keyed by pid; None without /proc.
+
+    The walk the tree, kill and CPU paths here share: callers that need
+    identity, parentage, group or CPU fields build their view from this
+    snapshot instead of listing /proc again. Other modules (dashboard,
+    liveness) keep their own reads; this one is scoped to ``_proc``'s
+    callers. ``pid <= 1`` never appears — :func:`stat_row` refuses it.
     """
     try:
-        raw = Path(f"/proc/{pid}/stat").read_bytes().decode("ascii", "replace")
+        names = os.listdir("/proc")
     except OSError:
-        return None, []
-    rpar = raw.rfind(")")
-    if rpar == -1:
-        return None, []
-    fields = raw[rpar + 2 :].split()
-    return (fields[0] if fields else None), fields
+        return None
+    rows: dict[int, ProcRow] = {}
+    for name in names:
+        if not name.isdigit():
+            continue
+        row = stat_row(int(name))
+        if row is not None:
+            rows[row.pid] = row
+    return rows
+
+
+def _int_field(fields: tuple[str, ...], index: int) -> int | None:
+    try:
+        return int(fields[index])
+    except (IndexError, ValueError):
+        return None
+
+
+def stat_row(pid: int) -> ProcRow | None:
+    """``/proc/<pid>/stat`` as a :class:`ProcRow`; None when unreadable.
+
+    ``pid <= 1`` is refused by rule (the 2026-09-20 session-kill incident:
+    nothing may ever target pid 1). A gone process and a non-Linux host
+    both answer None — "cannot prove" is never a signal to kill.
+    """
+    if not isinstance(pid, int) or pid <= 1:
+        return None
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_bytes()
+    except OSError:
+        return None
+    text = raw.decode("ascii", "replace")
+    lpar = text.find("(")
+    rpar = text.rfind(")")
+    if lpar == -1 or rpar <= lpar:
+        return None
+    fields = tuple(text[rpar + 2 :].split())
+    if not fields:
+        return None
+    return ProcRow(
+        pid=pid,
+        state=fields[0],
+        ppid=_int_field(fields, 1),
+        pgid=_int_field(fields, 2),
+        comm=text[lpar + 1 : rpar],
+        fields=fields,
+    )
 
 
 def _pid_alive(pid: int) -> bool:
@@ -110,10 +229,10 @@ def _pid_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
-    state, fields = _stat_state_and_fields(pid)
-    if state is None:
+    row = stat_row(pid)
+    if row is None:
         return True  # no /proc — trust the signal probe
-    return state not in ("Z", "X")
+    return is_live_state(row.state)
 
 
 def ppid_of(pid: int) -> int | None:
@@ -123,15 +242,41 @@ def ppid_of(pid: int) -> int | None:
     is None — callers treat it as "parentage cannot be proven", never as
     a signal to kill.
     """
-    if pid is None or pid <= 1:
-        return None
-    _state, fields = _stat_state_and_fields(pid)
-    if len(fields) < 2:
-        return None
-    try:
-        return int(fields[1])
-    except ValueError:
-        return None
+    row = stat_row(pid)
+    return row.ppid if row is not None else None
+
+
+def _caller_walk(max_depth: int = 64) -> tuple[list[int], bool]:
+    """(chain, available): the caller's pid then its ancestors, nearest first.
+
+    ``available`` is False when the chain broke before reaching init while
+    the caller is obviously alive — /proc unreadable. A cycle in /proc data
+    ends the walk as available.
+    """
+    chain: list[int] = []
+    pid = os.getpid()
+    for _ in range(max_depth):
+        chain.append(pid)
+        parent = ppid_of(pid)
+        if parent is None:
+            # A missing parent at the top (init, ppid_of(1) is None by
+            # rule) means the chain walked clean; a missing parent
+            # mid-chain (we are alive, so it cannot be "gone") means /proc
+            # cannot be read.
+            return chain, pid == 1
+        if parent == pid:  # defensive: a cycle in /proc data
+            return chain, True
+        pid = parent
+    return chain, True
+
+
+def caller_chain(max_depth: int = 64) -> list[int]:
+    """The caller's own pid and its ancestors, nearest first.
+
+    Read-only identity probe: the set form is the "never signal these"
+    guard of every process-tree walker in this package.
+    """
+    return _caller_walk(max_depth)[0]
 
 
 def caller_ancestry(candidates: set[int], max_depth: int = 64) -> tuple[int | None, bool]:
@@ -152,21 +297,11 @@ def caller_ancestry(candidates: set[int], max_depth: int = 64) -> tuple[int | No
     a stuck pipeline unkillable from the same machine). The depth cap
     defeats a cycle in /proc data.
     """
-    pid = os.getpid()
-    for _ in range(max_depth):
+    chain, available = _caller_walk(max_depth)
+    for pid in chain:
         if pid in candidates:
             return pid, True
-        parent = ppid_of(pid)
-        if parent is None:
-            # A missing parent at the top (init, ppid_of(1) is None by
-            # rule) means the chain walked clean; a missing parent
-            # mid-chain (we are alive, so it cannot be "gone") means /proc
-            # cannot be read.
-            return None, pid == 1
-        if parent == pid:  # defensive: a cycle in /proc data
-            return None, True
-        pid = parent
-    return None, True
+    return None, available
 
 
 def child_pids(pid: int) -> list[int]:
@@ -175,79 +310,15 @@ def child_pids(pid: int) -> list[int]:
 
     Best-effort topology probe for kill time: a dead pid or a failed read
     yields an empty list, never an exception — the caller treats the
-    result as "no children found".
+    result as "no children found". Built on :func:`snapshot_rows`, so the
+    /proc walk stays in one place.
     """
     if pid is None or pid <= 1:
         return []
-    try:
-        names = os.listdir("/proc")
-    except OSError:
+    rows = snapshot_rows()
+    if not rows:
         return []
-    kids: list[int] = []
-    for name in names:
-        if name.isdigit() and ppid_of(int(name)) == pid:
-            kids.append(int(name))
-    return sorted(kids)
-
-
-def cpu_time_of_tree(pid: int) -> float | None:
-    """Total CPU time (utime+stime, seconds) of ``pid`` and all of its
-    descendants, read from /proc (Linux); None when /proc is unavailable
-    or ``pid <= 1``.
-
-    U6c watchdog probe (TODO-0180): a worker whose log goes silent may
-    still be working — a quiet long command (a full test run) burns CPU
-    for tens of minutes without a log line. A busy tree accumulates CPU
-    between two readings; a stalled one does not.
-
-    Read-only: no signal is ever sent, and an entry that vanishes
-    mid-walk is simply skipped. ``pid <= 1`` refuses like
-    :func:`child_pids` — init's tree is never measured (the 2026-09-20
-    session-kill rule: nothing may ever target pid 1).
-    """
-    if pid is None or pid <= 1:
-        return None
-    try:
-        names = os.listdir("/proc")
-    except OSError:
-        return None
-    stats: dict[int, list[str]] = {}
-    for name in names:
-        if name.isdigit():
-            _state, fields = _stat_state_and_fields(int(name))
-            if fields:
-                stats[int(name)] = fields
-    if not stats:
-        return None
-    children: dict[int, list[int]] = {}
-    for process, fields in stats.items():
-        if len(fields) >= 2:
-            try:
-                children.setdefault(int(fields[1]), []).append(process)
-            except ValueError:
-                continue
-    try:
-        hz = os.sysconf("SC_CLK_TCK")
-    except (OSError, ValueError):
-        hz = 100  # historical Unix clock rate — last-resort fallback
-    total = 0.0
-    seen: set[int] = set()
-    queue: list[int] = [pid]
-    while queue:
-        current = queue.pop()
-        if current in seen:
-            continue
-        seen.add(current)
-        fields = stats.get(current)
-        if fields is not None and len(fields) >= 13:
-            try:
-                # /proc stat fields after comm: utime is the 14th overall
-                # (index 11 here), stime the 15th (index 12).
-                total += (int(fields[11]) + int(fields[12])) / hz
-            except ValueError:
-                pass
-        queue.extend(children.get(current, ()))
-    return total
+    return sorted(row.pid for row in rows.values() if row.ppid == pid)
 
 
 def _live_members_of_group(pgid: int) -> bool | None:
@@ -258,25 +329,10 @@ def _live_members_of_group(pgid: int) -> bool | None:
     parent — init after a reparent). None: /proc unavailable — the
     caller falls back to the signal-0 probe.
     """
-    try:
-        names = os.listdir("/proc")
-    except OSError:
+    rows = snapshot_rows()
+    if rows is None:
         return None
-    live = False
-    for name in names:
-        if not name.isdigit():
-            continue
-        state, fields = _stat_state_and_fields(int(name))
-        if state is None or len(fields) < 3:
-            continue
-        try:
-            pgrp = int(fields[2])
-        except ValueError:
-            continue
-        if pgrp == pgid and state not in ("Z", "X"):
-            live = True
-            break
-    return live
+    return any(row.pgid == pgid and is_live_state(row.state) for row in rows.values())
 
 
 def kill_pid_tree(pid: int, grace: float = KILL_GRACE_SECONDS, poll: float = 0.1) -> str:
@@ -314,17 +370,17 @@ def kill_pid_tree(pid: int, grace: float = KILL_GRACE_SECONDS, poll: float = 0.1
             candidate = os.getpgid(pid)
         except (OverflowError, OSError, ProcessLookupError):
             candidate = None
-        if candidate is not None and candidate == pid:
+        if candidate is not None and candidate == pid and signalable_group(candidate):
             pgid = candidate
 
     def _signal_tree(sig: int) -> None:
-        try:
-            if pgid is not None:
+        if pgid is not None:
+            try:
                 os.killpg(pgid, sig)
-            else:
-                os.kill(pid, sig)
-        except (OverflowError, OSError, ProcessLookupError):
-            pass
+            except (OSError, ProcessLookupError):
+                pass
+        else:
+            signal_pid(pid, sig)
 
     def _tree_alive() -> bool:
         try:

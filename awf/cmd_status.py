@@ -58,6 +58,19 @@ def run(args: Any) -> int:
         )
         print()
 
+    # A44 (TODO-0359): the unit's worker tree, grandchildren included. The
+    # line prints even at 0 — that is the post-reap answer the owner checks.
+    if result.worker_processes is not None:
+        wp = result.worker_processes
+        unit = "/".join(
+            part for part in (wp.get("role"), wp.get("todo_id")) if part
+        )
+        print(
+            f"Worker tree: {wp.get('count', 0)} live process(es)"
+            + (f" ({unit})" if unit else "")
+        )
+        print()
+
     if result.replan_error:
         print(f"Replan: FAILED — {result.replan_error}")
         print()

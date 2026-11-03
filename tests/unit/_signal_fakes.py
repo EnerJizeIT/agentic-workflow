@@ -25,11 +25,17 @@ class Clock:
         return self.t
 
 
-def install_fake_time(monkeypatch, clock: Clock) -> None:
-    """Make ``time.monotonic`` advance exactly by each fake ``sleep``."""
+def install_fake_time(monkeypatch, clock: Clock, on_sleep=None) -> None:
+    """Make ``time.monotonic`` advance exactly by each fake ``sleep``.
+
+    ``on_sleep`` runs after every tick — the hook that lets a test write a
+    decision file "a second into" a window without a real sleep.
+    """
 
     def fake_sleep(dt: float) -> None:
         clock.t += dt
+        if on_sleep is not None:
+            on_sleep()
 
     monkeypatch.setattr("time.monotonic", clock.monotonic)
     monkeypatch.setattr("time.sleep", fake_sleep)
@@ -61,20 +67,26 @@ def log_text(proj: Path) -> str:
     )
 
 
-def run_verify(proj: Path, monkeypatch, todo: str, **kwargs):
-    """Run the auto verify stage with a subprocess that exits 0 and no signal."""
+def run_verify(proj: Path, monkeypatch, todo: str, config: dict | None = None,
+               run=None, **kwargs):
+    """Run the auto verify stage with a subprocess that exits 0 and no signal.
+
+    ``config`` is the stage config the supervisor reads (``wait.*``
+    windows); ``run`` replaces the default no-signal subprocess double
+    (a subprocess that writes the verdict itself).
+    """
     from awf import supervisor
 
     monkeypatch.setattr(
         "awf.signal_watch.run_subprocess_until_signal",
-        lambda cmd, cwd=None, **kw: CompletedProcess(cmd, 0),
+        run or (lambda cmd, cwd=None, **kw: CompletedProcess(cmd, 0)),
         raising=True,
     )
     return supervisor.run_supervisor_via_subprocess(
         "verify",
         todo,
         proj,
-        {},
+        config or {},
         str(proj / ".agentic" / "phases" / "plan.md"),
         proj / ".agentic" / "logs",
         **kwargs,

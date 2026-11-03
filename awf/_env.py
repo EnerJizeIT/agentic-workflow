@@ -495,6 +495,7 @@ def awf_subprocess_env(
     tools_profile: dict[str, list[str]] | None = None,
     isolate_mcp: bool = False,
     proxy_facts: list[str] | None = None,
+    stage_anchor: str | None = None,
 ) -> dict[str, str]:
     """BD-22/KAUD-5: env for opencode subprocess spawned by awf.
 
@@ -544,6 +545,11 @@ def awf_subprocess_env(
     gets. ``proxy_facts`` is an optional collector: the fact describing the
     decision THIS call made is appended to it, so a caller (the stage log)
     reports the env the worker actually receives instead of recomputing it.
+
+    A44 (TODO-0359): ``stage_anchor`` (an opaque per-stage token) is written
+    as ``AWF_STAGE_ANCHOR`` so the stage-exit reap can recognize the whole
+    tree, including children that ``setsid`` out of the worker's group. No
+    anchor → the env is unchanged.
     """
     env = os.environ.copy()
 
@@ -664,4 +670,16 @@ def awf_subprocess_env(
     fact = apply_worker_proxy(env, worker_proxy_setting(project_dir))
     if proxy_facts is not None and fact:
         proxy_facts.append(fact)
+    # A44 (TODO-0359): a unique marker the worker's whole tree inherits
+    # through exec — including children that leave its process group with
+    # ``setsid`` (``opencode serve --stdio`` and the MCP servers). The
+    # stage-exit reap matches on it, so those processes stay within reach
+    # after the worker itself is gone. The engine never carries the marker
+    # (it is set on this child's env only), so nothing outside the tree is
+    # ever matched. The name comes from ``worker_tree`` — the module that
+    # reads and drops it — so a rename cannot leave the writer behind.
+    if stage_anchor:
+        from .worker_tree import ANCHOR_ENV
+
+        env[ANCHOR_ENV] = stage_anchor
     return env
