@@ -694,7 +694,7 @@ Only do it if you are sure. Delete the `.agentic/` directory, run `awf_init(forc
 
 ## All tools (reference)
 
-54 tools: 49 `awf_*` workflow + 5 UI (forms).
+55 tools: 50 `awf_*` workflow + 5 UI (forms).
 
 ### Lifecycle
 | Tool | What it does |
@@ -784,6 +784,7 @@ applies to any stage kind.
 | Tool | What it does |
 |---|---|
 | `awf_dispatch_todo` | Create TODO + baseline + signal (+ pre-check grep) |
+| `awf_plan_batch` | Draft a batch of backlog units into inbox (no `.ready`) + ordered plan |
 | `awf_baseline` | Snapshot git HEAD + tests + env |
 | `awf_rollback` | Reset to baseline (hard / soft / dry-run) |
 | `awf_restore` | Restore an archived TODO back to the inbox |

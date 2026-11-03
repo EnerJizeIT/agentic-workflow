@@ -495,6 +495,26 @@ class ApplyIncrementPlanResult:
 
 
 @dataclass
+class PlanBatchResult:
+    """Result of :func:`awf.api.plan_batch` (A25).
+
+    ``drafts`` — one record per created inbox file (id, todo_id, absolute
+    path, title). ``plan`` — the execution order: every record carries the
+    ``after`` ids declared for it. ``.ready`` is never written: a draft is
+    not a dispatched unit.
+    """
+
+    drafts: list[dict[str, Any]]
+    plan: list[dict[str, Any]]
+    goal: str
+    backlog_path: str
+    next_action: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class WaitEventResult:
     """Result of :func:`awf.api.wait_for_event` (Phase 3 — supervisor wake-up).
 

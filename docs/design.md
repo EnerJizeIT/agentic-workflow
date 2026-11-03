@@ -4,11 +4,11 @@
 
 ## Обзор
 
-`agent-workflow-ui` — MCP plugin для opencode. 54 typed tools (5 UI + 49 workflow). Plugin импортирует `awf` напрямую (Python import, без subprocess).
+`agent-workflow-ui` — MCP plugin для opencode. 55 typed tools (5 UI + 50 workflow). Plugin импортирует `awf` напрямую (Python import, без subprocess).
 
 ```mermaid
 graph TD
-    A[opencode supervisor LLM] -->|MCP stdio - 54 tools| B[agent-workflow-ui plugin]
+    A[opencode supervisor LLM] -->|MCP stdio - 55 tools| B[agent-workflow-ui plugin]
     B -->|Python import| C[awf.api.*]
     C -->|subprocess| D[opencode run - worker agents]
     C -->|HTTP daemon| E[Dashboard - live /api/state]
@@ -187,6 +187,8 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `stage_timeout.py` | Потолок одной стадии (OPS IMP1, R1): один расчёт "явный `--timeout` → ключ стадии `timeout` → `automation.stage_timeout_seconds` → 3600", источник капа в логе стадии, отказ на не-положительное-целое |
 | `api/pipelines.py` | Named pipelines: write_pipeline / list_pipelines (RUN3 #1) |
 | `api/planning.py` | Increment planning: apply_increment_plan (форма → вариант) |
+| `api/plan_batch.py` | A25: пачка пунктов бэклога → черновики inbox + упорядоченный план (без `.ready`): разбор бэклога (fence-aware), нумерация, запись и откат |
+| `api/plan_batch_render.py` | A25: чистая половина — слияние пункта с переопределениями (три отказа), порядок по `after` (цикл → отказ) и текст черновика |
 | `api/roles.py` | Роли: add_role (draft-область: кандидаты в `roles/draft/`, adopt/discard/list) + zone-анализ для analyze_roles |
 | `xdg.py` | XDG config dir (~/.config, XDG_CONFIG_HOME) |
 | `_log.py`, `_log_reader.py` | Файловый логгер + чтение логов orchestrator |
@@ -201,9 +203,9 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 
 | Файл | Ответственность |
 |---|---|
-| `tools/registry.py` | **Единый реестр** `registry.TOOLS` — единственный источник списка для server, skill и тестов (54 = 5 UI + 49 workflow, R-06) |
+| `tools/registry.py` | **Единый реестр** `registry.TOOLS` — единственный источник списка для server, skill и тестов (55 = 5 UI + 50 workflow, R-06) |
 | `server.py` | MCP server (stdio transport); регистрирует tools из `registry.TOOLS` |
-| `tools/awf.py` | 49 awf tool wrappers (async → `asyncio.to_thread` + `next_action`) |
+| `tools/awf.py` | 50 awf tool wrappers (async → `asyncio.to_thread` + `next_action`) |
 | `tools/forms.py` | 5 UI tool wrappers (open_form, read_submit, ...) |
 | `tools/templates.py` | Реестр HTML-форм |
 | `http_endpoint.py` | Long-lived HTTP server для form submits (127.0.0.1, CSRF check) |
@@ -281,7 +283,7 @@ HTTP server (daemon thread in orchestrator, `127.0.0.1`):
 7. **PR_SET_PDEATHSIG.** Worker subprocesses die with orchestrator (Linux).
 8. **Закреплённый движок (`automation.runner_dir`).** Для проектов, где awf правит сам себя: background-ребёнок стартует с cwd закреплённого checkout — движок берётся оттуда, а не из дерева проекта, которое воркер меняет прямо сейчас (TODO-0077).
 9. **Evidence-гейт (AUD11-03).** В забеге approve без записи RUN-EVIDENCE не принимается, а ручной ACK без неё игнорируется. Содержимое evidence сообщает вызывающий; фактический запуск проверок ядро не удостоверяет.
-10. **Единый реестр tools (R-06).** `tools/registry.py` — один список для server, skill-установщика и тестов: 54 tools не расходятся по файлам.
+10. **Единый реестр tools (R-06).** `tools/registry.py` — один список для server, skill-установщика и тестов: 55 tools не расходятся по файлам.
 11. **`readonly_roles` (W7, V-04 27.09).** Роли из `automation.readonly_roles` получают в `OPENCODE_CONFIG_CONTENT` принудительные `edit: deny` / `write: deny` — поверх любых разрешений хоста; `bash` остаётся разрешённым (QA прогоняет тесты). Полная изоляция роли — в ORCH-плане.
 12. **Mutation smoke (U11).** `awf mutations` — supervisor проверяет, что ключевые инварианты реально ловятся тестами: подменить строку в файле, прогнать команду, ожидание красного.
 13. **Salvage-сценарий.** Worker умер без сигнала → `SALVAGE-{todo}.md` + рестарт стадии (`awf_retry_stage`); сценарий зафиксирован в brief-карточке (`awf/data/scenarios.yaml`) и в recovery-разделе USAGE.

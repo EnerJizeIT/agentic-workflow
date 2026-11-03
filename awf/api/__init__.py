@@ -67,6 +67,7 @@ from ._results import (
     DispatchTodoResult,
     InitResult,
     ListPipelinesResult,
+    PlanBatchResult,
     RejectResult,
     RemoveTodoResult,
     ReportResult,
@@ -124,6 +125,7 @@ from .pipeline import (
     start_pipeline,
 )
 from .pipelines import list_pipelines, write_pipeline
+from .plan_batch import plan_batch
 from .planning import apply_increment_plan
 from .roles import (
     OFFICE_PRESET,
@@ -191,6 +193,7 @@ __all__ = [
     "BlockedDraftResult",
     "DispatchTodoResult",
     "ApplyIncrementPlanResult",
+    "PlanBatchResult",
     "WaitEventResult",
     "RunStartResult",
     "RunStatusResult",
@@ -288,6 +291,8 @@ __all__ = [
     "read_claim",
     # Increment planning (dogfood-7 — user picks decomposition variant)
     "apply_increment_plan",
+    # A25: batch of backlog units → inbox drafts + ordered plan
+    "plan_batch",
     # Named pipelines (RUN3 #1 — create/list, run by name via start/continue)
     "write_pipeline",
     "list_pipelines",

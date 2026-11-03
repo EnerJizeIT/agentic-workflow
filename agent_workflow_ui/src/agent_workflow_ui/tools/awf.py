@@ -2524,8 +2524,60 @@ async def awf_dispatch_todo(
     return response
 
 
-# ─── Dogfood-5: shortcut tools (no more 'how do I fill the form?') ──────
+@_mutating
+async def awf_plan_batch(
+    items: list[str | dict[str, Any]],
+    project_dir: str | None = None,
+    goal: str = "",
+    *,
+    backlog_path: str | None = None,
+) -> dict[str, Any]:
+    """Create inbox DRAFTS for a batch of backlog units + an ordered plan.
 
+    A25: one call instead of 3-4 manual ``awf_dispatch_todo`` calls with the
+    backlog text retyped. Each item becomes ``.agentic/inbox/TODO-NNNN.md``
+    with self-sufficient sections (Контекст / Что сделать / Приёмка /
+    Границы). Drafts carry NO ``.ready`` and NO baseline: nothing is
+    dispatched, the pipeline does not pick them up.
+
+    Details come from the backlog file — ``plan.batch_backlog_path`` in
+    ``.agentic/config.yaml``, else ``docs/backlog.md``. An entry is a
+    level-2+ heading ``### A37 — Title`` with its scope paragraph, plus
+    optional ``after:`` / ``refs:`` / ``accept:`` / ``bounds:`` lines. An
+    item with a scope in the call is used as-is.
+
+    Ordering follows ``after`` (ids that must precede the item). Ids
+    outside the batch are kept in the plan but do not block. A dependency
+    cycle refuses the whole batch — before any file is written; so does a
+    scope-less item (the message names it). A refused batch leaves no file
+    behind (the ids this call reserved are removed).
+
+    To dispatch a refined draft later: ``awf_dispatch_todo(content=...,
+    todo_id=<draft todo_id>, force=True)`` — the draft already owns that
+    inbox path, so the dispatch must overwrite it.
+
+    Args:
+        items: Backlog ids (``["A37", "A38"]``) or dicts
+            (``{"id": "A37", "scope": "...", "refs": [...], "after": [...]}``).
+        project_dir: **Required.** Absolute path to the awf project root.
+        goal: One line for the batch — context in every draft.
+        backlog_path: Override the backlog file (relative to the project).
+
+    Returns:
+        Dict with ``drafts`` (id, todo_id, path, title) and ``plan`` — the
+        ordered queue, each record with its ``after`` ids.
+    """
+    response = await _exec(
+        api.plan_batch,
+        project_dir=_resolve_project_dir(project_dir),
+        items=items,
+        goal=goal,
+        backlog_path=backlog_path,
+    )
+    return response
+
+
+# ─── Dogfood-5: shortcut tools (no more 'how do I fill the form?') ──────
 
 async def awf_open_project_setup_form(
     project_dir: str,

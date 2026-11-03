@@ -200,6 +200,11 @@ groups:
         cli: dispatch
         situations: [S3, S9, S10, S11b]
         when: "unit + baseline + signal"
+      - mcp: awf_plan_batch
+        cli: plan-batch
+        situations: [S9]
+        inventory_only: true
+        when: "batch of backlog units → drafts"
       - mcp: awf_write_pipeline
         cli: pipeline-write
         situations: [S0]

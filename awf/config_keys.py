@@ -79,6 +79,9 @@ READ_KEYS: frozenset[str] = frozenset({
     "wait.verify_grace_seconds",
     "dashboard.auto_open",
     "run.stall_minutes",
+    # ── plan batch (A25) ─────────────────────────────────────────────────
+    # Backlog file the batch reads when the call does not name one.
+    "plan.batch_backlog_path",
     # ── phases / supervisor / context / feedback ─────────────────────────
     "phases.current",
     "supervisor.instructions",
