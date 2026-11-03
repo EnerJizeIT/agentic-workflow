@@ -1,7 +1,7 @@
 # Contract: Один факт — один владелец
-Owns: git-факты (blob/mode, пути, снимок baseline и `.status`), публикация, состояние операции.
+Owns: git-факты, публикация, состояние операции.
 Path: `docs/design/single-owners.md`; сканер `tests/negative/test_miniwave_m4_guards.py`
-Never: вторая реализация; печатные чтения путей — `-z` без декодирующих аргументов. Исключения — guard'ы design-таблицы. Снимок `BASELINE-*.untracked` — сырой NUL, один читатель `read_untracked_snapshot`. Путь — `GitRepository`.
+Never: вторая реализация; печатные чтения путей — `-z` без декодирующих аргументов. Снимок `BASELINE-*.untracked` — сырой NUL, один читатель `read_untracked_snapshot`. Путь — `GitRepository`.
 Gate: [ -f docs/design/single-owners.md ] && ! grep -rqn "_legacy_plan_split" awf --include='*.py' && python3 -m pytest tests/negative/test_miniwave_m4_guards.py -q -k m4 --timeout=120 -p no:cacheprovider
 
 | Факт | Модуль-владелец | Маркер |
@@ -16,5 +16,6 @@ Gate: [ -f docs/design/single-owners.md ] && ! grep -rqn "_legacy_plan_split" aw
 | базовый снимок дерева (запись) | `awf/api/pipeline.py` | `def create_baseline` |
 | статус на baseline (`BASELINE-*.status`, печатный долг) | `awf/commit_delta.py` | `def staged_at_baseline` |
 | публикационные факты | `awf/publish.py` | `class UnitReceipt` |
+| идентичность коммита (full/short/tag) | `awf/versions.py` | `def commits_differ` |
 | состояние операции | `awf/infra/state_store/_ops.py` | `def write_operation` |
 | печатные чтения путей — только в исключениях | `tests/negative/test_miniwave_m4_guards.py` | `def find_printed_git_path_reads` |

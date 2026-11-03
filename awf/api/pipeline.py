@@ -2002,13 +2002,17 @@ def _runner_drift_refusal(project_dir: Path) -> StartResult | None:
     running = versions.process_commit()
     if not pinned or not running or pinned == running:
         return None
-    message = (
-        f"pinned runner drift: automation.runner_dir ({runner}) is at "
-        f"{pinned}, this awf is {running}. The engine imports the pinned "
-        f"checkout, so the run would execute the older code. Sync it first: "
-        f'git -C "{runner}" reset --hard {running} — or unset '
-        f"automation.runner_dir."
-    )
+    # A40: a recorded commit can be full, short or a tag, and ``--short``
+    # picks its length per repository — so compare one form (the full OID of
+    # each side, resolved in the repo that recorded it), never the strings.
+    pinned_oid = versions.resolve_commit(runner, pinned)
+    running_oid = versions.resolve_commit(versions.process_repo(), running)
+    if not pinned_oid or not running_oid:
+        message = _unknown_commit_message(runner, pinned, running)
+    elif pinned_oid == running_oid:
+        return None
+    else:
+        message = _runner_drift_message(runner, pinned_oid, running_oid)
     print(f"ERROR: {message}", file=sys.stderr)
     return StartResult(
         run_mode="noop",
@@ -2017,6 +2021,41 @@ def _runner_drift_refusal(project_dir: Path) -> StartResult | None:
         exit_code=1,
         message=message,
         warning="",
+    )
+
+
+def _runner_drift_message(runner: Path, pinned_oid: str, running_oid: str) -> str:
+    """The real-drift refusal: both commits short, the sync command full."""
+    from .. import versions
+
+    return (
+        f"pinned runner drift: automation.runner_dir ({runner}) is at "
+        f"{versions.short_oid(pinned_oid)}, this awf is "
+        f"{versions.short_oid(running_oid)}. The engine imports the pinned "
+        f"checkout, so the run would execute the older code. Sync it first: "
+        f'git -C "{runner}" reset --hard {running_oid} — or unset '
+        f"automation.runner_dir."
+    )
+
+
+def _unknown_commit_message(runner: Path, pinned: str, running: str) -> str:
+    """A refusal that says the ids do not name a commit — not "drift".
+
+    No ``reset --hard`` here: the target of that command would be an id we
+    just failed to resolve, so the honest next step is to look at both
+    checkouts. The recorded ids stay quoted as recorded — they are the
+    evidence that the two sides cannot be compared.
+    """
+    from .. import versions
+
+    process = versions.process_repo()
+    return (
+        f"pinned runner commit unknown: automation.runner_dir ({runner}) "
+        f"records {pinned!r} and this awf records {running!r}; at least one "
+        f"of them does not resolve to a commit in its repository, so the two "
+        f"cannot be compared. The engine imports the pinned checkout, so the "
+        f"run could execute other code. Check both: "
+        f'git -C "{runner}" rev-parse HEAD and git -C "{process}" rev-parse HEAD.'
     )
 
 

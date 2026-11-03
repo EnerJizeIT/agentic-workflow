@@ -100,6 +100,20 @@ def _metadata_line(out: _Lines, check: str, dist: str, module: str) -> None:
         out.ok(check, meta)
 
 
+def _different_code(runner_dir: Path, commit: str, process: str) -> bool:
+    """Do the two recorded commits name DIFFERENT code? (A40)
+
+    ``--short`` picks its length per repository, so the same commit prints as
+    ``b2fa1840`` in one checkout and ``b2fa184`` in another. The rows still
+    show the recorded short forms; only the verdict compares one form per
+    side, and it is :func:`versions.commits_differ`'s — the same one the
+    launch handshake applies, so the two advisory surfaces cannot disagree.
+    """
+    return versions.commits_differ(
+        runner_dir, commit, versions.process_repo(), process
+    )
+
+
 def _check_versions(
     project_dir: Path,
     config: dict[str, Any],
@@ -159,7 +173,7 @@ def _check_versions(
                 )
             else:
                 out.ok("runner", f"{fact} (no commit evidence)")
-        elif process_commit and commit != process_commit:
+        elif process_commit and _different_code(runner_dir, commit, process_commit):
             out.warn(
                 "runner",
                 f"{fact}, process commit {process_commit} — same version, "

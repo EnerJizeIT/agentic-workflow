@@ -49,13 +49,20 @@ def test_unpinned_project_is_allowed(tmp_path, monkeypatch):
 def test_drift_is_refused_with_the_sync_command(tmp_path, monkeypatch, capsys):
     runner = _runner(tmp_path)
     _commits(monkeypatch, "1111111", "2222222")
+    # A40: the ids must RESOLVE — two made-up ids are "unknown commit", not
+    # drift (that shape is test_runner_drift_sha.py's), and the sync command
+    # may only name a commit that exists.
+    oids = {"1111111": "1" * 40, "2222222": "2" * 40}
+    monkeypatch.setattr(
+        versions, "resolve_commit", lambda path, rev: oids.get(rev, "")
+    )
 
     refusal = api_pipeline._runner_drift_refusal(_project(tmp_path, runner))
 
     assert refusal is not None
     assert refusal.exit_code == 1
     assert "1111111" in refusal.message and "2222222" in refusal.message
-    assert f'git -C "{runner}" reset --hard 2222222' in refusal.message
+    assert f'git -C "{runner}" reset --hard {"2" * 40}' in refusal.message
     assert "pinned runner drift" in capsys.readouterr().err
 
 

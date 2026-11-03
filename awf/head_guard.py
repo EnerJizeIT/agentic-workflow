@@ -25,7 +25,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import git_utils, pipeline_state
+from . import git_utils, pipeline_state, versions
 from ._log import log as _log
 from .infra.git_model import GitModelError, GitRepository, display_path
 
@@ -171,16 +171,11 @@ def _resolve_commit(project_dir: Path, sha: str) -> str:
     one form — otherwise every legitimate gate commit looks foreign. The
     caller-visible short form stays untouched; only the stored fact is
     normalized.
+
+    A40: this is :func:`awf.versions.commit_identity`'s job — one resolver
+    for every comparison surface, not a second copy beside it.
     """
-    if not sha:
-        return ""
-    try:
-        resolved = git_utils.git_stdout(
-            project_dir, "rev-parse", "--verify", f"{sha}^{{commit}}"
-        ).strip()
-    except (RuntimeError, OSError, subprocess.TimeoutExpired):
-        return sha
-    return resolved or sha
+    return versions.commit_identity(project_dir, sha)
 
 
 #: The one sentence both advice surfaces append. A literal copy in each
