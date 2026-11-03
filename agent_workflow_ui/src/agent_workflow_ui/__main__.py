@@ -9,11 +9,19 @@ from .agents_md import ensure_agents_md
 from .config import detect_project_dir, ensure_directories, load
 from .fault_log import setup_fault_log
 from .http_endpoint import start_http_server
+from .instance import boot
 from .opencode_config import read_opencode_models, read_recent_models
 from .render.engine import create_env
 from .server import create_server
 from .skill_installer import ensure_skill_installed, ensure_supervisor_skill_installed
-from .state import get_registry, set_config, set_http_port, set_jinja_env, set_project_dir
+from .state import (
+    get_registry,
+    set_config,
+    set_http_port,
+    set_instance_mode,
+    set_jinja_env,
+    set_project_dir,
+)
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +52,8 @@ def main() -> int:
         config = load()
         ensure_directories(config)
         set_config(config)
-        set_project_dir(detect_project_dir())
+        project_dir = detect_project_dir()
+        set_project_dir(project_dir)
 
         env = create_env([config.templates_dir, DEFAULT_TEMPLATES_DIR])
         env.globals["available_models"] = read_opencode_models()
@@ -52,14 +61,24 @@ def main() -> int:
         set_jinja_env(env)
 
         registry = get_registry()
-        server, port = start_http_server(config, registry)
-        set_http_port(port)
-        log.info("agent_workflow_ui started (HTTP on port %d)", port)
+        result = boot(config, project_dir, registry, start_server=start_http_server)
+        set_instance_mode(result.mode)
+        if result.port:
+            set_http_port(result.port)
+        log.info("%s", result.message)
+        log.info(
+            "agent_workflow_ui mode=%s port=%s (single instance per project, A45)",
+            result.mode,
+            result.port,
+        )
 
         mcp = create_server()
         mcp.run()  # blocks; stdio transport
 
-        server.shutdown()
+        if result.server is not None:
+            result.server.shutdown()
+        if result.lock is not None:
+            result.lock.release()
         return 0
     except KeyboardInterrupt:
         log.info("agent_workflow_ui interrupted by user")

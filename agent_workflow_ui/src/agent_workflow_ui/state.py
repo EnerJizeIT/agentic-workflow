@@ -374,6 +374,30 @@ def get_http_port() -> int | None:
     return _http_port
 
 
+_instance_mode: str = "owner"
+
+
+def set_instance_mode(mode: str) -> None:
+    """Record the startup role: ``owner`` | ``reuse`` | ``tool-only``.
+
+    A45 (TODO-0360): only the lock owner serves forms locally. The other two
+    modes have no form registry behind their URL, so ``open_form`` refuses
+    with an honest message instead of handing out a dead submit link.
+    """
+    global _instance_mode
+    _instance_mode = mode
+
+
+def get_instance_mode() -> str:
+    """Current startup role (defaults to ``owner`` for direct calls/tests)."""
+    return _instance_mode
+
+
+def serves_forms() -> bool:
+    """True when this process owns the form HTTP server."""
+    return _instance_mode == "owner"
+
+
 _config: Config | None = None
 _jinja_env: Any | None = None  # Environment instance
 _project_dir: Path | None = None
