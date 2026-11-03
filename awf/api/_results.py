@@ -76,6 +76,10 @@ class StatusResult:
     # ``automation.stale_stage_minutes``. The resume advice still comes from
     # ``engine_dead`` alone (one owner of the advice order).
     stale_stage: str | None = None
+    # A41: the verify stage is waiting for the supervisor's decision
+    # (APPROVE/REVIEW). The event carries {todo_id, since, elapsed_seconds,
+    # deadline_seconds, reason}; None when no verify wait is in progress.
+    verify_waiting: dict[str, Any] | None = None
     # A32/A34: the last rollback replan that failed while the run kept
     # going. The line names the failure so a continued run is not silently
     # degraded. Cleared by the next successful replan and by the state clear

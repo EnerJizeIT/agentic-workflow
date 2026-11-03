@@ -32,7 +32,7 @@ init → goal → form → normalize → brief → run → verify → done
 | **normalize** | `awf_analyze_roles`, проверяет перекрытия | `awf_confirm_normalized` → advances to brief |
 | **brief** | Изучает проект + BACKLOG, pre-check кода, батчит задачи, dispatch | `awf_dispatch_todo` (pre-check grep) → `awf_start` |
 | **run** | **IDLE** — ждёт пользователя | Pipeline: agent stages, signal detection, dashboard live |
-| **verify** | Читает handoffs + git diff, решает | `awf_approve` / `awf_reject` → commit/replan |
+| **verify** | Читает факты пака (`GATES-<id>.md`) + git diff, решает | `awf_approve` / `awf_reject` → commit/replan |
 | **done** | Спрашивает пользователя «что дальше?» | State cleared, goal preserved |
 
 Механика фаз:
@@ -132,6 +132,8 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `suite_command.py` | Каноническая команда сьюта и артефакт (R13/K13); `awf suite-command` |
 | `unit_history.py` | Неключевая история юнита (CTX2): `forget_unit_history` снимает `CLOSER-<id>.json` и `CHECKLIST-<id>.json` на service-rollback, main-rollback и `restore_todo`; все перечисленные пути идут через один помощник |
 | `supervisor.py` | Supervisor prompts (`build_prompt`), signal wait, run-гейты |
+| `verify_context.py` | A42: промпт verify — вердикт пака встроенным текстом, диффстат, короткие TODO/DONE/PROGRESS вместо handoff-истории; бюджет и строка замера стадии в `orchestrator.log` |
+| `bounded_prompt.py` | A42: одно правило урезания промпта по бюджету для verify и replan — необязательные секции первыми, резка по ИМЕНИ секции, каждый рез назван |
 | `agent_stage.py` | Worker spawn (`opencode run`), `collect_handoff()` |
 | `done_owner.py` | A27: `DONE-<id>.json` принадлежит стадии, чей отчёт он описывает — снимок до стадии и возврат байтов автора после чужой перезаписи; пробы читателя живут в `PROBES-<id>.json` |
 | `session_store.py` | R6/R7 (CTX8–CTX9): файл пары `SESSION-<todo>-<stage>.json`, захват id из sqlite opencode по точному `title` и окну `time_created` (`directory` — тай-брейк) под бюджетом 1 с, решение reused/fresh по `engine.reuse_session` |

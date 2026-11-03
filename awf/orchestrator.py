@@ -545,6 +545,11 @@ def _run_pipeline_impl(args: Any, liveness: Any = None) -> int:
                 # write, so the next stage (a supervisor one included)
                 # never inherits a green skip from a previous worker.
                 stage_skipped=False, stage_skip_reason=None,
+                # A41: the same rule for the verify wait event — a stage
+                # that is not waiting for a decision must never show a
+                # "verify_waiting" line left by a crashed/timed-out verify
+                # (a continued run would look frozen at the wrong stage).
+                verify_waiting=None,
             )
             if liveness is not None:
                 liveness.on_stage(s_name, current_todo)

@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1057,6 +1057,24 @@ def _zombie_state_hint(project_dir: Path, state: dict[str, Any]) -> str | None:
     )
 
 
+def _with_live_elapsed(event: dict[str, Any]) -> dict[str, Any]:
+    """A41: recompute ``elapsed_seconds`` from ``since`` when status is read.
+
+    The verify wait refreshes its event on the 60s log tick; between ticks
+    the stored age lags by up to a minute, and a frozen-looking counter is
+    exactly the impression the event exists to remove. ``since`` is the
+    fact; the age is derived. An unparseable stamp leaves the event as is.
+    """
+    try:
+        started = datetime.fromisoformat(str(event.get("since") or ""))
+    except ValueError:
+        return event
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    elapsed = int((datetime.now(timezone.utc) - started).total_seconds())
+    return {**event, "elapsed_seconds": max(0, elapsed)}
+
+
 def get_status(project_dir: Path) -> StatusResult:
     """Get current workflow state — active TODOs, progress, blocked, conflicts."""
     project_dir = Path(project_dir).resolve()
@@ -1356,6 +1374,16 @@ def get_status(project_dir: Path) -> StatusResult:
     # and the two fields are consumed together ("closed run ≠ no run").
     run_brief_state = _run_brief(project_dir)
 
+    # A41: a "waiting for the decision" line is true only while an engine
+    # is there to wait. A crashed stage leaves the key in state — printing
+    # it would tell the owner to approve something nobody is listening for
+    # (the stage-level stale line above already names the real problem).
+    verify_waiting = (
+        None if engine_dead else ((_state or {}).get("verify_waiting") or None)
+    )
+    if verify_waiting:
+        verify_waiting = _with_live_elapsed(verify_waiting)
+
     result = StatusResult(
         project_name=project_name,
         active_todos=active_todos_list,
@@ -1381,6 +1409,7 @@ def get_status(project_dir: Path) -> StatusResult:
         engine_dead=engine_dead,
         engine_dead_todo=engine_dead_todo,
         stale_stage=stale_stage,
+        verify_waiting=verify_waiting,
         replan_error=(_state or {}).get("replan_error") or None,
         foreign_commit=(_state or {}).get(head_guard.FOREIGN_COMMIT_KEY) or None,
         upstream_sync=(_state or {}).get(head_guard.UPSTREAM_SYNC_KEY) or None,

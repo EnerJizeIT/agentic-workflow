@@ -169,7 +169,9 @@ class TestStaleDecisionWiring:
     def test_auto_verify_rejects_stale_approve(self, tmp_path, monkeypatch):
         """Full window: cycle 1 accepted APPROVE (recorded), kill before
         consumption. Cycle 2: the supervisor subprocess fires nothing new —
-        the leftover must NOT be accepted (→ no auto-commit)."""
+        the leftover must NOT be accepted (→ no auto-commit). A41: the
+        stage now KEEPS WAITING for a genuine verdict instead of returning
+        rc=1, so the wait ends at its deadline with no signal."""
         proj = _bare_project(tmp_path)
         logs = proj / ".agentic" / "logs"
         approve = proj / ".agentic" / "inbox" / "APPROVE-TODO-0001.ready"
@@ -181,12 +183,18 @@ class TestStaleDecisionWiring:
         )
         _fake_subprocess_no_signal(monkeypatch)
 
-        signal = supervisor.run_supervisor_via_subprocess(
-            "verify", "TODO-0001", proj, {}, "phases/plan.md", logs
-        )
-        assert signal == "", (
-            f"stale APPROVE from the killed cycle was accepted again: {signal!r}"
-        )
+        import pytest
+
+        with pytest.raises(TimeoutError):
+            supervisor.run_supervisor_via_subprocess(
+                "verify", "TODO-0001", proj, {}, "phases/plan.md", logs,
+                wait_timeout=1,
+            )
+        text = (logs / "orchestrator.log").read_text(encoding="utf-8")
+        assert (
+            "U6b: APPROVE-TODO-0001.ready is the decision a killed cycle "
+            "already accepted" in text
+        ), "the stale APPROVE must be named as a leftover, not accepted"
 
     def test_auto_verify_accepts_preapproval(self, tmp_path, monkeypatch):
         """BD-8: no record + APPROVE on disk (created before the run) →

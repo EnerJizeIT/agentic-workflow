@@ -43,8 +43,12 @@ class TestSnippetContent:
     def test_verify_has_decide(self):
         assert "DECIDE" in _SNIPPET_VERIFY or "decide" in _SNIPPET_VERIFY.lower()
 
-    def test_verify_has_handoffs(self):
-        assert "handoff" in _SNIPPET_VERIFY.lower()
+    def test_verify_facts_not_handoffs(self):
+        """A42: the verify prompt carries pack facts, not handoff history."""
+        lower = _SNIPPET_VERIFY.lower()
+        assert "handoff" not in lower
+        assert "do not run tests" in lower
+        assert "pack facts" in lower
 
     def test_verify_has_no_relay(self):
         assert "relay" in _SNIPPET_VERIFY.lower() or "YOUR call" in _SNIPPET_VERIFY

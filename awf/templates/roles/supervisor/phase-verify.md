@@ -4,23 +4,25 @@
 YOU are the reviewer. Read the TODO (contract), check the work, decide.
 
 ## Steps
-1. Read TODO-{todo_id}.md — this is the contract (Goal, Success criteria, Verify).
+1. The checks are already run: the verify pack's verdict is in your prompt
+   (and in `.agentic/context/GATES-{todo_id}.md`) — verdict, red sections,
+   first reason. Do NOT re-run the tests, the pack or the verify commands.
+2. Read TODO-{todo_id}.md — this is the contract (Goal, Success criteria, Verify).
    For EACH success criterion: mark met or not met.
-2. Read ALL handoffs in `.agentic/handoff/`.
-3. Run: `git diff --stat` — check what actually changed.
-4. Read the actual code changes for correctness.
-5. Run verify commands from the TODO.
-6. DECIDE YOURSELF:
+3. Review the diff against the baseline — what actually changed. The handoff
+   history is NOT an input of verify.
+4. Read the actual code changes for correctness where the facts leave doubt.
+5. DECIDE YOURSELF:
    - ALL criteria met → create `.agentic/inbox/ACK-{todo_id}.ready`
      (exception: in an active run — `awf_run_status` says `active: true` —
      approve only via `awf_approve(todo_id, evidence=...)`; a hand-made ACK
      without evidence is ignored by the engine)
    - ANY criterion not met → write `.agentic/outbox/REVIEW-{todo_id}.md`
      listing which criteria failed and what to fix
-7. Метрики: только по запросу владельца или когда супервизор решит, что
+6. Метрики: только по запросу владельца или когда супервизор решит, что
    нужна сводка — `awf_metrics` / `awf metrics` (отчёт на рабочий стол,
    копия в `metrics.mirror_dir`, если задан).
-8. Фрикция с awf → `awf feedback --type bug|feature` (отчёт владельцу на рабочий стол); не молчи — молчание не чинит инструмент.
+7. Фрикция с awf → `awf feedback --type bug|feature` (отчёт владельцу на рабочий стол); не молчи — молчание не чинит инструмент.
 
 ## Do NOT
 - Do NOT relay "pipeline waits for your decision" — that's YOUR call.

@@ -85,6 +85,7 @@ def test_only_verify_spawns_with_a_grace_window(tmp_path, monkeypatch):
     from subprocess import CompletedProcess
 
     captured: list[tuple[str, object, list[str]]] = []
+    waited: list[tuple[str, str, dict]] = []
 
     def fake_run(cmd, cwd, **kwargs):
         kind = "verify" if any(
@@ -96,9 +97,17 @@ def test_only_verify_spawns_with_a_grace_window(tmp_path, monkeypatch):
             holder["signal"] = ""
         return CompletedProcess(cmd, 0)
 
+    # A41: a verify stage without a verdict now waits for the decision; the
+    # wait itself is covered by test_run_verify_wait.py — this test owns the
+    # grace window only, so the wait is stubbed out.
+    def fake_wait(kind, todo_id, *args, **kwargs):
+        waited.append((kind, todo_id, kwargs))
+        return ""
+
     monkeypatch.setattr(
         "awf.signal_watch.run_subprocess_until_signal", fake_run, raising=True
     )
+    monkeypatch.setattr(supervisor, "wait_for_supervisor_signal", fake_wait)
     proj = make_project(tmp_path)
     phases = str(proj / ".agentic" / "phases" / "plan.md")
     logs = proj / ".agentic" / "logs"
@@ -113,6 +122,10 @@ def test_only_verify_spawns_with_a_grace_window(tmp_path, monkeypatch):
         ("plan", None),
         ("verify", 7.0),
     ]
+    assert [(kind, todo) for kind, todo, _kw in waited] == [
+        ("verify", "TODO-0001"),
+    ]
+    assert waited[0][2].get("publish_waiting") is True
     plan_prompt = captured[0][2][-1]
     verify_prompt = captured[1][2][-1]
     assert "Signal ends your work" not in plan_prompt

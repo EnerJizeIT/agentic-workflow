@@ -686,12 +686,25 @@ def _service_unit_refusal(todo_id: str) -> str:
 
 
 def _is_service_unit(project_dir: Path, todo_id: str) -> bool:
-    """ORCH M5.2 (review fix F1): True when ``todo_id`` is owned by the
-    service slot's queue (``run_state.run_slot_for_todo`` == "service").
-    A corrupt or absent service file degrades to False — the main path
-    proceeds (the pre-M5.2 behavior)."""
+    """ORCH M5.2 (review fix F1): True when the SERVICE slot owns the unit.
+
+    The verdict must land in the run that owns the unit NOW (A41, QA-1 on
+    the verdict surface): ``awf_run_service_finish`` closes a service run
+    and keeps ``queue``/``current``, so queue membership alone refused a
+    MAIN-run unit as "a service-run unit" — the owner's verdict could not
+    reach the run waiting for it. The live owner decides; with no live
+    owner the service queue keeps its claim (a candidate waiting for a
+    service restart) — the pre-A41 answer. A corrupt or absent service file
+    degrades to False, the pre-M5.2 behavior.
+    """
     from .. import run_state
 
+    # A LIVE owner is the only one whose slot decides; a closed run is the
+    # previous owner and keeps no veto (that is why the queue rule below
+    # stays for the no-live-owner case).
+    owner = run_state.owning_run(project_dir, todo_id)
+    if owner is not None and owner[1].get("active"):
+        return owner[0] == "service"
     return run_state.run_slot_for_todo(project_dir, todo_id) == "service"
 
 

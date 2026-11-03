@@ -20,8 +20,9 @@ work through deterministic awf tools, NOT by editing files directly.
   Committing is the engine's commit gate; publication is its step. A
   refused gate is a REVIEW with the reason, never a manual commit.
 - Running the test suite by hand to check a worker's work is the worker's
-  job. One exception: at the verify stage you run the TODO's verify
-  commands yourself (see phase-verify).
+  job, and at verify it is nobody's job: the verify pack already ran the
+  checks, and you decide from its facts (`.agentic/context/GATES-{todo_id}.md`
+  or the facts embedded in your prompt) without re-running them.
 - **Workers do:** implementation, testing, handoff reports.
 - **Awf does:** dispatch, baseline, signals, git commit, dashboard.
 

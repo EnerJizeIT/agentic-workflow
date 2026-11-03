@@ -948,6 +948,43 @@ def productive_minutes(state: dict) -> float:
     return max(0.0, elapsed_minutes(state) - downtime_minutes(state))
 
 
+def stop_reason_for_unit(state: dict | None, todo_id: str) -> str:
+    """Why an ACTIVE run must stop while ``todo_id`` is the unit in flight.
+
+    Empty string means "keep going". One home for the run-side stop rules:
+    the engine applies them between units (``api/run._run_next``) and the
+    verify stage applies them while it waits for the owner's decision
+    (A41) — two copies drifted apart once, and then one surface stops
+    while the other keeps waiting for a verdict that will never come.
+
+    Corrupt budget/started_at values degrade toward stopping (AUD02-09):
+    an unverifiable budget gate is not a green light.
+    """
+    if not state:
+        return ""
+    if not state.get("active"):
+        return "the run is no longer active"
+    flags = (state.get("stop_flags") or {}).get(todo_id) or []
+    if flags:
+        return f"stop-list flag on {todo_id}: {', '.join(map(str, flags))}"
+    try:
+        budget = int(state.get("budget_minutes", 0) or 0)
+    except (TypeError, ValueError):
+        return (
+            "run state corrupted (budget_minutes unparseable) — "
+            "the budget gate cannot be verified"
+        )
+    if budget:
+        if not started_at_ok(state):
+            return (
+                "run state corrupted (started_at unparseable) — "
+                f"budget {budget} min cannot be verified"
+            )
+        if productive_minutes(state) > budget:
+            return f"budget exhausted ({budget} min)"
+    return ""
+
+
 def run_slot_for_todo(project_dir: Path, todo_id: str) -> str:
     """ORCH M5.2: the state slot (main/service) whose queue owns ``todo_id``.
 
@@ -967,6 +1004,44 @@ def run_slot_for_todo(project_dir: Path, todo_id: str) -> str:
         if isinstance(q, dict) and str(q.get("todo_id", "")) == str(todo_id):
             return "service"
     return "main"
+
+
+def owning_run(project_dir: Path, todo_id: str) -> tuple[str, dict] | None:
+    """The ONE run that owns ``todo_id`` NOW — a live owner before a closed one.
+
+    ORCH M5.2 / A41: :func:`run_slot_for_todo` answers "whose queue holds the
+    id" — enough for downtime accounting, not enough for a verdict surface.
+    ``awf_run_service_finish`` closes a service run and keeps its
+    ``queue``/``current``, so a closed run can still claim a unit the MAIN
+    run is executing now (QA-1: the verify wait died with "the run is no
+    longer active" while the main run was waiting for the very same
+    approve). Every verdict surface asks THIS function — the approve/reject
+    refusal (``api/pipeline._is_service_unit``) and the verify wait's stop
+    check (``supervisor._verify_wait_stop_reason``) — so the two cannot
+    decide differently whom a unit belongs to.
+
+    A run whose ``current`` names another unit has no say: an old run file
+    that never closed must not stop a verify stage running the same project.
+    Within one liveness class :func:`run_slot_for_todo`'s slot preference
+    decides, so the two rules cannot drift. ``None`` = no run owns the unit.
+    """
+    if not todo_id:
+        return None
+    preferred = run_slot_for_todo(project_dir, todo_id)
+    # Build the order instead of mutating a list with ``remove``: the writer
+    # inventory gate counts that token as a file-removal operation, and this
+    # module deletes nothing (QA-2). The resolver answers only main/service.
+    other = "service" if preferred == "main" else "main"
+    closed: tuple[str, dict] | None = None
+    for slot in (preferred, other):
+        run = read_run(project_dir, slot=slot)
+        if not run or str(run.get("current") or "") != str(todo_id):
+            continue
+        if run.get("active"):
+            return slot, run
+        if closed is None:
+            closed = slot, run
+    return closed
 
 
 def add_downtime(

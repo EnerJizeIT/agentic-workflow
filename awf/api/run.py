@@ -1547,36 +1547,6 @@ def _run_next(
             state = run_state.write_run(project_dir, completed=completed)
         return stop_run(project_dir, state, "queue exhausted — all items processed")
 
-    try:
-        budget = int(state.get("budget_minutes", 0) or 0)
-    except (TypeError, ValueError):
-        # ORCH M1.3 (class NEG-3): a corrupt budget_minutes in an ACTIVE
-        # run.yaml (hand-edited; the write path stores an int) makes the
-        # budget gate unverifiable. Degrade toward safety, the AUD02-09
-        # direction: stopping is safe, degrading to 0 would silently
-        # disable the gate (and the raw ValueError would kill the run loop).
-        return stop_run(
-            project_dir, state,
-            "run state corrupted (budget_minutes unparseable) — "
-            "the budget gate cannot be verified",
-        )
-    if budget:
-        if not run_state.started_at_ok(state):
-            # AUD02-09: a corrupt started_at used to read as elapsed 0.0 —
-            # the budget gate silently disabled. Degrade toward safety:
-            # the run clock is untrustworthy, so the run stops.
-            return stop_run(
-                project_dir, state,
-                "run state corrupted (started_at unparseable) — "
-                f"budget {budget} min cannot be verified",
-            )
-        # B2: the budget is in PRODUCTIVE minutes — wall clock minus recorded
-        # downtime (checkpoint waits, salvage handling, net-backoff pauses).
-        # The run is a guard against "the autonomous run lives forever", not
-        # a punishment for incidents.
-        if run_state.productive_minutes(state) > budget:
-            return stop_run(project_dir, state, f"budget exhausted ({budget} min)")
-
     # RUN3 #2: queue items are normalized {"todo_id", "pipeline"} dicts
     # (read_run upgrades legacy strings); the defensive isinstance keeps
     # hand-written state files alive too.
@@ -1585,11 +1555,15 @@ def _run_next(
         str(next_item.get("todo_id", "")) if isinstance(next_item, dict) else str(next_item)
     )
 
-    flags = (state.get("stop_flags") or {}).get(next_id) or []
-    if flags:
-        return stop_run(
-            project_dir, state, f"stop-list flag on {next_id}: {', '.join(map(str, flags))}",
-        )
+    # ORCH M1.3 / AUD02-09 / B2: budget (in PRODUCTIVE minutes — wall clock
+    # minus recorded downtime), stop flags and corrupt-state degradation all
+    # live in run_state.stop_reason_for_unit. The verify stage obeys the
+    # same rule while it waits for the owner's decision (A41): one owner, so
+    # the two surfaces cannot drift into "one stops, the other waits for a
+    # verdict that will never come".
+    stop_reason = run_state.stop_reason_for_unit(state, next_id)
+    if stop_reason:
+        return stop_run(project_dir, state, stop_reason)
 
     rejects = state.get("rejects") or {}
     if int(rejects.get(next_id, 0) or 0) >= 2:

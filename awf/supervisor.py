@@ -281,22 +281,24 @@ _SNIPPET_PLAN = """\
 
 _SNIPPET_VERIFY = """\
 ## Verify stage — YOU are the reviewer, not a relay
-1. Read ALL handoffs in .agentic/handoff/
-2. Read TODO-{todo_id}.md — this is the contract (Goal, Success criteria, Verify).
+1. The verify pack facts are already in this prompt (verdict, red sections,
+   first reason) together with the diff and the TODO — do NOT run tests or
+   any verify command: the verdict is decided from those facts.
+2. TODO-{todo_id}.md is the contract (Goal, Success criteria, Verify).
    For EACH success criterion in the TODO:
    - Mark ✅ met or ❌ not met
    - If ❌ → you MUST write REVIEW with specifics, not approve
-3. Run: git diff --stat — check what actually changed
-4. Read the actual code changes for correctness
-5. Run verify commands from the TODO independently
-6. DECIDE YOURSELF (do NOT ask user):
+3. Check the diff block: changes must be the unit's own source changes,
+   not a stray file or an empty tree.
+4. Read the actual code changes for correctness where the facts leave doubt.
+5. DECIDE YOURSELF (do NOT ask user):
    - ALL criteria met → create .agentic/inbox/ACK-{todo_id}.ready
      (in an ACTIVE run — approve via awf_approve(evidence=...) instead;
      the engine ignores a file-based ACK without RUN-EVIDENCE)
    - ANY criterion not met → write .agentic/outbox/REVIEW-{todo_id}.md
      listing which criteria failed and what to fix
-7. DO NOT relay "pipeline waits for your decision" — that's YOUR call.
-8. The verdict is yours, the commit is the engine's: NEVER run `git add`,
+6. DO NOT relay "pipeline waits for your decision" — that's YOUR call.
+7. The verdict is yours, the commit is the engine's: NEVER run `git add`,
    `git commit` or `git push`. A refused gate is a REVIEW with the reason.
 """
 
@@ -371,9 +373,11 @@ def build_prompt(
         )
     elif kind == "verify":
         base = (
-            f"You are the supervisor. Verify TODO {todo_id}: read the DONE report and PROGRESS notes, "
-            "check `git diff --stat` against the baseline SHA in "
-            f".agentic/context/BASELINE-{todo_id}.sha. Decide: is the work complete and correct? "
+            f"You are the supervisor. Verify TODO {todo_id}. The facts are already in "
+            "this prompt: the verify pack verdict (red sections and the first reason), "
+            "the diff against the baseline and short DONE/PROGRESS excerpts. The pack "
+            "already ran the checks — do not run them again and do not go looking for "
+            "more history on disk. Decide: is the work complete and correct? "
             "If yes, write ACK signal at "
             f".agentic/inbox/ACK-{todo_id}.ready. If no, do NOT ack — leave a note in "
             f".agentic/outbox/REVIEW-{todo_id}.md explaining what's wrong.\n\n"
@@ -590,6 +594,118 @@ def _run_evidence_ok(project_dir: Path, todo_id: str) -> bool:
     return evidence.is_file()
 
 
+class VerifyWaitStopped(RuntimeError):
+    """A41: the run's own stop surface ended the verify wait.
+
+    A stop flag on the unit, an exhausted budget or a closed run stops the
+    wait with the cause in the message — never a silent ``rc=1`` from the
+    supervisor stage. The engine prints this text instead of a generic
+    "supervisor stage crashed".
+    """
+
+
+def _verify_wait_stop_reason(project_dir: Path, todo_id: str) -> str:
+    """A41: the run-side reason to stop waiting for the verify decision.
+
+    Read-only. No run file (a standalone ``awf start``) is not a stop
+    verdict; :func:`run_state.read_run` already degrades a corrupt file to
+    "no run", so the wait keeps waiting instead of dying on the check.
+    """
+    from . import run_state
+
+    # ORCH M5.2: a service run keeps its stop surface in its OWN file
+    # (``state/service-run.yaml``), and a CLOSED service run keeps
+    # ``queue``/``current`` after ``awf_run_service_finish`` (QA-1). Which run
+    # owns the unit NOW is ``run_state.owning_run``'s rule, next to the stop
+    # rules themselves — the same answer the verdict surfaces get; this
+    # function only applies it. The live owner decides, and only when none
+    # exists may a closed owner stop the wait (the stage then has no live run
+    # to answer to).
+    owner = run_state.owning_run(project_dir, todo_id)
+    if owner is None:
+        return ""
+    return run_state.stop_reason_for_unit(owner[1], todo_id)
+
+
+def _publish_verify_waiting(
+    project_dir: Path,
+    todo_id: str,
+    started_epoch: float,
+    deadline_seconds: int,
+    reason: str,
+) -> None:
+    """A41: the ``verify_waiting`` event in pipeline state (``awf status``).
+
+    The wait is visible, not a frozen stage: the status surface reads this
+    key and prints one line. A failed state write is already non-fatal in
+    its owner (``pipeline_state._mutate_state_locked`` swallows the write
+    failure family), so a broken status file cannot end the wait here.
+    """
+    from datetime import datetime, timezone
+
+    from .pipeline_state import write_state
+
+    event = {
+        "todo_id": todo_id,
+        "since": datetime.fromtimestamp(
+            started_epoch, tz=timezone.utc
+        ).isoformat(),
+        "elapsed_seconds": max(0, int(time.time() - started_epoch)),
+        "deadline_seconds": int(deadline_seconds),
+        "reason": reason,
+    }
+    write_state(project_dir, verify_waiting=event)
+
+
+def _clear_verify_waiting(project_dir: Path) -> None:
+    """A41: drop the ``verify_waiting`` event once the decision arrived."""
+    from .pipeline_state import write_state
+
+    write_state(project_dir, verify_waiting=None)
+
+
+def _wait_for_verify_decision(
+    todo_id: str,
+    project_dir: Path,
+    logs_dir: Path,
+    *,
+    wait_timeout: int | None,
+    context: str,
+    wait_started: float | None = None,
+) -> str:
+    """A41: the ONE wait for the verify verdict in the auto stage.
+
+    Both entry points land here: the supervisor subprocess never ran (no
+    role file, skipped prompt) and it ran but left no verdict (the run-2
+    incident). In a run the owner's ``awf_approve`` is the answer either
+    way, so neither case may return "" and let the engine exit rc=1.
+
+    ``wait_started`` anchors decision freshness to the stage's spawn — a
+    verdict written while the subprocess was still busy counts. ``context``
+    names the path in the log line so the two callers stay distinguishable.
+    """
+    from .pipeline_state import read_state
+
+    prev = read_state(project_dir) or {}
+    signal = wait_for_supervisor_signal(
+        "verify",
+        todo_id,
+        project_dir,
+        logs_dir,
+        timeout=wait_timeout or _safe_supervisor_timeout(),
+        wait_started=wait_started,
+        publish_waiting=True,
+        accepted_decision=prev.get("accepted_decision"),
+        accepted_decision_mtime=prev.get("accepted_decision_mtime"),
+    )
+    _clear_verify_waiting(project_dir)
+    _log(
+        logs_dir,
+        f"A41: verify decision received while waiting ({context}): {signal}",
+    )
+    return signal
+
+
 def wait_for_supervisor_signal(
     kind: str,
     todo_id: str,
@@ -597,6 +713,10 @@ def wait_for_supervisor_signal(
     logs_dir: Path,
     poll_interval: int = 3,
     timeout: int = 3600,
+    wait_started: float | None = None,
+    publish_waiting: bool = False,
+    accepted_decision: str | None = None,
+    accepted_decision_mtime: float | None = None,
 ) -> str:
     """BD-30: poll for the signal file the interactive supervisor produces.
 
@@ -620,11 +740,26 @@ def wait_for_supervisor_signal(
     is also consumed by the engine at the end of the cycle that accepted it
     (pipeline_engine._consume_verify_decision) — the mtime gate is the safety
     net for files the dead process never got to consume.
+
+    A41: ``wait_started`` anchors the freshness to an earlier moment (the
+    auto verify stage's spawn), so a decision written by the supervisor
+    subprocess before it exited is still the answer — the engine waits for
+    the decision regardless of whether that subprocess ran. With
+    ``publish_waiting`` the wait writes the ``verify_waiting`` event to
+    pipeline state (``awf status``) and checks the run's own stop surface
+    (stop flag, budget, closed run) on every poll; such a stop raises
+    :class:`VerifyWaitStopped` with the cause instead of ``rc=1``.
     """
     import time
 
     inbox = paths.inbox(project_dir)
     outbox = paths.outbox(project_dir)
+    started_epoch = time.time()
+    waiting_event = bool(publish_waiting and kind == "verify" and todo_id)
+    if waiting_event:
+        _publish_verify_waiting(
+            project_dir, todo_id, started_epoch, timeout, "waiting"
+        )
 
     # BD-30: snapshot which TODO signals existed BEFORE pipeline start.
     # Used to distinguish "new signal from interactive supervisor" from
@@ -650,7 +785,9 @@ def wait_for_supervisor_signal(
 
     deadline_log_interval = 60
     start = time.monotonic()
-    wall_start = time.time()  # for mtime comparisons (replan signals)
+    # A41 anchors the mtime comparison to the caller's spawn, so a decision
+    # written before this wait started is not stale.
+    wall_start = time.time() if wait_started is None else float(wait_started)
     deadline = start + timeout
     last_log = start
     # AUD04-04: filenames already logged as stale, to keep the poll quiet.
@@ -660,6 +797,8 @@ def wait_for_supervisor_signal(
     # REPORTS29: pre-existing APPROVEs whose binding mismatch was already
     # logged with the re-approve instruction (once per wait).
     stale_binding_logged: set[str] = set()
+    # U6b: decisions recorded as accepted in a killed cycle, logged once.
+    stale_record_logged: set[str] = set()
 
     while True:
         if kind == "plan":
@@ -699,6 +838,25 @@ def wait_for_supervisor_signal(
                 inbox / f"APPROVE-{todo_id}.ready",
             ):
                 if not sig_path.exists():
+                    continue
+                signal_name = sig_path.stem
+                if decision_is_stale(
+                    sig_path,
+                    signal_name,
+                    accepted_decision,
+                    accepted_decision_mtime,
+                ):
+                    # U6b: the same physical file the engine already
+                    # accepted in a killed cycle — a leftover, not a new
+                    # verdict. Keep waiting for a genuine decision.
+                    if sig_path.name not in stale_record_logged:
+                        stale_record_logged.add(sig_path.name)
+                        _log(
+                            logs_dir,
+                            f"U6b: {sig_path.name} is the decision a killed "
+                            "cycle already accepted — ignored, waiting for "
+                            "a fresh verdict",
+                        )
                     continue
                 if not _decision_signal_fresh(
                     sig_path, wall_start, stale_decision_logged, logs_dir
@@ -749,8 +907,17 @@ def wait_for_supervisor_signal(
                 _log(logs_dir, f"BD-30: interactive supervisor signal detected: {sig_path.name}")
                 return sig_path.stem
             review = outbox / f"REVIEW-{todo_id}.md"
-            if review.exists() and _decision_signal_fresh(
-                review, wall_start, stale_decision_logged, logs_dir
+            if (
+                review.exists()
+                and not decision_is_stale(
+                    review,
+                    f"REVIEW-{todo_id}",
+                    accepted_decision,
+                    accepted_decision_mtime,
+                )
+                and _decision_signal_fresh(
+                    review, wall_start, stale_decision_logged, logs_dir
+                )
             ):
                 _log(logs_dir, f"BD-30: interactive supervisor signal detected: REVIEW-{todo_id}.md")
                 return f"REVIEW-{todo_id}"
@@ -801,6 +968,20 @@ def wait_for_supervisor_signal(
                 return sig
 
         now = time.monotonic()
+        if waiting_event:
+            stop_reason = _verify_wait_stop_reason(project_dir, todo_id)
+            if stop_reason:
+                _publish_verify_waiting(
+                    project_dir, todo_id, started_epoch, timeout, stop_reason
+                )
+                _log(
+                    logs_dir,
+                    f"A41: verify_waiting — run stopped while waiting: "
+                    f"{stop_reason}",
+                )
+                raise VerifyWaitStopped(
+                    f"verify wait on {todo_id} stopped: {stop_reason}"
+                )
         if now - last_log >= deadline_log_interval:
             waited = int(now - start)
             _log(
@@ -808,11 +989,30 @@ def wait_for_supervisor_signal(
                 f"BD-30: interactive supervisor still waiting for {kind} signal "
                 f"({waited}s elapsed, deadline in {int(deadline - now)}s)",
             )
+            if waiting_event:
+                _publish_verify_waiting(
+                    project_dir, todo_id, started_epoch, timeout, "waiting"
+                )
+                _log(
+                    logs_dir,
+                    f"A41: verify_waiting for {todo_id} — no decision yet "
+                    f"({waited}s elapsed, deadline in {int(deadline - now)}s)",
+                )
             last_log = now
 
         if now >= deadline:
             waited = int(now - start)
             _log(logs_dir, f"BD-30: supervisor signal timeout after {waited}s (kind={kind})")
+            if waiting_event:
+                _publish_verify_waiting(
+                    project_dir, todo_id, started_epoch, timeout, "deadline"
+                )
+                _log(
+                    logs_dir,
+                    f"A41: verify_waiting — no decision within {timeout}s "
+                    f"(deadline); the run stops on an explicit event, "
+                    f"approve with awf_approve and resume with awf_continue",
+                )
             raise TimeoutError(
                 f"Supervisor {kind} signal not received within {timeout}s. "
                 f"In --background mode this prevents zombie processes. "
@@ -996,17 +1196,40 @@ def run_supervisor_stage(
         print("     they approve, edit, or reject before agents start")
     elif kind == "verify":
         print("What to do (verify):")
-        print("  1. Read report from .agentic/outbox/")
-        print("  2. Run verification commands independently")
-        print("  3. Check git diff — changes must be in source files")
-        print("  4. Decide: continue / fix / rollback")
-        print("  5. If approved: create .agentic/inbox/ACK-NNNN.ready")
+        print("  1. Read the pack verdict: .agentic/context/GATES-NNNN.md")
+        print("     (facts are already collected — the pack ran the checks)")
+        print("  2. Check git diff — changes must be in source files")
+        print("  3. Decide: continue / fix / rollback")
+        print("  4. If approved: create .agentic/inbox/ACK-NNNN.ready")
     else:
         print(f"What to do ({kind}): see supervisor.md instructions")
 
     print()
+    wait_timeout: int | None = None
+    if kind == "verify":
+        # A41: the auto verify stage waits for the decision under the SAME
+        # stage deadline the rest of the stage obeys (stage key → project
+        # key → 3600), instead of returning rc=1 when the subprocess ends
+        # without a verdict.
+        from . import stage_timeout as _stage_timeout
+
+        try:
+            wait_timeout = _stage_timeout.resolve(None, stage.timeout, config).seconds
+        except AwfApiError as e:
+            # The stage key is validated at pipeline load and a bad project
+            # key refuses the launch, so this is a hand-built Stage only.
+            # A bounded wait still beats an uncaught AwfApiError (the
+            # engine's crash branch catches RuntimeError, not this one) —
+            # but never silently: the cause goes to the log.
+            _log(
+                logs_dir,
+                f"A41: {e} — verify wait capped at "
+                f"{_stage_timeout.DEFAULT_SECONDS}s",
+            )
+            wait_timeout = _stage_timeout.DEFAULT_SECONDS
     return run_supervisor_via_subprocess(
-        kind, todo_id, project_dir, config, phases_file, logs_dir, pipeline_name
+        kind, todo_id, project_dir, config, phases_file, logs_dir, pipeline_name,
+        wait_timeout=wait_timeout,
     )
 
 
@@ -1049,8 +1272,6 @@ def _prepare_supervisor_stage(
     Returns None to indicate the stage should be skipped.
     Returns (extra_files, prompt) otherwise.
     """
-    inbox = paths.inbox(project_dir)
-    outbox = paths.outbox(project_dir)
     phases_path = (
         project_dir / phases_file if not Path(phases_file).is_absolute() else Path(phases_file)
     )
@@ -1070,26 +1291,20 @@ def _prepare_supervisor_stage(
             print("[auto mode] No todo_id for verify — skip.")
             _log(logs_dir, "Supervisor verify auto-skipped (no todo_id)")
             return None
-        done_md = outbox / f"DONE-{todo_id}.md"
-        if done_md.is_file():
-            extra_files.append(str(done_md))
-        progress = outbox / f"PROGRESS-{todo_id}.md"
-        if progress.is_file():
-            extra_files.append(str(progress))
-        # BD-29 aggregate verify: forward ALL role handoffs.
-        handoff_dir = paths.agentic_dir(project_dir) / "handoff"
-        if handoff_dir.is_dir():
-            for hf in sorted(handoff_dir.glob(f"*-{todo_id}.md")):
-                if hf.is_file():
-                    extra_files.append(str(hf))
-        # R8: the TODO is the contract — forward it as an extra file so the
-        # supervisor sees it without opening the file manually.
-        todo_md = inbox / f"{todo_id}.md"
-        if todo_md.is_file():
-            extra_files.append(str(todo_md))
-        prompt = build_prompt(
-            "verify", todo_id, config=config, project_dir=project_dir, pipeline_name=pipeline_name
+        # A42: pack facts inline, handoffs out. The prompt is bounded and
+        # carries the verdict; every attachment vanished except the role
+        # file and the doctrine, which the spawn adds by itself.
+        from .verify_context import build_verify_prompt
+
+        prompt, dropped = build_verify_prompt(
+            todo_id,
+            project_dir,
+            config=config,
+            pipeline_name=pipeline_name,
+            logs_dir=logs_dir,
         )
+        if dropped:
+            print(f"  verify context cut: {', '.join(dropped)}")
 
     elif kind == "replan":
         if not todo_id:
@@ -1260,6 +1475,7 @@ def run_supervisor_via_subprocess(
     phases_file: str,
     logs_dir: Path,
     pipeline_name: str | None = None,
+    wait_timeout: int | None = None,
 ) -> str:
     """BD-14/29: spawn ``opencode run --auto [--agent <name>] --file supervisor.md``.
 
@@ -1297,12 +1513,29 @@ def run_supervisor_via_subprocess(
     except RuntimeError as e:
         print(f"[auto mode] supervisor.md not found — skipping. ({e})")
         _log(logs_dir, f"Supervisor stage {kind} auto-skipped (no supervisor.md)")
+        if kind == "verify" and todo_id:
+            # A41: no subprocess does not mean "no answer" — the owner's
+            # awf_approve is still the verdict; wait for it like the spawned
+            # path does instead of returning rc=1.
+            return _wait_for_verify_decision(
+                todo_id, project_dir, logs_dir,
+                wait_timeout=wait_timeout,
+                wait_started=wait_start,
+                context="no subprocess",
+            )
         return ""
 
     prepared = _prepare_supervisor_stage(
         kind, todo_id, project_dir, config, phases_file, logs_dir, pipeline_name
     )
     if prepared is None:
+        if kind == "verify" and todo_id:
+            return _wait_for_verify_decision(
+                todo_id, project_dir, logs_dir,
+                wait_timeout=wait_timeout,
+                wait_started=wait_start,
+                context="no subprocess",
+            )
         return ""
     extra_files, prompt = prepared
 
@@ -1377,6 +1610,9 @@ def run_supervisor_via_subprocess(
     from .signal_watch import run_subprocess_until_signal
 
     signal_holder: dict[str, str] = {}
+    log_holder: dict[str, str] = {}
+    files_in_prompt = sum(1 for part in cmd if part == "--file")
+    spawn_started = time.time()
 
     # TODO-0338 (A35): only the verify subprocess can deadlock with the
     # engine (it waits for the commit the engine waits to run). The other
@@ -1408,6 +1644,7 @@ def run_supervisor_via_subprocess(
         # automation.readonly_roles — same mechanism as worker roles).
         env=awf_subprocess_env(role="supervisor", project_dir=project_dir),
         signal_holder=signal_holder,
+        log_holder=log_holder,
         # U6a/U6c are worker-only (TODO-0017): the supervisor subprocess can
         # be legitimately long-silent (verify waits), so no watchdog; no
         # preflight either — keep the supervisor flow exactly as before.
@@ -1418,11 +1655,51 @@ def run_supervisor_via_subprocess(
     )
 
     _log(logs_dir, f"Supervisor {kind} subprocess finished (exit={result.returncode})")
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Supervisor {kind} subprocess exited with code {result.returncode}. "
-            f"Cmd: {' '.join(cmd)}"
+    if kind == "verify":
+        # A42: one narration line — prompt size, attachments, duration and
+        # the shell calls the subprocess printed. "Slow" becomes a number.
+        from .verify_context import (
+            count_logged_commands,
+            format_verify_timing,
+            log_verify_timing,
         )
+
+        try:
+            offset = int(log_holder.get("log_start_offset", 0) or 0)
+        except (TypeError, ValueError):
+            offset = 0
+        commands = count_logged_commands(log_holder.get("log_path"), offset)
+        log_verify_timing(
+            logs_dir,
+            format_verify_timing(
+                todo_id,
+                prompt_chars=len(prompt),
+                files=files_in_prompt,
+                duration=max(0.0, time.time() - spawn_started),
+                commands=commands,
+            ),
+        )
+    if result.returncode != 0:
+        if kind == "verify" and todo_id:
+            # A41 (the run-2 incident): the verify subprocess can die after
+            # ~100s (rc=1) without a verdict. That is not the run's verdict
+            # — the owner's awf_approve still decides. Keep the stage
+            # waiting (a verdict the dead subprocess DID write is picked up
+            # by the watcher/fallback right below).
+            _log(
+                logs_dir,
+                f"A41: verify subprocess failed (exit={result.returncode}) — "
+                "engine keeps waiting for the decision",
+            )
+            print(
+                f"Verify supervisor subprocess failed (exit={result.returncode}) "
+                f"for {todo_id} — waiting for APPROVE (awf_approve) or REVIEW."
+            )
+        else:
+            raise RuntimeError(
+                f"Supervisor {kind} subprocess exited with code {result.returncode}. "
+                f"Cmd: {' '.join(cmd)}"
+            )
 
     fired = signal_holder.get("signal", "")
     if fired:
@@ -1448,6 +1725,29 @@ def run_supervisor_via_subprocess(
         run_evidence_ok=_run_evidence_ok(project_dir, todo_id),
     )
     _log(logs_dir, f"Supervisor {kind} produced signal (fallback): {signal_name!r}")
+    if not signal_name and kind == "verify" and todo_id:
+        # A41: the auto supervisor subprocess ended without a verdict (the
+        # run's supervisor answers out of band, via awf_approve). The stage
+        # used to return "" here and the engine exited rc=1 — the decision
+        # that arrived a moment later was orphaned. Wait exactly like the
+        # interactive stage does; freshness is anchored to the spawn, so a
+        # verdict written during the subprocess still counts (A35 grace
+        # stays as it is).
+        _log(
+            logs_dir,
+            f"A41: verify subprocess produced no decision for {todo_id} — "
+            "engine keeps waiting (not rc=1)",
+        )
+        print(
+            f"No verify decision yet for {todo_id} — waiting for "
+            "APPROVE (awf_approve) or REVIEW."
+        )
+        signal_name = _wait_for_verify_decision(
+            todo_id, project_dir, logs_dir,
+            wait_timeout=wait_timeout,
+            wait_started=wait_start,
+            context="subprocess left no verdict",
+        )
     _log_replan_pickup(logs_dir, kind, signal_name, todo_id, inbox)
     return _prefer_human_verdict(
         kind, todo_id, project_dir, signal_name, wait_start, logs_dir
