@@ -130,6 +130,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `suite_guard.py` | Распознавание полного сьюта/сырых прогонов (R13): testpaths, обёртки, цитаты |
 | `command_parse.py` | Единый разбор шелл-строки для трёх потребителей сьюта (AUD-27-3): сегменты, слова, снятие обёрток (`uv/poetry/pdm/hatch run`, `sudo`, `then/do`, PATH), `python -m pytest`; гейт, verify-pack и `suite-canonical.sh` зовут его, а не держат свои парсеры |
 | `suite_command.py` | Каноническая команда сьюта и артефакт (R13/K13); `awf suite-command` |
+| `qa_suite_policy.py` | A5: когда QA платит за полный сьют (A5/TODO-0366) — `reuse` при актуальном артефакте дерева, `select` на внутренней итерации, `full` перед вердиктом; счётчик прогонов `RunJournal` и строка `qa: full-suite runs=N, selected runs=M, total=Ns` |
 | `unit_history.py` | Неключевая история юнита (CTX2): `forget_unit_history` снимает `CLOSER-<id>.json` и `CHECKLIST-<id>.json` на service-rollback, main-rollback и `restore_todo`; все перечисленные пути идут через один помощник |
 | `supervisor.py` | Supervisor prompts (`build_prompt`), signal wait, run-гейты |
 | `verify_context.py` | A42: промпт verify — вердикт пака встроенным текстом, диффстат, короткие TODO/DONE/PROGRESS вместо handoff-истории; бюджет и строка замера стадии в `orchestrator.log` |

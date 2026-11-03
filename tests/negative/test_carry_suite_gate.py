@@ -3,7 +3,8 @@
 T4 — a full suite run without a matching canonical artifact leaves a
 ``SUITE-WARN:`` and the ``suite_gate=raw-full-suite`` handoff fact; the
 stage and the commit are not blocked. A matching artifact (same tree sha,
-same command) silences it; somebody else's command or tree does not.
+same command, an integer ``exit``) silences it; somebody else's command, an
+unfinished file or another tree does not.
 """
 from __future__ import annotations
 
@@ -37,7 +38,12 @@ def _artifact(proj: Path, command: str, sha: str | None = None) -> Path:
     context = proj / ".agentic" / "context"
     context.mkdir(parents=True, exist_ok=True)
     path = context / f"SUITE-{sha}-abcd1234.json"
-    path.write_text(json.dumps({"sha": sha, "command": command}), encoding="utf-8")
+    # ``exit`` is what makes the file a result: the writer creates it when
+    # the run ends (``suite_guard.artifact_for`` owns that rule).
+    path.write_text(
+        json.dumps({"sha": sha, "command": command, "exit": 0}),
+        encoding="utf-8",
+    )
     return path
 
 
@@ -108,6 +114,25 @@ def test_real_print_logs_line_warns_and_artifact_silences(tmp_path):
     assert suite_guard.check(proj, REAL_LOG).startswith("SUITE-WARN:")
     _artifact(proj, "npm test")
     assert suite_guard.check(proj, REAL_LOG) == ""
+
+
+def test_artifact_without_exit_is_not_a_result(tmp_path):
+    """A5 (TODO-0366): the writer creates the file when the run ENDS.
+
+    A file that names the command but has no integer ``exit`` is a leftover
+    of an interrupted or foreign write. The gate stays loud and the QA policy
+    pays for a real run — one rule, ``suite_guard.artifact_for``.
+    """
+    proj = _repo(tmp_path)
+    path = _artifact(proj, "npm test")
+    sha = git_utils.tree_fingerprint(proj)
+    path.write_text(
+        json.dumps({"sha": sha, "command": "npm test"}),
+        encoding="utf-8",
+    )
+
+    assert suite_guard.artifact_for(proj, sha, "npm test") is None
+    assert suite_guard.check(proj, REAL_LOG).startswith("SUITE-WARN:")
 
 
 def test_reading_the_script_is_not_a_full_run(tmp_path):

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from awf import suite_command
+from awf import git_utils, qa_suite_policy, suite_command, suite_guard
 
 
 def _project(tmp_path: Path) -> Path:
@@ -190,6 +190,25 @@ def test_script_artifact_matches_cli(tmp_path, awf_bin):
     data = json.loads(artifacts[0].read_text(encoding="utf-8"))
     assert data["command"] == command
     assert data["runner_source"] == "cli"
+    # A5 (TODO-0366): the Python mirror of the name must address the file the
+    # writer actually made — otherwise the reuse decision misses every cache
+    # hit and the rule silently costs a second full run.
+    sha = git_utils.tree_fingerprint(proj)
+    assert qa_suite_policy.artifact_path(proj, sha, command) == artifacts[0]
+
+    # ...and the DECISION must see it too: a finished real run is evidence, so
+    # the stage reuses it instead of paying again (AC: current artifact → no
+    # second full run). The lookup goes through the gate's own owner
+    # (`suite_guard.artifact_for`), so a drift between writer and reader
+    # (missing `exit`, other sha, other command) turns this test red.
+    assert qa_suite_policy.current_artifact(proj) == artifacts[0]
+    for internal in (False, True):
+        decision = qa_suite_policy.plan_suite_run(
+            proj, internal_iteration=internal
+        )
+        assert decision.action == qa_suite_policy.REUSE
+        assert decision.artifact == artifacts[0]
+    assert suite_guard.check(proj, "pytest tests/ -q\n") == ""
 
 
 def test_script_carries_no_pytest_literal():
