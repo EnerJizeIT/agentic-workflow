@@ -3,6 +3,7 @@
 MCP-audit fix: approve_commit now requires .agentic/ (consistency with
 other api functions). Tests create .agentic/ explicitly.
 """
+import json
 from argparse import Namespace
 from pathlib import Path
 
@@ -57,3 +58,27 @@ class TestCmdApprove:
         ret = cmd_approve.run(args)
 
         assert ret == 1
+
+    def test_pack_override_reaches_the_approve_binding(self, tmp_path: Path) -> None:
+        """A37: the terminal twin of the MCP override writes the same pair.
+
+        The CLI flags must land in the APPROVE binding the gate re-reads —
+        a flag that the api silently drops would look approved and still
+        refuse the commit.
+        """
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        (project_dir / ".agentic").mkdir()
+
+        args = Namespace(
+            todo_id="TODO-0002",
+            project_dir=str(project_dir),
+            override_failed=["gates"],
+            override_reason="budget accepted for this unit",
+        )
+        assert cmd_approve.run(args) == 0
+
+        signal = project_dir / ".agentic" / "inbox" / "APPROVE-TODO-0002.ready"
+        binding = json.loads(signal.read_text(encoding="utf-8"))
+        assert binding["override_failed"] == ["gates"]
+        assert binding["override_reason"] == "budget accepted for this unit"

@@ -11,6 +11,13 @@ after the stage (``check_stage_head``). A moved HEAD that the gate cannot
 account for is a FOREIGN COMMIT: a loud error with the SHAs and the file
 list, a line in the run log, the fact in ``awf status``, and the run stops
 instead of continuing silently.
+
+A39 (incident TODO-0340): not every move outside the gate is foreign. The
+supervisor landing an upstream branch — a fast-forward of local ``main``
+onto ``origin/main``, or a merge whose first parent is the stage's HEAD and
+whose other parent is an upstream ref — is an external update. The guard
+warns in the log, records ``upstream_sync`` for ``awf status``, and lets
+the run continue. Any other move stays FOREIGN.
 """
 from __future__ import annotations
 
@@ -28,6 +35,14 @@ GATE_HEAD_KEY = "gate_head_sha"
 GATE_PARENT_KEY = "gate_head_parent"
 #: The human-readable FOREIGN COMMIT line, surfaced by ``awf status``.
 FOREIGN_COMMIT_KEY = "foreign_commit"
+#: A39: an external HEAD move that is NOT foreign — the supervisor landed an
+#: upstream branch (``git pull``/fast-forward). The run continues; the line is
+#: the informational counterpart of FOREIGN COMMIT in ``awf status``.
+UPSTREAM_SYNC_KEY = "upstream_sync"
+#: Refs under these namespaces count as upstream. A local branch is not:
+#: a foreign commit reaches HEAD through the worktree, never through a
+#: remote-tracking ref the engine did not see arrive.
+UPSTREAM_REF_PREFIXES = ("refs/remotes/origin/",)
 
 
 def head_sha(project_dir: str | Path) -> str:
@@ -46,6 +61,89 @@ def _parent_sha(project_dir: Path, sha: str) -> str:
         return git_utils.git_stdout(project_dir, "rev-parse", f"{sha}^").strip()
     except (RuntimeError, OSError, subprocess.TimeoutExpired):
         return ""
+
+
+def _is_ancestor(project_dir: Path, ancestor: str, descendant: str) -> bool:
+    """True when ``ancestor`` is reachable from ``descendant``."""
+    if not ancestor or not descendant:
+        return False
+    try:
+        git_utils.git_stdout(
+            project_dir, "merge-base", "--is-ancestor", ancestor, descendant
+        )
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
+        return False
+    return True
+
+
+def _upstream_ref_containing(project_dir: Path, sha: str) -> str:
+    """The first upstream-tracking ref that contains ``sha``, or ``""``.
+
+    One ``for-each-ref --contains`` read instead of a per-ref loop: the
+    ref list is the repository's, not the engine's, and it can be long.
+    """
+    if not sha:
+        return ""
+    try:
+        out = git_utils.git_stdout(
+            project_dir,
+            "for-each-ref",
+            f"--contains={sha}",
+            "--format=%(refname)",
+            *UPSTREAM_REF_PREFIXES,
+        )
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
+        return ""
+    for line in out.splitlines():
+        name = line.strip()
+        # ``refs/remotes/origin/HEAD`` is a symbolic alias, not a branch: it
+        # sorts first and would name the alias instead of ``origin/main`` in
+        # the line the owner reads.
+        if name and not name.endswith("/HEAD"):
+            return name
+    return ""
+
+
+def _parents(project_dir: Path, sha: str) -> list[str]:
+    """The parent SHAs of ``sha`` in order (empty for a root/unreadable one)."""
+    if not sha:
+        return []
+    try:
+        out = git_utils.git_stdout(project_dir, "rev-list", "--parents", "-n", "1", sha)
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
+        return []
+    return out.split()[1:]
+
+
+def upstream_sync(project_dir: Path, before: str, after: str) -> str:
+    """Classify a moved HEAD as an upstream update; ``""`` when it is not one.
+
+    The two legitimate shapes (incident TODO-0340: the supervisor landed PR
+    #86, local ``main`` fast-forwarded onto ``origin/main``):
+
+    * **fast-forward** — ``before`` is an ancestor of ``after`` and ``after``
+      already lives in an upstream-tracking ref;
+    * **merge** — the first parent of the merge commit is ``before`` and
+      another parent lives in an upstream-tracking ref.
+
+    Anything else stays a candidate for FOREIGN: a local commit is neither
+    an ancestor of the old HEAD nor reachable from a remote-tracking ref,
+    and a merge whose first parent is not the old HEAD moved the branch
+    under the engine's feet.
+    """
+    if not before or not after or before == after:
+        return ""
+    if _is_ancestor(project_dir, before, after):
+        ref = _upstream_ref_containing(project_dir, after)
+        if ref:
+            return f"fast-forward to {ref}"
+    parents = _parents(project_dir, after)
+    if len(parents) >= 2 and parents[0] == before:
+        for parent in parents[1:]:
+            ref = _upstream_ref_containing(project_dir, parent)
+            if ref:
+                return f"merge of {ref}"
+    return ""
 
 
 def changed_files(project_dir: Path, before: str, after: str) -> list[str]:
@@ -152,13 +250,23 @@ def reset_stage_markers(project_dir: Path, logs_dir: Path | None = None) -> None
     )
 
 
-def _clear_foreign(project_dir: Path, logs_dir: Path | None = None) -> None:
-    """Drop the FOREIGN COMMIT line once a stage boundary came back clean."""
+def _clear_head_marks(project_dir: Path, logs_dir: Path | None = None) -> None:
+    """Drop the per-boundary HEAD lines once a stage boundary came back clean.
+
+    Both facts describe a move that the boundary accounted for, so neither
+    outlives it: FOREIGN is the evidence of a stop (kept until a clean stage
+    proves recovery), UPSTREAM SYNC is the informational counterpart (kept
+    until the same proof). Without the second key here the sync line would
+    stay in ``awf status`` for the rest of the run and read as current.
+    """
     state = pipeline_state.read_state(project_dir) or {}
-    if state.get(FOREIGN_COMMIT_KEY):
-        pipeline_state.write_state(
-            project_dir, logs_dir=logs_dir, **{FOREIGN_COMMIT_KEY: None}
-        )
+    stale = {
+        key: None
+        for key in (FOREIGN_COMMIT_KEY, UPSTREAM_SYNC_KEY)
+        if state.get(key)
+    }
+    if stale:
+        pipeline_state.write_state(project_dir, logs_dir=logs_dir, **stale)
 
 
 def check_stage_head(
@@ -174,12 +282,16 @@ def check_stage_head(
     HEAD equals the recorded gate commit AND that commit sits directly on
     the HEAD the stage started from (the ``parent`` check catches a foreign
     commit that the gate then committed on top of).
+
+    A39: an upstream landing (fast-forward/merge from a remote-tracking
+    ref, see :func:`upstream_sync`) is the other legitimate move — the line
+    is informational, the run continues.
     """
     head_after = head_sha(project_dir)
     if not head_before or not head_after:
         return None
     if head_after == head_before:
-        _clear_foreign(project_dir, logs_dir)
+        _clear_head_marks(project_dir, logs_dir)
         return None
 
     state = pipeline_state.read_state(project_dir) or {}
@@ -188,15 +300,49 @@ def check_stage_head(
     )
     gate_parent = str(state.get(GATE_PARENT_KEY) or "")
     if gate_sha == head_after and gate_parent == head_before:
-        _clear_foreign(project_dir, logs_dir)
+        _clear_head_marks(project_dir, logs_dir)
         return None
 
-    files = changed_files(project_dir, head_before, head_after)
-    listed = ", ".join(files) if files else "(no file list — git diff failed)"
+    # A39: the supervisor landing an upstream branch moves HEAD without the
+    # gate — legitimately. The shape decides: fast-forward/merge from a
+    # remote-tracking ref is an external update (warn, keep the run going);
+    # any other move stays FOREIGN.
+    #
+    # The landing and the gate's commit can share ONE stage (the supervisor
+    # pulls, then approves; the gate commits on top of the synced HEAD). Then
+    # the gate's record names the synced tip, not the stage's HEAD, and the
+    # move still has to be classified — against the gate's parent.
+    sync = ""
+    gate_suffix = ""
+    if gate_sha == head_after and gate_parent and gate_parent != head_before:
+        sync = upstream_sync(project_dir, head_before, gate_parent)
+        if sync:
+            gate_suffix = f", then the gate committed {head_after[:12]}"
+    if not sync:
+        sync = upstream_sync(project_dir, head_before, head_after)
     # The guard covers every stage, not only the supervisor's: the line must
     # not blame a role it cannot identify. The unit is the label the stage
     # started with; the plan stage may still have none.
     unit = todo_id or "no unit yet"
+    if sync:
+        cause = (
+            f"{sync}{gate_suffix}; the run continues."
+            if gate_suffix
+            else f"{sync}, not made by the commit gate. The run continues."
+        )
+        line = (
+            f"UPSTREAM SYNC: HEAD moved during stage '{stage_name}' ({unit}) "
+            f"{head_before[:12]}..{head_after[:12]} — {cause}"
+        )
+        print(f"WARNING: {line}", file=sys.stderr)
+        _log(logs_dir, line)
+        pipeline_state.write_state(
+            project_dir, logs_dir=logs_dir, **{UPSTREAM_SYNC_KEY: line}
+        )
+        return None
+
+    files = changed_files(project_dir, head_before, head_after)
+    listed = ", ".join(files) if files else "(no file list — git diff failed)"
     line = (
         f"FOREIGN COMMIT: HEAD moved during stage '{stage_name}' "
         f"({unit}) {head_before[:12]}..{head_after[:12]} — not made by "
@@ -209,6 +355,6 @@ def check_stage_head(
     pipeline_state.write_state(
         project_dir,
         logs_dir=logs_dir,
-        **{FOREIGN_COMMIT_KEY: line},
+        **{FOREIGN_COMMIT_KEY: line, UPSTREAM_SYNC_KEY: None},
     )
     return line

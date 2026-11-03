@@ -17,11 +17,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import commit_delta, git_utils, paths, run_state, stage_manifest
+from . import commit_delta, dispatch_policy, git_utils, paths, run_state, stage_manifest
 from ._log import log as _log
+from .infra import git_model
 
 # R2.3: the baseline-fact readers, the file-set computation and the delta
 # algorithm now live in the DeltaAssembler module (one home); re-exported
@@ -44,7 +46,22 @@ OUTCOME_ERROR = "error"
 #: on this constant, never on a copied prose prefix.
 NO_CHANGES_REASON = "no changes to commit"
 
+#: A30 (TODO-0352): the plan and the diff disagreed about the unit's work.
+#: ONE prefix for the audit record and the RUN-REPORT, like
+#: ``plan-skip-inconsistent``: an empty plan over a tree that HAS changes is
+#: a stale plan (the unit's work would be archived without its commit), not
+#: a "no changes to commit" skip.
+PLAN_STALE_PREFIX = "plan-stale"
+
 PROCEED_STATUSES = (OUTCOME_COMMITTED, OUTCOME_SKIPPED)
+
+#: A37 (TODO-0349): the verify-pack sections that never close the commit gate
+#: on their own — ``spec_budget``/``prove_red``/``candidate`` report advice
+#: about a unit that already has its verdict. Every OTHER failed section
+#: (``gates``, ``tests``, ``lint``, ...) refuses the commit; the owner can
+#: still override a section by name through the approve (``override_failed``)
+#: and must say why — the reason lands in ``COMMIT-AUDIT-<todo>.json``.
+PACK_ADVISORY_SECTIONS: tuple[str, ...] = ("candidate", "prove_red", "spec_budget")
 
 
 @dataclass(frozen=True)
@@ -421,6 +438,63 @@ def build_commit_plan(
     )
 
 
+def plan_stale_refusal(plan: CommitPlan, project_dir: Path) -> str:
+    """A30 (TODO-0352): an empty plan must not silently drop the work.
+
+    The plan's file set and the staged diff come from ONE source — the
+    unit's baseline plus the changed files — so a dispatched unit with work
+    in the tree cannot have an empty plan. When it does (the live change set
+    holds something the baseline did not), the plan is stale: a rebuilt
+    baseline, a moved HEAD or an old plan. The gate's "no changes
+    to commit" skip would archive the unit without its work, so the stale
+    plan is refused with the rebuild instruction instead.
+
+    What the baseline ALREADY carried is not the unit's work, and it is
+    subtracted from the live set instead of switching the check off — BOTH
+    columns: tracked dirt (``baseline_dirty_paths``) and the files that were
+    already untracked at dispatch (``read_untracked_snapshot``, the same
+    facts ``_raw_file_set`` uses to leave them out of the plan). A dirty tree
+    at dispatch therefore still detects NEW work, and a no-code unit over a
+    stray file is an honest "no changes to commit" skip, not a stale plan.
+    A legacy baseline without the status snapshot cannot tell the two apart
+    — it returns "" (no refusal). Best effort: a git read error reads as
+    "no divergence", same as the other plan checks.
+    """
+    if plan.files or plan.refusal or not plan.baseline_sha or not plan.todo_id:
+        return ""
+    dirty = commit_delta.baseline_dirty_paths(project_dir, plan.todo_id)
+    if dirty is None:
+        return ""
+    pre_existing = set(dirty) | set(
+        git_model.read_untracked_snapshot(project_dir, plan.todo_id) or ()
+    )
+    # The engine's own runtime surface is never part of a unit commit (the
+    # write fence), so runtime artifacts appearing during a no-code unit are
+    # not "the unit's work". The exclusion is the canonical managed set
+    # (``dispatch_policy.MANAGED_RUNTIME_PREFIXES``, derived from
+    # ``paths.RUNTIME_DIRS``) — NOT all of ``.agentic/``: roles, pipelines,
+    # phases and config.yaml are committed definitions that belong to the
+    # user, and hiding them here would re-open the silent skip for a unit
+    # whose only work is a pipeline edit.
+    live = [
+        path
+        for path in commit_delta.worktree_file_set(project_dir)
+        if path not in pre_existing
+        and not path.startswith(dispatch_policy.MANAGED_RUNTIME_PREFIXES)
+    ]
+    if not live:
+        return ""
+    shown = ", ".join(live[:5]) + (" …" if len(live) > 5 else "")
+    return (
+        f"{PLAN_STALE_PREFIX}: the commit plan is empty but the tree holds "
+        f"{len(live)} change(s) against HEAD ({shown}) — the plan and the "
+        "diff came from different sources. The plan is stale: rebuild it "
+        "(re-dispatch the unit so its baseline matches the work) and "
+        "re-approve. An empty-plan skip would archive the unit without its "
+        "work"
+    )
+
+
 def verdict_refusal(plan: CommitPlan, project_dir: Path) -> str:
     """A-04 (audit 2026-09-25, layer 4): the active run's diary check.
 
@@ -543,6 +617,108 @@ def read_approval_binding(project_dir: Path, todo_id: str) -> dict | None:
     if not isinstance(data, dict):
         return None
     return data
+
+
+def normalize_override_sections(raw: object) -> tuple[str, ...]:
+    """A37: the ONE spelling of an ``override_failed`` section list.
+
+    The approve validates and stores the names, the gate re-reads them from
+    the signal file — both need the same normalization (strip, drop empties,
+    dedupe, sort), or a name accepted by the approve would not match the
+    section the pack reports. A non-list is no override, not an error.
+    """
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    return tuple(sorted({str(s).strip() for s in raw if str(s).strip()}))
+
+
+def read_pack_overrides(project_dir: Path, todo_id: str) -> tuple[tuple[str, ...], str]:
+    """A37: the owner's pack override from the approval binding.
+
+    The approve may carry ``override_failed=[section, ...]`` plus
+    ``override_reason`` when a red verify pack is knowingly accepted. An
+    override WITHOUT a reason is not an override — the owner must say why
+    the failure does not block this commit — so the pair degrades to
+    ``((), "")`` and the gate refuses exactly as if none was passed.
+    """
+    binding = read_approval_binding(project_dir, todo_id)
+    if not binding:
+        return (), ""
+    sections = normalize_override_sections(binding.get("override_failed"))
+    reason = str(binding.get("override_reason") or "").strip()
+    if not sections or not reason:
+        return (), ""
+    return sections, reason
+
+
+def pack_refusal(
+    plan: CommitPlan,
+    project_dir: Path,
+    override_failed: tuple[str, ...] | list[str] = (),
+) -> str:
+    """A37 (TODO-0349): a red verify pack closes the commit gate.
+
+    Before this the pack was a report: TODO-0339 produced ``verdict: failed``
+    (section ``gates``) and the unit still committed. The gate now reads the
+    pack that describes THIS tree (``GATES-<todo>.md`` with a matching
+    ``tree_sha``) and refuses a ``failed`` verdict unless every failed
+    section is advisory (:data:`PACK_ADVISORY_SECTIONS`) or explicitly
+    overridden by the approve. A missing pack, an ``ok`` pack or a pack
+    taken on another tree change nothing. A report that says ``failed`` but
+    names no failing section is refused too — the verdict is the contract,
+    and no section override can clear an inconsistent report.
+
+    Returns a refusal reason, or "" when the commit may proceed.
+    """
+    if not plan.todo_id:
+        return ""
+    from . import verify_pack  # local: verify_pack imports this module lazily
+
+    report = paths.context_dir(project_dir) / f"GATES-{plan.todo_id}.md"
+    try:
+        current = git_utils.tree_fingerprint(project_dir)
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
+        # The SAME failure set the pack writer treats as "no fingerprint"
+        # (``verify_pack._current_tree_sha``): a hung git (``TimeoutExpired``
+        # is not a ``RuntimeError``) or an unreadable repo must degrade to
+        # "no current tree" here too — a red pack then refuses (fail closed)
+        # instead of crashing the gate with a traceback.
+        current = ""
+    # A37: freshness is compared HERE, not through ``read_gates_facts``'s
+    # ``stale``: a pack that records no tree at all is not "another tree's
+    # verdict" — it cannot be shown to describe this commit, so it stays
+    # blocking (fail closed) instead of being read as fresh.
+    facts = verify_pack.read_gates_facts(report)
+    if facts is None or str(facts.get("verdict") or "") != "failed":
+        return ""
+    recorded = str(facts.get("tree_sha") or "")
+    if recorded and current and recorded != current:
+        return ""  # the pack describes another tree — not this commit's gate
+
+    allowed = set(PACK_ADVISORY_SECTIONS) | {str(s) for s in override_failed}
+    named = [str(s) for s in (facts.get("failed_sections") or [])]
+    failed = [s for s in named if s not in allowed]
+    if not failed:
+        if named:
+            return ""
+        # The verdict, not the section list, is the contract: a report that
+        # says "failed" but names no failing section is inconsistent (a
+        # truncated or hand-edited block), and no override can clear it.
+        return (
+            f"the verify pack {report.name} reports verdict 'failed' for the "
+            "current tree but names no failing section — the report is "
+            "inconsistent. Re-run the pack (`awf verify-pack --todo "
+            f"{plan.todo_id}`) before committing."
+        )
+    first = str(facts.get("first_failure") or "").strip()
+    detail = f" ({first[:200]})" if first else ""
+    return (
+        f"the verify pack {report.name} reports verdict 'failed' for the "
+        f"current tree in section(s) {', '.join(failed)}{detail} — a red pack "
+        "must not commit. Fix the section and re-run the pack, or approve "
+        "with override_failed=[...] AND a reason when the failure is "
+        f"knowingly accepted (recorded in COMMIT-AUDIT-{plan.todo_id}.json)."
+    )
 
 
 def binding_refusal(plan: CommitPlan, project_dir: Path, authorized_by: str) -> str:

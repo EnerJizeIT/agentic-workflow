@@ -57,6 +57,12 @@ def run(args: Any) -> int:
         print(result.foreign_commit)
         print()
 
+    # A39: the same fact when the move came from upstream — the run went on,
+    # and the line is what tells the two causes apart.
+    if result.upstream_sync:
+        print(result.upstream_sync)
+        print()
+
     for entry in result.active_todos:
         todo_id = entry["todo_id"]
         print(f"Active: {todo_id}")

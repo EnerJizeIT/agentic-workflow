@@ -702,6 +702,8 @@ def approve_commit(
     evidence: str = "",
     verified_sha: str = "",
     confirm_degraded: bool = False,
+    override_failed: list[str] | tuple[str, ...] | None = None,
+    override_reason: str = "",
 ) -> ApproveResult:
     """Create APPROVE-{todo_id}.ready signal to authorize auto-commit.
 
@@ -727,6 +729,11 @@ def approve_commit(
     In run mode an empty ``verified_sha`` is an explicit refusal (no
     APPROVE signal, no verdict). Outside a run it stays optional.
 
+    A37 (TODO-0349): ``override_failed`` + ``override_reason`` let the owner
+    knowingly accept a red verify pack for named sections. Both are stored
+    in the APPROVE binding and echoed into ``COMMIT-AUDIT-<todo>.json``; an
+    override without a reason is refused before any side effect.
+
     Requires ``.agentic/`` (consistency with other api functions).
     """
     if not todo_id:
@@ -735,6 +742,33 @@ def approve_commit(
         raise AwfApiError(f"invalid todo_id '{todo_id}', expected format TODO-NNNN")
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
+
+    # A37: an override is a conscious decision, so it must NAME itself and
+    # say WHY. Both refusals run before the first side effect (no evidence
+    # file, no fingerprint, no signal). ``commit_plan`` is also needed
+    # further down (baseline, file set) — ONE lazy import for the whole
+    # function, like the other module-level lazy imports here.
+    from .. import commit_plan as _commit_plan
+
+    override_sections: list[str] = []
+    if override_failed:
+        # One normalizer for both sides of the signal: the gate re-reads the
+        # names from the file, so a name accepted here must spell the same
+        # section there.
+        override_sections = list(
+            _commit_plan.normalize_override_sections(override_failed)
+        )
+        if not override_sections:
+            raise AwfApiError(
+                "override_failed is empty — name the failed pack section(s) "
+                "you accept, or drop the parameter."
+            )
+        if not override_reason.strip():
+            raise AwfApiError(
+                "override_failed requires override_reason: say WHY a failed "
+                "verify-pack section does not block this commit (it is "
+                "recorded in COMMIT-AUDIT)."
+            )
 
     # ORCH M5.2 (review fix F1): a service-run unit's verdict goes through
     # the service path only — refused BEFORE any side effect (no evidence
@@ -784,7 +818,6 @@ def approve_commit(
     # digest rides in the APPROVE binding; the gate re-derives it and refuses
     # on any change.
     from .. import candidate_verify as _candidate_verify
-    from .. import commit_plan as _commit_plan
 
     def _discard_candidate_evidence() -> None:
         # A-04 (audit M1 / PA-1): a refused approve must leave NO evidence
@@ -1045,6 +1078,12 @@ def approve_commit(
             # evidence_digest.
             binding.update(candidate_evidence.binding_projection())
             binding["evidence_digest"] = candidate_evidence.evidence_digest()
+        if override_sections:
+            # A37: the pack override rides in the same binding the gate
+            # enforces, so it cannot be added to the signal behind the
+            # owner's back.
+            binding["override_failed"] = list(override_sections)
+            binding["override_reason"] = override_reason.strip()
         managed_write_api_text(  # approve binding
             signal,
             json.dumps(binding, sort_keys=True) + "\n",
@@ -1059,12 +1098,17 @@ def approve_commit(
         # wait re-checks (commit_plan.verified_fingerprint_refusal). No
         # file-set digest here: outside a run nothing validates it, and the
         # set follows from (baseline, tree) that are both pinned.
-        if verified_fp:
+        if verified_fp or override_sections:
             binding = {
                 "source": arbiter.HUMAN,
                 "baseline_sha": baseline_sha,
                 "verified_sha": verified_fp,
             }
+            if override_sections:
+                # A37: the pack override needs the binding even outside a
+                # run — the gate reads it from here, not from a side file.
+                binding["override_failed"] = list(override_sections)
+                binding["override_reason"] = override_reason.strip()
             managed_write_api_text(  # A23 binding outside a run
                 signal,
                 json.dumps(binding, sort_keys=True) + "\n",

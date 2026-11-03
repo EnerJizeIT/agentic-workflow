@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 
-from .pipeline import Stage
+from .pipeline import Stage, policy_target
 
 log = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ def resolve_transition(stage: Stage, sig_type: str) -> tuple[str, str]:
         if policy == "stop":
             return ("stop", "")
         if policy.startswith("rollback_to:"):
-            return ("rollback", policy.split(":", 1)[1])
+            return ("rollback", policy_target(policy))
         return ("escalate", "")
 
     if sig_type in ("done", "approved"):
@@ -35,9 +35,9 @@ def resolve_transition(stage: Stage, sig_type: str) -> tuple[str, str]:
         # findings to the unit — the reviewer's verdict becomes the worker's
         # next instruction instead of a supervisor replan.
         if policy.startswith("fix_round:"):
-            return ("fix_round", policy.split(":", 1)[1])
+            return ("fix_round", policy_target(policy))
         if policy.startswith("rollback_to:"):
-            return ("rollback", policy.split(":", 1)[1])
+            return ("rollback", policy_target(policy))
         # A32: 'replan' is the ONLY value that grows the queue — it names
         # the replan subprocess (refined TODO). 'escalate' (default) and
         # the two prefixed forms above are resolved by the engine as a

@@ -85,6 +85,10 @@ class StatusResult:
     # A31: the engine saw HEAD move outside the commit gate during a stage.
     # The line carries the SHAs and the files; the run stopped on it.
     foreign_commit: str | None = None
+    # A39: HEAD moved because an upstream branch landed (fast-forward or a
+    # merge whose first parent is the old HEAD). The run continued — the
+    # line says so, so the owner can tell the two causes apart.
+    upstream_sync: str | None = None
     # TODO-0262 REVIEW (CTX1): the unit stopped for its review-pass budget
     # (a BUDGET note on disk). The owner's decision outranks ``awf_continue``
     # — an exhausted unit cannot be resumed into the same limit again.

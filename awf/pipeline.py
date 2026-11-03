@@ -148,6 +148,40 @@ _POLICY_ALLOWED = {
 # is ignored at runtime, so A-06 rejects it at load (it used to warn).
 _ROLLBACK_TO_KEYS = ("on_blocked", "on_rejected")
 
+# A36 (TODO-0352): ``fix_round:``/``rollback_to:`` targets are stage names,
+# and the space after the colon is a spelling, not a config error. ONE parser
+# serves the validator, the loader and the transition resolver — before, the
+# validator only checked ``value.split(":")[1].strip()`` was non-empty while
+# the resolver returned the target WITH the space, so
+# ``on_rejected: "fix_round: agent-implementer"`` loaded fine and then failed
+# with "fix_round target ' agent-implementer' not found".
+_POLICY_PREFIXES = ("fix_round", "rollback_to")
+
+
+def parse_policy(policy: str) -> tuple[str, str]:
+    """Split a prefixed policy into (prefix, stripped target).
+
+    ``"fix_round: agent"`` → ``("fix_round", "agent")``; a plain word
+    (``"escalate"``) → ``("escalate", "")``.
+    """
+    prefix, sep, target = policy.partition(":")
+    if not sep:
+        return policy, ""
+    return prefix, target.strip()
+
+
+def policy_target(policy: str) -> str:
+    """The stage a ``fix_round:``/``rollback_to:`` policy points at, or ""."""
+    return parse_policy(policy)[1]
+
+
+def normalize_policy(policy: str) -> str:
+    """``"fix_round: agent"`` → ``"fix_round:agent"``; plain words untouched."""
+    prefix, target = parse_policy(policy)
+    if prefix in _POLICY_PREFIXES and target:
+        return f"{prefix}:{target}"
+    return policy
+
 # M7.1 (ORCH): public read-only aliases of the stage schema registry. The
 # pipeline-compose form (agent_workflow_ui) offers these exact policy words
 # as input suggestions — the form must not keep a second, drifting copy of
@@ -299,6 +333,12 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
                 f"Pipeline {source}: stage #{i} must be a mapping, "
                 f"got {type(stage).__name__}."
             )
+        # A36: validate/normalize a COPY — the policy normalization below
+        # (``fix_round: agent`` → ``fix_round:agent``) must reach the returned
+        # document and every write path, but it must not silently rewrite a
+        # caller's mapping (a template dict re-rendered by the setup preview,
+        # the caller's own request body).
+        stage = dict(stage)
         # CTX4: the loader addresses a stage by ``id or name`` (load_stages
         # makes the id the stage name), so the label must use the SAME
         # priority — otherwise a stage with ``name != id`` is reported
@@ -531,11 +571,15 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
                             f"supported for on_rejected (it is a review "
                             f"verdict, not a failure policy)."
                         )
-                    if not value.split(":", 1)[1].strip():
+                    if not policy_target(value):
                         raise AwfApiError(
                             f"Pipeline {source}: stage '{label}' {pk}="
                             f"{value!r} — fix_round needs a stage name."
                         )
+                    # A36: the space after the colon is normalized here, so
+                    # the resolver and the load-time checks read the same
+                    # target the validator accepted.
+                    stage[pk] = normalize_policy(value)
                 elif value.startswith("rollback_to:"):
                     if pk not in _ROLLBACK_TO_KEYS:
                         raise AwfApiError(
@@ -548,11 +592,13 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
                     # fix_round branch above applies. Without it a bare
                     # ``rollback_to:`` passed here and only warned at load
                     # ("rolls back to '' which is not a stage").
-                    if not value.split(":", 1)[1].strip():
+                    if not policy_target(value):
                         raise AwfApiError(
                             f"Pipeline {source}: stage '{label}' {pk}="
                             f"{value!r} — rollback_to needs a stage name."
                         )
+                    # A36: normalize the target too (rollback_to: stage).
+                    stage[pk] = normalize_policy(value)
                 elif value not in _POLICY_ALLOWED[pk]:
                     raise AwfApiError(
                         f"Pipeline {source}: stage '{label}' {pk}={value!r} "
@@ -603,7 +649,7 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
         policy = stage.get("on_rejected")
         if not isinstance(policy, str) or not policy.startswith("fix_round:"):
             continue
-        target = policy.split(":", 1)[1].strip()
+        target = policy_target(policy)
         label = str(stage.get("id") or stage.get("name") or f"#{i}")
         if target not in kinds:
             raise AwfApiError(
@@ -708,7 +754,7 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
         for pk in _ROLLBACK_TO_KEYS:
             policy = getattr(st, pk)
             if policy.startswith("rollback_to:"):
-                rb_target = policy.split(":", 1)[1]
+                rb_target = policy_target(policy)
                 if rb_target not in stage_names:
                     # A32: a rejection with a phantom target rewinds to the
                     # nearest earlier author (escalating only when there is

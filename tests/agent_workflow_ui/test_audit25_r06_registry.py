@@ -117,7 +117,17 @@ def test_registry_equals_list_tools():
         (
             "awf",
             "awf_approve",
-            ["todo_id", "project_dir", "evidence", "verified_sha", "confirm_degraded"],
+            # A37 (TODO-0349): the approve gained the pack override pair —
+            # an explicit extension of the MCP surface, not a silent drift.
+            [
+                "todo_id",
+                "project_dir",
+                "evidence",
+                "verified_sha",
+                "confirm_degraded",
+                "override_failed",
+                "override_reason",
+            ],
             "Approve auto-commit for a TODO in --auto mode.",
         ),
         (
