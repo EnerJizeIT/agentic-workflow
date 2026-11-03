@@ -179,6 +179,33 @@ def lines_below(text: str, index: int, level: int) -> list[str]:
     return body
 
 
+def sections_with_prefix(text: str, prefix: str) -> list[tuple[str, str]]:
+    """Every level-2 heading starting with ``prefix`` and its body.
+
+    ``(heading, body)`` in file order; the body runs verbatim to the next
+    level-2 heading — the boundary :func:`lines_below` walks. Fenced example
+    headings do not count. The stage context pack shows findings this way:
+    the body, not just the title (R2/AC5).
+
+    The walker is this module's; a writer that replaces a section through
+    its own ``^## `` regex (``api.hygiene._apply_section_update``) is NOT
+    fence-aware, so the two can disagree on a fenced heading. Replacing a
+    section goes through the append path today, which is safe — keep it
+    that way, or move the writer onto :func:`lines_below` first.
+    """
+    lines = text.splitlines()
+    flags = fence_flags(lines)
+    out: list[tuple[str, str]] = []
+    for index, line in enumerate(lines):
+        m = None if flags[index] else HEADING_RE.match(line)
+        if not m or len(m.group(1)) != 2:
+            continue
+        if not m.group(2).strip().startswith(prefix):
+            continue
+        out.append((line.rstrip(), "\n".join(lines_below(text, index, 2)).strip()))
+    return out
+
+
 def append_block(text: str, block: str) -> str:
     """Put a markdown block at the END of a text: one blank line, one newline.
 
@@ -223,6 +250,7 @@ __all__ = [
     "first_heading_index",
     "lines_below",
     "section_body",
+    "sections_with_prefix",
     "skip_comments_and_blanks",
     "skip_leading_trivia",
 ]

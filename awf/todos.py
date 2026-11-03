@@ -67,16 +67,13 @@ def read_todo_text(project_dir: str | Path, todo_id: str) -> str:
     (verify-pack's contract log) opens the file itself — "" cannot say WHICH
     of the two places was unreadable.
     """
-    for f in (
-        paths.inbox(project_dir) / f"{todo_id}.md",
-        paths.done_dir(project_dir) / todo_id / "TODO.md",
-    ):
-        if f.is_file():
-            try:
-                return f.read_text(encoding="utf-8", errors="surrogateescape")
-            except OSError:
-                return ""
-    return ""
+    path = paths.todo_path(project_dir, todo_id)
+    if path is None:
+        return ""
+    try:
+        return path.read_text(encoding="utf-8", errors="surrogateescape")
+    except OSError:
+        return ""
 
 
 def is_closed(inbox: Path, outbox: Path, todo_id: str) -> bool:
