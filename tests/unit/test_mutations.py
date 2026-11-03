@@ -252,3 +252,27 @@ class TestDefaultRunnerKillsProcessGroup:
         assert "timeout" in out
         grand = int(pid_file.read_text())
         assert _wait_dead(grand), "grandchild survived the runner timeout kill"
+
+
+# ── TODO-0365: the repo's own mutation list must not rot ─────────────────
+# CI learned about a stale anchor only when mutation-smoke ran (PR #95: the
+# guard condition became a multi-line conjunction and the old one-line FIND
+# stopped matching; the gate exited 2 minutes in). This check is the fast
+# mirror of that configuration error: every literal FIND must still exist
+# in its target file. Running the mutants stays in CI and in
+# ``awf mutations`` — only the anchor lookup is unit-cheap.
+
+
+class TestRepoMutationList:
+    def test_every_anchor_still_exists_in_target(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        mutations = mut.load_mutations(repo_root / "scripts" / "mutations.txt")
+        problems: list[str] = []
+        for m in mutations:
+            target = repo_root / m.file
+            if not target.is_file():
+                problems.append(f"line {m.lineno}: no such file {m.file}")
+                continue
+            if m.find not in target.read_text(encoding="utf-8"):
+                problems.append(f"line {m.lineno}: `{m.find}` not found in {m.file}")
+        assert not problems, "stale mutation anchors:\n" + "\n".join(problems)
