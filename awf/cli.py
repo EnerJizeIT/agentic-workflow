@@ -922,6 +922,32 @@ def _build_parser():
         help="Path to project root (default: current directory)",
     )
 
+    # A25: batch of backlog units → inbox drafts + ordered plan
+    p_plan_batch = sub.add_parser(
+        "plan-batch",
+        help="A25: draft a batch of backlog units into inbox (no .ready) + plan",
+    )
+    p_plan_batch.add_argument(
+        "items",
+        nargs="+",
+        help="Backlog ids (e.g. A37 A38 A39)",
+    )
+    p_plan_batch.add_argument(
+        "--goal",
+        default="",
+        help="One line for the batch (written into every draft)",
+    )
+    p_plan_batch.add_argument(
+        "--backlog",
+        default="",
+        help="Backlog file (default: plan.batch_backlog_path, else docs/backlog.md)",
+    )
+    p_plan_batch.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
     # RUN3 #1: named pipelines — create + list (run by name via --pipeline)
     p_pipeline_write = sub.add_parser(
         "pipeline-write",
@@ -1206,6 +1232,9 @@ def _run_command(args) -> int:
         if args.command == "todo-draft":
             from . import cmd_todo_draft
             return cmd_todo_draft.run(args)
+        if args.command == "plan-batch":
+            from . import cmd_plan_batch
+            return cmd_plan_batch.run(args)
         if args.command == "commit-workflow":
             from . import cmd_workflow_commit
             return cmd_workflow_commit.run(args)

@@ -120,7 +120,7 @@ def test_protocol_call_of_removed_name_gets_the_refusal(tmp_git_repo) -> None:
     """
     names, texts = asyncio.run(_protocol_calls(str(tmp_git_repo)))
     assert names.isdisjoint(REMOVED)
-    assert len(names) == 54
+    assert len(names) == 55
     for name, replacement in REMOVED.items():
         text = texts[name]
         assert name in text

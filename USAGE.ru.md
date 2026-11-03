@@ -372,7 +372,7 @@ execute-воркера до control-сервера; остальные наст�
 
 ## Все tools (справочник)
 
-54 инструмента: 49 `awf_*` workflow + 5 UI (формы).
+55 инструментов: 50 `awf_*` workflow + 5 UI (формы).
 
 ### Lifecycle
 | Tool | Что делает |
@@ -532,6 +532,7 @@ $ awf start --pipeline audit-llm
 | Tool | Что делает |
 |---|---|
 | `awf_dispatch_todo` | Создание TODO + baseline + signal (+ pre-check grep) |
+| `awf_plan_batch` | Черновики пачки пунктов бэклога в inbox (без `.ready`) + упорядоченный план |
 | `awf_baseline` | Снапшот git HEAD + тесты + окружение |
 | `awf_rollback` | Откат к baseline (hard / soft / dry-run) |
 | `awf_restore` | Вернуть заархивированный TODO обратно в inbox |

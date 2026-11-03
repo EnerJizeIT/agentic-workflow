@@ -56,10 +56,10 @@ def _situation_names(situation: str) -> list[str]:
 
 class TestMapData:
     def test_full_inventory_keeps_every_record(self):
-        """AC20: the full list is still the 64 records / 8 groups."""
+        """AC20: the full list is still the 65 records / 8 groups."""
         groups = load_tool_map()
         assert len(groups) == 8
-        assert len(_entries()) == 64
+        assert len(_entries()) == 65
 
     def test_every_entry_has_a_non_empty_why(self):
         """INV3: `when` is the row's `why`; an empty one is a red test."""
@@ -204,7 +204,7 @@ class TestCoverage:
         assert cov["unknown_in_map"] == []
 
     def test_every_mcp_name_has_a_situation(self):
-        """Completeness: all 54 MCP names serve at least one situation."""
+        """Completeness: all 55 MCP names serve at least one situation."""
         names = {t["mcp"] for t in _entries() if t["mcp"] and t["situations"]}
         missing = [name for name in tool_registry()["mcp"] if name not in names]
         assert missing == [], f"MCP tools without a situation: {missing}"

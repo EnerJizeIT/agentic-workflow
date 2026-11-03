@@ -75,6 +75,8 @@ TOOLS: tuple[ToolSpec, ...] = (
     _spec("awf_analyze_roles", awf.awf_analyze_roles),
     # Dogfood-2 automation: dispatch
     _spec("awf_dispatch_todo", awf.awf_dispatch_todo),
+    # A25: batch of backlog units → inbox drafts + ordered plan
+    _spec("awf_plan_batch", awf.awf_plan_batch),
     # Dogfood-5: shortcut tools (deterministic UX, no prompt-only guidance)
     _spec("awf_open_project_setup_form", awf.awf_open_project_setup_form),
     # Dogfood-7: increment planning (user picks decomposition variant)

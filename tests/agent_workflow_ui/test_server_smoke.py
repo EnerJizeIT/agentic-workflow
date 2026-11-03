@@ -76,7 +76,7 @@ def test_server_creates():
 def test_all_tools_registered():
     """The server registers exactly the names the registry declares.
 
-    The frozen 54-name list (and the count 49 awf + 5 UI) is owned by
+    The frozen 55-name list (and the count 50 awf + 5 UI) is owned by
     ``tests/unit/test_mcp_names.py``; this test only checks the seam
     between ``registry.TOOLS`` and ``create_server().list_tools()`` so the
     same list is not copied a second time here.
