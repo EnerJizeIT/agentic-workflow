@@ -15,12 +15,18 @@ Two halves live here:
 - :func:`human_verify_decision` — the verdict valid for the current
   attempt, or ``None``. The supervisor stage asks it before spawning (a
   human already decided — no subprocess) and after the subprocess returns
-  (a human verdict written during the run outranks the auto one).
+  (a human verdict written during the run outranks the auto one);
+- :func:`await_human_override` — the A29 window (TODO-0364): after taking
+  the auto verdict the engine waits ``wait.human_override_seconds`` and
+  re-asks :func:`human_verify_decision`, so a verdict issued seconds later
+  still wins. The window adds no second definition of "valid": it asks the
+  same arbiter with ``require_current_binding=True``.
 """
 from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 
 from . import commit_plan, paths
@@ -217,11 +223,29 @@ def _mtime(path: Path) -> float | None:
         return None
 
 
+def _approve_tree_moved(
+    project_dir: Path, todo_id: str, logs_dir: Path | None
+) -> bool:
+    """Whether a BOUND approve names a tree that is no longer this attempt's.
+
+    A plain marker (``{"source": "human"}``, a legacy approve) carries no
+    tree, so there is nothing to compare — False. An approve that names its
+    ``verified_sha`` is a statement about a tree: once the tree moved, the
+    statement is about an earlier one.
+    """
+    binding = commit_plan.read_approval_binding(project_dir, todo_id) or {}
+    if not binding.get("verified_sha"):
+        return False
+    return not _approve_is_current(project_dir, todo_id, logs_dir)
+
+
 def human_verify_decision(
     project_dir: Path,
     todo_id: str,
     wait_start: float,
     logs_dir: Path | None = None,
+    *,
+    require_current_binding: bool = False,
 ) -> tuple[str, float] | None:
     """The owner's verify verdict for THIS attempt, or ``None``.
 
@@ -237,6 +261,14 @@ def human_verify_decision(
     and is ignored. Returns ``(signal_name, mtime)`` of the newest valid
     human decision; on a tie REVIEW wins — reading a conflict as a
     rejection is the safe direction.
+
+    ``require_current_binding`` is the A29 window's stricter reading of the
+    APPROVE half: there the owner's verdict must OVERRULE an already-taken
+    auto one, so a bound approve counts only while its tree is still the
+    attempt's — even a just-written one is a statement about a tree that
+    moved. The default keeps the pre-spawn/wait reading (a fresh approve
+    counts; the commit gate validates it afterwards). One function decides
+    both, so "the owner's verdict counts" has a single definition.
     """
     from .pipeline_state import read_state
 
@@ -254,8 +286,27 @@ def human_verify_decision(
     if mtime is not None and signal_source(approve) == HUMAN:
         if not decision_is_stale(approve, signal, accepted, accepted_mtime):
             fresh = int(mtime) >= int(wait_start)
-            if fresh or _approve_is_current(project_dir, todo_id, logs_dir):
+            current = _approve_is_current(project_dir, todo_id, logs_dir)
+            counts = fresh or current
+            tree_moved = False
+            if require_current_binding:
+                # A29 window: overruling an already-taken auto verdict needs
+                # a verdict about THIS tree — a bound approve that no longer
+                # matches cannot win, however fresh it is. A marker names no
+                # tree, so the ordinary freshness rule stands.
+                tree_moved = _approve_tree_moved(
+                    project_dir, todo_id, logs_dir
+                )
+                counts = counts and not tree_moved
+            if counts:
                 found.append((mtime, 0, signal))
+            elif logs_dir is not None and tree_moved:
+                _log(
+                    logs_dir,
+                    f"A29: human {signal} ignored in the override window — "
+                    "its verified_sha does not match this attempt (the tree "
+                    "moved after verification)",
+                )
             elif logs_dir is not None:
                 _log(
                     logs_dir,
@@ -274,3 +325,57 @@ def human_verify_decision(
         return None
     mtime, _priority, signal = max(found)
     return signal, mtime
+
+
+def await_human_override(
+    project_dir: Path,
+    todo_id: str,
+    auto_signal: str,
+    wait_start: float,
+    window: float,
+    logs_dir: Path | None = None,
+    poll: float = 1.0,
+) -> tuple[str, float] | None:
+    """A29: the overlap window between the auto verdict and the owner's.
+
+    The auto supervisor subprocess may reject a unit seconds before the
+    owner's ``awf_approve`` lands (incident 03.11, TODO-0359). The engine
+    must not turn that race into a replan, so after taking an auto verdict
+    it gives the owner ``window`` seconds to overrule it.
+
+    The decision is :func:`human_verify_decision` with
+    ``require_current_binding`` — the same arbiter as every other path, so
+    "the owner wins" and "the approve names this attempt" each have one
+    definition. A verdict equal to ``auto_signal`` is returned at once: the
+    caller's "the scan picked up the owner's own file" branch must still
+    run (it sweeps the other auto verdicts), and there is nothing to wait
+    for.
+
+    ``window <= 0`` still performs one check (the pre-existing-signal case
+    stays instant, requirement 4) and returns without sleeping.
+
+    Returns ``(signal_name, mtime)`` of the human verdict, or ``None`` when
+    the window expired with no valid human decision — the caller then
+    applies the auto verdict as before.
+    """
+    deadline = time.monotonic() + max(0.0, window)
+    while True:
+        human = human_verify_decision(
+            project_dir, todo_id, wait_start, logs_dir,
+            require_current_binding=True,
+        )
+        if human is not None:
+            if human[0] != auto_signal and auto_signal and logs_dir is not None:
+                _log(
+                    logs_dir,
+                    f"human override: {human[0]} wins over auto "
+                    f"{auto_signal} (window {window:g} s)",
+                )
+            return human
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        # ``poll`` is the resolution of the window, not a knob: one long
+        # sleep would see a verdict issued at second 1 only when the window
+        # is over — the incident this window exists for.
+        time.sleep(min(poll, remaining))

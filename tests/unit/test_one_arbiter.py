@@ -43,7 +43,9 @@ def _run_verify(proj: Path, monkeypatch) -> str:
         "verify",
         TODO,
         proj,
-        {},
+        # TODO-0364: this file covers the verdict ordering, not the window —
+        # the clock stays real, so the auto-only cases must not sleep 60 s.
+        {"wait": {"human_override_seconds": 0}},
         str(proj / ".agentic" / "phases" / "plan.md"),
         proj / ".agentic" / "logs",
     )
