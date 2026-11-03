@@ -45,6 +45,7 @@ from pathlib import Path
 import awf.api.pipeline as api_pipeline
 from awf import api, run_state
 from awf.api._results import StartResult
+from tests.negative._pid_wait import wait_looks_like_awf_start
 
 
 def _project(tmp_git_repo: Path) -> Path:
@@ -271,9 +272,10 @@ def test_reused_pid_file_is_not_a_running_pipeline(tmp_git_repo):
     )
     try:
         # Sanity: процесс жив, и его argv выглядит как настоящий awf start —
-        # именно поэтому baseline его за наш пайплайн принимал.
+        # именно поэтому baseline его за наш пайплайн принимал. Ждём exec:
+        # проверка внутри помощника, по таймауту — красный тест.
         assert _liveness.probe_alive(foreign.pid)
-        assert _liveness.cmdline_is_ours(_liveness.read_cmdline(foreign.pid))
+        wait_looks_like_awf_start(foreign.pid)
 
         pid_file = proj / ".agentic" / "logs" / "awf-start.pid"
         pid_file.parent.mkdir(parents=True, exist_ok=True)
