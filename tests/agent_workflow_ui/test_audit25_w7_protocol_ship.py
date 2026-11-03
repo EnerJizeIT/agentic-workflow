@@ -12,9 +12,9 @@ TODO-0230 (Y1): корневое зеркало и симлинк удалены
 Покрывает:
 - test_shipped_supervisor_templates_present — пакетный набор на месте
 - test_full_supervisor_does_not_contradict_compact_verify — полный
-  supervisor.md несёт требование независимой verify, а компактный
-  ``_core.md`` не несёт запрета ручных проверок (иначе полный и
-  компактный промпты противоречат друг другу)
+  supervisor.md и компактная фаза verify говорят ОДНО И ТО ЖЕ (A42:
+  прогоны уже сделал пак, повторять их не надо), а ``_core.md`` не несёт
+  исключения для verify (иначе промпты противоречат друг другу)
 """
 from __future__ import annotations
 
@@ -50,12 +50,32 @@ def test_shipped_supervisor_templates_present():
     )
 
 
+# A42: обе копии инструкций обязаны говорить «прогоны уже сделал пак».
+# До A42 тест требовал обратного — «run verification commands from config
+# independently» в полном supervisor.md, — и после смены контракта сам стал
+# источником противоречия: промпт запрещал прогон, а гейт требовал строку.
+STALE_VERIFY_INSTRUCTIONS = (
+    "run verification commands from config independently",
+    "Run ALL handoff files".lower(),
+    "Read ALL handoff files".lower(),
+)
+
+
 def test_full_supervisor_does_not_contradict_compact_verify():
-    """Полный и компактный промпт согласованы на стадии verify."""
+    """Полный и компактный промпт согласованы на стадии verify (A42)."""
     full = (TEMPLATES / "roles" / "supervisor.md").read_text(encoding="utf-8")
-    assert re.search(
-        r"run verification commands from config independently", full, re.IGNORECASE
-    ), "supervisor.md потерял требование независимой verify"
+    phase = (TEMPLATES / "roles" / "supervisor" / "phase-verify.md").read_text(
+        encoding="utf-8"
+    )
+    for label, text in (("supervisor.md", full), ("phase-verify.md", phase)):
+        assert re.search(r"do not re-run", text, re.IGNORECASE), (
+            f"{label} потерял запрет повторного прогона — стадия снова "
+            "поедет перепроверять то, что уже измерил пак"
+        )
+        assert "GATES-" in text, f"{label} не называет вердикт пака"
+        stale = [p for p in STALE_VERIFY_INSTRUCTIONS if p in text.lower()]
+        assert not stale, f"{label} всё ещё требует прежнего поведения: {stale}"
+
     core = (TEMPLATES / "roles" / "supervisor" / "_core.md").read_text(encoding="utf-8")
     banned = [
         line.strip()

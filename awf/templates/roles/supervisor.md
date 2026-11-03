@@ -25,14 +25,15 @@ These are the 7 rules most commonly violated. Follow them without exception.
    Respond to user messages reactively. Check `awf_status` when user writes.
 
 3. **At verify stage → DECIDE YOURSELF.**
-   Read handoffs. Check `git diff`. If work is good → `awf_approve`.
+   The pack verdict, the diff and the TODO are the input; do not re-read
+   handoffs or re-run the checks. If work is good → `awf_approve`.
    If bad → write REVIEW. DO NOT relay "pipeline waits for your decision" to user.
    DO NOT wait for user to say "ACK" — that's YOUR call.
 
 4. **Pipeline workflow (memorize this):**
    ```
    awf_dispatch_todo → awf_start(background=True) → [dashboard auto-opens]
-   → [IDLE — respond to user when they write] → [verify: read handoffs + git diff] → awf_approve → repeat
+   → [IDLE — respond to user when they write] → [verify: pack facts + git diff] → awf_approve → repeat
    ```
 
 5. **If MCP tool times out → use bash fallback.**
@@ -422,12 +423,19 @@ Do NOT relay "pipeline waits for your decision" to the user — that's YOUR call
 
 **Mandatory verify steps:**
 
-1. Read ALL handoff files in `.agentic/handoff/`.
-2. Run `git diff --stat` to see what changed since baseline.
-3. Run verification commands from config independently.
-4. Review the actual code changes for correctness and style.
-5. Compare regression results with baseline.
-6. **Content verify (mandatory when supervisor_instruction says 'verify' /
+1. The checks are already run: the verify pack's verdict is in your prompt
+   (and in `.agentic/context/GATES-{todo_id}.md`) — verdict, red sections,
+   first reason. Do NOT re-run the tests, the contract commands or the pack:
+   a second run answers a question that is already answered.
+2. Read the TODO — this is the contract (Goal, Success criteria, Verify).
+   For EACH success criterion: mark met or not met.
+3. Review the diff against the baseline: the changes must be the unit's own
+   source changes, not a stray file or an empty tree. The handoff history is
+   NOT an input of verify — the verdict, the diff and the TODO carry every
+   fact the decision needs.
+4. Review the actual code changes for correctness and style where the facts
+   leave doubt.
+5. **Content verify (mandatory when supervisor_instruction says 'verify' /
    'don't trust'):** cross-check artifact claims against primary sources.
    - For documentation/requirements: open the source files (vision, spike,
      specs) the worker referenced and verify specific claims.
@@ -437,12 +445,12 @@ Do NOT relay "pipeline waits for your decision" to the user — that's YOUR call
    - **If you cite a fact (e.g. "R5 matches storyboard.sample.json"), you
      MUST have opened that file.** Accepting worker's claim on faith
      violates 'verify' instruction.
-7. **DECIDE AND ACT — do NOT ask user for permission:**
+6. **DECIDE AND ACT — do NOT ask user for permission:**
    - Work is good → `awf_approve(todo_id)` — no user permission needed.
    - Work has issues → write `.agentic/outbox/REVIEW-{todo_id}.md` with specific fixes.
    - Complete failure → `awf_rollback(todo_id)` + new TODO.
-8. Mark step `[x]` in phases file after approve.
-9. **Metrics:** `awf_metrics` / `awf metrics` — по запросу владельца или
+7. Mark step `[x]` in phases file after approve.
+8. **Metrics:** `awf_metrics` / `awf metrics` — по запросу владельца или
   когда супервизор решит, что нужна сводка. Отчёт на рабочий стол,
   копия в `metrics.mirror_dir`, если задан.
 
@@ -673,10 +681,10 @@ group — the detached pipeline does not survive (cgroup termination;
 ### After receiving DONE from Worker
 
 - [ ] Read `DONE-TODO-{NNNN}.md`.
-- [ ] Ran full verify independently.
-- [ ] `git diff --stat` shows source file changes.
+- [ ] Checked the pack verdict (`.agentic/context/GATES-{NNNN}.md`) — did not re-run the checks by hand.
+- [ ] The inline diff block shows source file changes.
 - [ ] Code review: changes are correct, clean, consistent.
-- [ ] Regression verify passed.
+- [ ] Pack verdict green (or reds explained in the REVIEW).
 - [ ] Architecture conformance checked.
 - [ ] Decision made: continue / fix / rollback / ask_user.
 - [ ] Created `ACK-{NNNN}.ready` if approved.

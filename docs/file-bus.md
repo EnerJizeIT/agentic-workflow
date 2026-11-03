@@ -157,7 +157,19 @@ Snippets добавляются в КОНЕЦ prompt (recency bias).
 
 ## Handoff chain
 
-Каждая стадия получает handoff-файлы предыдущих стадий через `--file` аргументы. `collect_handoff()` собирает PROGRESS + DONE + git diff в `{stage_name}-{todo_id}.md`.
+Каждая worker-стадия получает handoff-файлы предыдущих стадий через `--file` аргументы. `collect_handoff()` собирает PROGRESS + DONE + git diff в `{stage_name}-{todo_id}.md`.
+
+Исключение — стадия verify (A42): handoff-история в её промпт не идёт.
+Вердикт пака (`GATES-<id>.md`), диффстат и короткие DONE/PROGRESS
+встраиваются текстом, промпт ограничен по символам
+(`awf/verify_context.py`). Порядок урезания при переполнении — один на
+replan и verify (`awf/bounded_prompt.py`): сначала выпадают необязательные
+секции, потом текст режется по ИМЕНИ секции, а не с конца промпта.
+
+Тот же запрет на прогоны держат шаблоны роли супервизора
+(`awf/templates/roles/supervisor.md`, `_core.md`, `phase-verify.md`):
+роль читает их как `--file`, и «запусти проверки сам» там отменяло бы
+встроенный вердикт.
 
 Имя по имени СТАДИИ, а не роли: две стадии с одной ролью (например два QA)
 не затирают handoff друг друга. Legacy-файлы `{role}-{todo_id}.md` (до

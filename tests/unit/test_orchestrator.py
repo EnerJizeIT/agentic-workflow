@@ -881,7 +881,7 @@ class TestSupervisorViaSubprocess:
         # Supervisor subprocess MUST be spawned (no skip).
         assert len(_FakePopen._last_cmds) == 1, "Plan must run even with existing TODO (Q3)"
 
-    def test_verify_spawns_subprocess_with_done_file(
+    def test_verify_spawns_subprocess_with_done_inline(
         self, tmp_path: Path, monkeypatch
     ) -> None:
         proj = self._make_proj(tmp_path)
@@ -894,25 +894,24 @@ class TestSupervisorViaSubprocess:
 
         assert len(_FakePopen._last_cmds) == 1
         cmd = _FakePopen._last_cmds[0]
-        assert any("DONE-TODO-0042.md" in c for c in cmd)
+        # A42: DONE is a short excerpt INSIDE the prompt, not an extra file.
+        assert not any("DONE-TODO-0042.md" in c for c in cmd)
+        assert "all good" in cmd[-1]
 
-    def test_verify_aggregate_forwards_all_role_handoffs(
+    def test_verify_does_not_forward_handoffs(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """BD-29: supervisor verify sees aggregate of ALL role handoffs,
-        not just last role's PROGRESS/DONE. Each role writes its own
-        handoff/{role}-{todo_id}.md — supervisor verify gets all of them."""
+        """A42: handoff history never enters the verify prompt — the pack
+        verdict and the diff carry the facts the verdict needs."""
         proj = self._make_proj(tmp_path)
         logs = proj / ".agentic" / "logs"
         outbox = proj / ".agentic" / "outbox"
         handoff_dir = proj / ".agentic" / "handoff"
         handoff_dir.mkdir(parents=True, exist_ok=True)
 
-        # Simulate 3 roles writing their own handoffs (BD-15)
         (handoff_dir / "developer-TODO-0042.md").write_text("# dev\nimplemented X")
         (handoff_dir / "tester-TODO-0042.md").write_text("# tester\nadded tests")
         (handoff_dir / "qa-TODO-0042.md").write_text("# qa\napproved")
-        # Final PROGRESS/DONE (overwritten by last role)
         (outbox / "DONE-TODO-0042.md").write_text("# qa only\nsee handoffs above")
         (outbox / "PROGRESS-TODO-0042.md").write_text("# qa progress")
 
@@ -921,10 +920,10 @@ class TestSupervisorViaSubprocess:
         _run_supervisor_stage(stage, todo_id="TODO-0042", auto=True, project_dir=proj, logs_dir=logs)
 
         cmd = _FakePopen._last_cmds[-1]
-        # All 3 handoffs must be passed via --file
-        assert any("developer-TODO-0042.md" in c for c in cmd), "developer handoff missing"
-        assert any("tester-TODO-0042.md" in c for c in cmd), "tester handoff missing"
-        assert any("qa-TODO-0042.md" in c for c in cmd), "qa handoff missing"
+        for role in ("developer", "tester", "qa"):
+            assert not any(f"{role}-TODO-0042.md" in c for c in cmd), role
+        assert "Read ALL handoffs" not in cmd[-1]
+        assert "do NOT run tests" in cmd[-1]
 
     def test_auto_no_supervisor_md_falls_back_to_skip(
         self, tmp_path: Path, capsys

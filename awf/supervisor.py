@@ -281,22 +281,24 @@ _SNIPPET_PLAN = """\
 
 _SNIPPET_VERIFY = """\
 ## Verify stage — YOU are the reviewer, not a relay
-1. Read ALL handoffs in .agentic/handoff/
-2. Read TODO-{todo_id}.md — this is the contract (Goal, Success criteria, Verify).
+1. The verify pack facts are already in this prompt (verdict, red sections,
+   first reason) together with the diff and the TODO — do NOT run tests or
+   any verify command: the verdict is decided from those facts.
+2. TODO-{todo_id}.md is the contract (Goal, Success criteria, Verify).
    For EACH success criterion in the TODO:
    - Mark ✅ met or ❌ not met
    - If ❌ → you MUST write REVIEW with specifics, not approve
-3. Run: git diff --stat — check what actually changed
-4. Read the actual code changes for correctness
-5. Run verify commands from the TODO independently
-6. DECIDE YOURSELF (do NOT ask user):
+3. Check the diff block: changes must be the unit's own source changes,
+   not a stray file or an empty tree.
+4. Read the actual code changes for correctness where the facts leave doubt.
+5. DECIDE YOURSELF (do NOT ask user):
    - ALL criteria met → create .agentic/inbox/ACK-{todo_id}.ready
      (in an ACTIVE run — approve via awf_approve(evidence=...) instead;
      the engine ignores a file-based ACK without RUN-EVIDENCE)
    - ANY criterion not met → write .agentic/outbox/REVIEW-{todo_id}.md
      listing which criteria failed and what to fix
-7. DO NOT relay "pipeline waits for your decision" — that's YOUR call.
-8. The verdict is yours, the commit is the engine's: NEVER run `git add`,
+6. DO NOT relay "pipeline waits for your decision" — that's YOUR call.
+7. The verdict is yours, the commit is the engine's: NEVER run `git add`,
    `git commit` or `git push`. A refused gate is a REVIEW with the reason.
 """
 
@@ -371,9 +373,11 @@ def build_prompt(
         )
     elif kind == "verify":
         base = (
-            f"You are the supervisor. Verify TODO {todo_id}: read the DONE report and PROGRESS notes, "
-            "check `git diff --stat` against the baseline SHA in "
-            f".agentic/context/BASELINE-{todo_id}.sha. Decide: is the work complete and correct? "
+            f"You are the supervisor. Verify TODO {todo_id}. The facts are already in "
+            "this prompt: the verify pack verdict (red sections and the first reason), "
+            "the diff against the baseline and short DONE/PROGRESS excerpts. The pack "
+            "already ran the checks — do not run them again and do not go looking for "
+            "more history on disk. Decide: is the work complete and correct? "
             "If yes, write ACK signal at "
             f".agentic/inbox/ACK-{todo_id}.ready. If no, do NOT ack — leave a note in "
             f".agentic/outbox/REVIEW-{todo_id}.md explaining what's wrong.\n\n"
@@ -1192,11 +1196,11 @@ def run_supervisor_stage(
         print("     they approve, edit, or reject before agents start")
     elif kind == "verify":
         print("What to do (verify):")
-        print("  1. Read report from .agentic/outbox/")
-        print("  2. Run verification commands independently")
-        print("  3. Check git diff — changes must be in source files")
-        print("  4. Decide: continue / fix / rollback")
-        print("  5. If approved: create .agentic/inbox/ACK-NNNN.ready")
+        print("  1. Read the pack verdict: .agentic/context/GATES-NNNN.md")
+        print("     (facts are already collected — the pack ran the checks)")
+        print("  2. Check git diff — changes must be in source files")
+        print("  3. Decide: continue / fix / rollback")
+        print("  4. If approved: create .agentic/inbox/ACK-NNNN.ready")
     else:
         print(f"What to do ({kind}): see supervisor.md instructions")
 
@@ -1268,8 +1272,6 @@ def _prepare_supervisor_stage(
     Returns None to indicate the stage should be skipped.
     Returns (extra_files, prompt) otherwise.
     """
-    inbox = paths.inbox(project_dir)
-    outbox = paths.outbox(project_dir)
     phases_path = (
         project_dir / phases_file if not Path(phases_file).is_absolute() else Path(phases_file)
     )
@@ -1289,26 +1291,20 @@ def _prepare_supervisor_stage(
             print("[auto mode] No todo_id for verify — skip.")
             _log(logs_dir, "Supervisor verify auto-skipped (no todo_id)")
             return None
-        done_md = outbox / f"DONE-{todo_id}.md"
-        if done_md.is_file():
-            extra_files.append(str(done_md))
-        progress = outbox / f"PROGRESS-{todo_id}.md"
-        if progress.is_file():
-            extra_files.append(str(progress))
-        # BD-29 aggregate verify: forward ALL role handoffs.
-        handoff_dir = paths.agentic_dir(project_dir) / "handoff"
-        if handoff_dir.is_dir():
-            for hf in sorted(handoff_dir.glob(f"*-{todo_id}.md")):
-                if hf.is_file():
-                    extra_files.append(str(hf))
-        # R8: the TODO is the contract — forward it as an extra file so the
-        # supervisor sees it without opening the file manually.
-        todo_md = inbox / f"{todo_id}.md"
-        if todo_md.is_file():
-            extra_files.append(str(todo_md))
-        prompt = build_prompt(
-            "verify", todo_id, config=config, project_dir=project_dir, pipeline_name=pipeline_name
+        # A42: pack facts inline, handoffs out. The prompt is bounded and
+        # carries the verdict; every attachment vanished except the role
+        # file and the doctrine, which the spawn adds by itself.
+        from .verify_context import build_verify_prompt
+
+        prompt, dropped = build_verify_prompt(
+            todo_id,
+            project_dir,
+            config=config,
+            pipeline_name=pipeline_name,
+            logs_dir=logs_dir,
         )
+        if dropped:
+            print(f"  verify context cut: {', '.join(dropped)}")
 
     elif kind == "replan":
         if not todo_id:
@@ -1614,6 +1610,9 @@ def run_supervisor_via_subprocess(
     from .signal_watch import run_subprocess_until_signal
 
     signal_holder: dict[str, str] = {}
+    log_holder: dict[str, str] = {}
+    files_in_prompt = sum(1 for part in cmd if part == "--file")
+    spawn_started = time.time()
 
     # TODO-0338 (A35): only the verify subprocess can deadlock with the
     # engine (it waits for the commit the engine waits to run). The other
@@ -1645,6 +1644,7 @@ def run_supervisor_via_subprocess(
         # automation.readonly_roles — same mechanism as worker roles).
         env=awf_subprocess_env(role="supervisor", project_dir=project_dir),
         signal_holder=signal_holder,
+        log_holder=log_holder,
         # U6a/U6c are worker-only (TODO-0017): the supervisor subprocess can
         # be legitimately long-silent (verify waits), so no watchdog; no
         # preflight either — keep the supervisor flow exactly as before.
@@ -1655,6 +1655,30 @@ def run_supervisor_via_subprocess(
     )
 
     _log(logs_dir, f"Supervisor {kind} subprocess finished (exit={result.returncode})")
+    if kind == "verify":
+        # A42: one narration line — prompt size, attachments, duration and
+        # the shell calls the subprocess printed. "Slow" becomes a number.
+        from .verify_context import (
+            count_logged_commands,
+            format_verify_timing,
+            log_verify_timing,
+        )
+
+        try:
+            offset = int(log_holder.get("log_start_offset", 0) or 0)
+        except (TypeError, ValueError):
+            offset = 0
+        commands = count_logged_commands(log_holder.get("log_path"), offset)
+        log_verify_timing(
+            logs_dir,
+            format_verify_timing(
+                todo_id,
+                prompt_chars=len(prompt),
+                files=files_in_prompt,
+                duration=max(0.0, time.time() - spawn_started),
+                commands=commands,
+            ),
+        )
     if result.returncode != 0:
         if kind == "verify" and todo_id:
             # A41 (the run-2 incident): the verify subprocess can die after

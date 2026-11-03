@@ -20,6 +20,7 @@ from pathlib import Path
 
 from . import paths
 from ._log import log as _log
+from .bounded_prompt import fit_prompt
 from .pipeline import Stage
 from .signals import find_signal_file, iter_review_reports
 
@@ -134,7 +135,6 @@ def build_replan_context(
     """
     inbox = paths.inbox(project_dir)
     outbox = paths.outbox(project_dir)
-    dropped: list[str] = []
 
     review_text = ""
     # One enumeration (``signals``), this builder's own rule on top: the
@@ -166,55 +166,27 @@ def build_replan_context(
     )
     budget_value = replan_budget_chars() if budget is None else int(budget)
 
-    sections: list[tuple[str, str]] = []
+    required: list[tuple[str, str]] = []
     if review_text:
-        sections.append(("reviewer report", review_text))
+        required.append(("reviewer report", review_text))
     if todo_text:
-        sections.append(("current TODO", todo_text))
+        required.append(("current TODO", todo_text))
 
     def render(items: list[tuple[str, str]]) -> str:
         body = "\n\n".join(f"## {label}\n\n{text}" for label, text in items)
         return f"{head}\n{body}\n{tail}"
 
-    kept = list(sections)
-    for label, text in (("stage report", stage_text), ("BLOCKED note", blocked_text)):
-        if not text:
-            continue
-        if len(render([*kept, (label, text)])) <= budget_value:
-            kept.append((label, text))
-        else:
-            dropped.append(label)
-
-    # Last resort: the TODO gives way first, then the reviewer's report.
-    # By LABEL, not by position: when one of the two is missing the other is
-    # the only section left, and a positional walk used to skip it entirely —
-    # the overflow was then taken off the END of the prompt, cutting the
-    # closing ``replan_for`` instruction the supervisor's answer is keyed on.
-    prompt = render(kept)
-    if len(prompt) > budget_value:
-        overflow = len(prompt) - budget_value
-        for wanted in ("current TODO", "reviewer report"):
-            if overflow <= 0:
-                break
-            idx = next(
-                (i for i, (label, _text) in enumerate(kept) if label == wanted),
-                None,
-            )
-            if idx is None:
-                continue
-            label, text = kept[idx]
-            keep = max(0, len(text) - overflow)
-            if keep < len(text):
-                dropped.append(f"{label} truncated")
-                overflow -= len(text) - keep
-            kept[idx] = (label, text[:keep])
-        prompt = render(kept)
-    if len(prompt) > budget_value:
-        # The fixed instruction alone is over the budget: a limit too small
-        # to carry the replan at all. The head survives (it names the unit
-        # and the rule) and the fact is recorded like any other cut.
-        dropped.append("fixed instructions truncated")
-        prompt = prompt[:budget_value]
+    # The cut rules — optional sections first, then the TODO, then the
+    # reviewer's report, by LABEL and never off the tail (the tail carries
+    # ``replan_for``, which the engine's wait keys on) — are one contract,
+    # shared with the verify prompt: :mod:`awf.bounded_prompt`.
+    prompt, dropped = fit_prompt(
+        render,
+        required=required,
+        optional=[("stage report", stage_text), ("BLOCKED note", blocked_text)],
+        budget=budget_value,
+        truncate_order=("current TODO", "reviewer report"),
+    )
 
     if dropped and logs_dir is not None:
         _log(
