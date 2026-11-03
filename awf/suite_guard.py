@@ -8,7 +8,9 @@ with ``context/SUITE-<tree-sha>-*.json``:
 - no full-suite invocation in the log → no check, no warning;
 - no canonical command (``verification.test_cmd`` unset/broken) → silence:
   there is nothing to compare an artifact with, and no remedy to name;
-- a matching artifact (same tree sha, same canonical command) → silence;
+- a matching artifact (same tree sha, same canonical command, an integer
+  ``exit`` — the writer creates the file when the run ends, so a file
+  without ``exit`` is a leftover, not a result) → silence;
 - no matching artifact → ``SUITE-WARN:`` for the stage log plus the
   ``suite_gate=raw-full-suite`` fact in the handoff.
 
@@ -449,15 +451,28 @@ def declares_full_suite(
     return None
 
 
-def _artifact_matches(context_dir: Path, sha: str, command: str) -> bool:
-    for artifact in context_dir.glob(f"SUITE-{sha}-*.json"):
+def artifact_for(
+    project_dir: str | Path, sha: str, command: str
+) -> Path | None:
+    """The artifact of a FINISHED canonical run of *command* on tree *sha*.
+
+    One owner for "is there a canonical result for this tree": the writer
+    (``scripts/suite-canonical.sh``) creates the file at the end of the run
+    and stores ``command`` plus an integer ``exit``. A file that names the
+    command but carries no ``exit`` is a leftover of an interrupted or
+    foreign write — evidence of nothing. The raw-run gate and
+    ``qa_suite_policy`` both ask here, so they cannot answer differently.
+    """
+    for artifact in paths.context_dir(project_dir).glob(f"SUITE-{sha}-*.json"):
         try:
             data = json.loads(artifact.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if isinstance(data, dict) and data.get("command") == command:
-            return True
-    return False
+        if not isinstance(data, dict):
+            continue
+        if data.get("command") == command and isinstance(data.get("exit"), int):
+            return artifact
+    return None
 
 
 def check(project_dir: str | Path, log_text: str) -> str:
@@ -476,7 +491,7 @@ def check(project_dir: str | Path, log_text: str) -> str:
         sha = git_utils.tree_fingerprint(project_dir)
     except RuntimeError:
         return ""
-    if _artifact_matches(paths.context_dir(project_dir), sha, canonical.command):
+    if artifact_for(project_dir, sha, canonical.command) is not None:
         return ""
     return (
         "SUITE-WARN: raw full-suite run in the worker log without the canonical "
@@ -487,6 +502,7 @@ def check(project_dir: str | Path, log_text: str) -> str:
 
 __all__ = [
     "RAW_SUITE_FACT",
+    "artifact_for",
     "check",
     "declares_full_suite",
     "detect_full_suite",
