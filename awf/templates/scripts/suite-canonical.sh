@@ -17,10 +17,19 @@
 # корня проекта).
 #
 #   scripts/suite-canonical.sh [--force] [--project DIR]
+#   scripts/suite-canonical.sh --wait [--timeout SECONDS] [--project DIR]
+#
+# A57 (TODO-0380): `--wait` блокируется до конца прогона (опрос раз в 10 с,
+# переопределяется `AWF_SUITE_WAIT_INTERVAL`), печатает итог как `--status` и
+# возвращает код прогона. Прогон не запущен — `--wait` стартует его сам;
+# `--force --wait` перезапускает и дожидается нового прогона (кэш не отвечает).
+# Таймаут ожидания (`--timeout`, по умолчанию 1800 с) — отдельный код 124.
 #
 # Код возврата: код сьюта (0 — зелёный). 2 — не удалось посчитать tree-sha,
 # неверные аргументы, пустой verification.test_cmd или битый config.yaml
-# («сьют не настроен»; битый файл называется отдельным текстом).
+# («сьют не настроен»; битый файл называется отдельным текстом). 3 — идёт
+# (только `--background`/`--status`), 4 — не запущен (`--status`),
+# 124 — истёк `--timeout` у `--wait`.
 set -u
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 2
@@ -30,11 +39,20 @@ project=$(pwd)
 force=0
 # TODO-0316 (incident 31.10): the full suite outlives the worker's command
 # budget, so the run must be startable detached and polled. ``run`` is the
-# historical foreground mode (tests, CI, humans).
+# historical foreground mode (tests, CI, humans). A57 adds ``wait``: the
+# worker blocks in one call instead of blind ``sleep`` + ``--status`` polls.
 mode=run
+wait_timeout=1800
+# Интервал опроса: дроби (`0.2`) нужны тестам, но «.» или «1.2.3» превратили
+# бы ожидание в холостой цикл с ошибкой `sleep` на каждой итерации.
+wait_interval=${AWF_SUITE_WAIT_INTERVAL:-10}
+case "$wait_interval" in
+  ''|.|*[!0-9.]*|*.*.*) wait_interval=10 ;;
+esac
 
 usage() {
   echo "usage: suite-canonical.sh [--force] [--background|--status] [--project DIR]" >&2
+  echo "       suite-canonical.sh --wait [--timeout SECONDS] [--force] [--project DIR]" >&2
 }
 
 while [ "$#" -gt 0 ]; do
@@ -42,6 +60,24 @@ while [ "$#" -gt 0 ]; do
     --force) force=1 ;;
     --background) mode=background ;;
     --status) mode=status ;;
+    --wait) mode=wait ;;
+    --timeout)
+      shift
+      [ "$#" -gt 0 ] || { echo "suite-canonical: --timeout needs seconds" >&2; usage; exit 2; }
+      # Только положительное целое: 0 дал бы мгновенный 124 на пустом месте и
+      # читался бы как «сьют не уложился».
+      timeout_arg=""
+      case "$1" in
+        ''|*[!0-9]*) : ;;
+        *[1-9]*) timeout_arg=$1 ;;
+      esac
+      if [ -z "$timeout_arg" ]; then
+        echo "suite-canonical: --timeout needs a positive integer, got: $1" >&2
+        usage
+        exit 2
+      fi
+      wait_timeout=$timeout_arg
+      ;;
     --project)
       shift
       [ "$#" -gt 0 ] || { echo "suite-canonical: --project needs a path" >&2; usage; exit 2; }
@@ -173,13 +209,28 @@ running_pid() {
   echo "$pid"
 }
 
+# Один старт отсоединённого прогона: child снимает маркер стадии (A44) и не
+# принадлежит стадии, которая его запустила. Печатает pid — вызывающий пишет
+# его в pid-файл сам, чтобы «уже идёт» было видно следующему вызову.
+start_detached() {
+  local child_force=""
+  [ "$force" -eq 1 ] && child_force="--force"
+  env -u AWF_STAGE_ANCHOR setsid nohup "$0" $child_force --project "$project" >"$run_log" 2>&1 </dev/null &
+  echo "$!"
+}
+
+# Итог прогона одинаков во всех режимах: текст, артефакт целиком, код прогона.
+print_and_exit() {
+  echo "$1"
+  cat "$artifact"
+  exit "$2"
+}
+
 # TODO-0316: status mode answers without touching the suite — a worker polls
 # it between short commands instead of blocking on a 12-minute run.
 if [ "$mode" = status ]; then
   if rc=$(artifact_exit); then
-    echo "suite-canonical: done (tree-sha $sha) — $artifact"
-    cat "$artifact"
-    exit "$rc"
+    print_and_exit "suite-canonical: done (tree-sha $sha) — $artifact" "$rc"
   fi
   if pid=$(running_pid); then
     echo "suite-canonical: running (pid $pid, tree-sha $sha); poll again"
@@ -191,23 +242,61 @@ fi
 
 if [ "$mode" = background ]; then
   if rc=$(artifact_exit); then
-    echo "suite-canonical: cached (tree-sha $sha, same command) — $artifact"
-    cat "$artifact"
-    exit "$rc"
+    print_and_exit "suite-canonical: cached (tree-sha $sha, same command) — $artifact" "$rc"
   fi
   if pid=$(running_pid); then
     echo "suite-canonical: already running (pid $pid, tree-sha $sha)"
     exit 3
   fi
-  force_arg=""
-  [ "$force" -eq 1 ] && force_arg="--force"
-  # A44 (TODO-0359): a detached suite run is not part of the stage that
-  # started it — drop the stage marker so the stage-exit reap leaves it be.
-  env -u AWF_STAGE_ANCHOR setsid nohup "$0" $force_arg --project "$project" >"$run_log" 2>&1 </dev/null &
-  child=$!
-  echo "$child" > "$pid_file"
-  echo "suite-canonical: started (pid $child, tree-sha $sha); poll with --status"
+  pid=$(start_detached)
+  echo "$pid" > "$pid_file"
+  echo "suite-canonical: started (pid $pid, tree-sha $sha); follow with --wait"
   exit 3
+fi
+
+# A57 (TODO-0380): one blocking call instead of repeated blind ``sleep``.
+# A cached artifact returns immediately (same cache rule as ``--background``);
+# no run in flight — start it detached and wait for the artifact. The exit
+# code is the suite's own; 124 is the wait timeout, never a suite verdict.
+if [ "$mode" = wait ]; then
+  # `--force` means rerun: a cached artifact must not answer the wait, otherwise
+  # the caller reads the old code as if the rerun had produced it.
+  if [ "$force" -ne 1 ] && rc=$(artifact_exit); then
+    print_and_exit "suite-canonical: cached (tree-sha $sha, same command) — $artifact" "$rc"
+  fi
+  wait_start_s=$(date +%s)
+  if pid=$(running_pid); then
+    echo "suite-canonical: already running (pid $pid, tree-sha $sha); waiting"
+  else
+    [ "$force" -eq 1 ] && rm -f "$artifact"
+    pid=$(start_detached)
+    echo "$pid" > "$pid_file"
+    echo "suite-canonical: started (pid $pid, tree-sha $sha); waiting"
+  fi
+  while :; do
+    if rc=$(artifact_exit); then
+      waited=$(( $(date +%s) - wait_start_s ))
+      print_and_exit "suite-canonical: done (tree-sha $sha) after ${waited}s — $artifact" "$rc"
+    fi
+    waited=$(( $(date +%s) - wait_start_s ))
+    if [ "$waited" -ge "$wait_timeout" ]; then
+      echo "suite-canonical: wait timeout after ${waited}s (tree-sha $sha); the run may still be going" >&2
+      exit 124
+    fi
+    if running_pid >/dev/null; then
+      sleep "$wait_interval"
+      continue
+    fi
+    # The child removes its pid file on exit after writing the artifact, so a
+    # verdict may have landed between the two checks; no artifact means it died
+    # before recording one.
+    if rc=$(artifact_exit); then
+      waited=$(( $(date +%s) - wait_start_s ))
+      print_and_exit "suite-canonical: done (tree-sha $sha) after ${waited}s — $artifact" "$rc"
+    fi
+    echo "suite-canonical: run died without an artifact (tree-sha $sha)" >&2
+    exit 2
+  done
 fi
 
 if [ "$force" -ne 1 ] && [ -f "$artifact" ]; then
