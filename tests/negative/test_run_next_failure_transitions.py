@@ -30,7 +30,9 @@ Findings covered:
 - test_foreground_failure_keeps_preexisting_ready — инвариант 2,
   вторая половина (предсуществующий сигнал не трогается)
 - test_concurrent_run_next_still_one_owner — A-13: конкурентность и
-  idempotency существующих путей не ослаблены новым условием
+  idempotency существующих путей не ослаблены новым условием; A46: окно
+  «резервация → запуск» держит настоящий launch lease, второй вызов
+  отказывает по нему
 - test_reused_pid_file_is_not_a_running_pipeline — TODO-0153: pid из
   PID-файла, переиспользованный живым awf-процессом ДРУГОГО проекта,
   не считается нашим пайплайном (argv-идентичность + --project-dir)
@@ -39,7 +41,6 @@ from __future__ import annotations
 
 import os
 import threading
-import time
 from pathlib import Path
 
 import awf.api.pipeline as api_pipeline
@@ -61,15 +62,6 @@ def _write_todo(proj: Path, todo_id: str = "TODO-0001", body: str = "# Task\n") 
 
 def _ready_path(proj: Path, todo_id: str = "TODO-0001") -> Path:
     return proj / ".agentic" / "inbox" / f"{todo_id}.ready"
-
-
-def _wait_until(predicate, timeout: float = 30.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(0.02)
-    return False
 
 
 def _assert_state_unchanged(proj: Path, before: dict) -> None:
@@ -303,11 +295,24 @@ def test_reused_pid_file_is_not_a_running_pipeline(tmp_git_repo):
 
 
 def test_concurrent_run_next_still_one_owner(tmp_git_repo, monkeypatch):
-    """A-13 (регресс): два конкурентных run_next — один владелец, при новом
-    отказном условии семантика не ослаблена: победитель регистрирует
-    живой пайплайн (PID-файл, как production), поздний вызов отклоняется
-    по живости; запуск ровно один, индекс сдвинулся один раз."""
-    from awf.api import _liveness
+    """A-13 (регресс): два перекрывающихся run_next — один владелец.
+
+    A46: окно запуска держится НАСТОЯЩИМ launch lease, как в production:
+    заглушка ``start_pipeline`` берёт lease раньше, чем пишет pid, и держит
+    его, пока второй вызов не завершится. Второй вызов попадает в окно
+    детерминированно — тест впускает его по событию «lease уже взят, pid
+    ещё нет», а не по опросу файловой системы. Отказ идёт по lease; если
+    lease из заглушки убрать, оба вызова запускают элемент и тест краснеет.
+    Тест отдельно требует, чтобы в окно вошли ОБА вызова: ранний отказ по
+    другому guard не должен выглядеть как проверенный A46.
+
+    Раньше заглушка не брала lease, поэтому резерв в окне
+    «резервация → pid» выглядел мёртвым и перехватывался вторым запуском
+    (флейк A46 в CI). Перехват мёртвого резерва — отдельный сценарий
+    (test_dead_reservation_taken_over_and_launched_once, A-13); отказ по
+    живому pid — test_late_pre_read_after_reservation_refuses_when_pipeline_live.
+    """
+    from awf.api import _lease, _liveness
 
     proj = _project(tmp_git_repo)
     _write_todo(proj, "TODO-0001")
@@ -322,21 +327,39 @@ def test_concurrent_run_next_still_one_owner(tmp_git_repo, monkeypatch):
     pid_file.parent.mkdir(parents=True, exist_ok=True)
 
     calls: dict = {"n": 0}
+    entered: dict = {"n": 0}
     calls_lock = threading.Lock()
     release = threading.Event()
+    in_window = threading.Event()
 
     def fake_start(project_dir, **kw):
         with calls_lock:
-            calls["n"] += 1
-        # production-порядок: pid регистрируется ДО возврата из
-        # start_pipeline — конкурент, вошедший в окно после резервации,
-        # видит живой пайплайн
-        pid_file.write_text(str(os.getpid()), encoding="utf-8")
-        release.wait(timeout=30)
-        return StartResult(
-            run_mode="background", run_id=424242,
-            log_file=str(proj / "log.txt"), exit_code=0, message="ok",
-        )
+            entered["n"] += 1
+        # production-порядок (start_pipeline): launch lease берётся ДО
+        # записи pid и держится на всё окно. Без него резерв в окне
+        # «резервация → pid» неотличим от мёртвого и перехватывается
+        # вторым запуском (флейк A46).
+        try:
+            lease = _lease.acquire(project_dir, publish_identity=False)
+        except _lease.LeaseHeldError:
+            return StartResult(
+                run_mode="noop", run_id=None, log_file=None, exit_code=0,
+                message="Launch refused: another launch is already in progress",
+            )
+        try:
+            with calls_lock:
+                calls["n"] += 1
+            # Окно открыто: lease уже наш, pid ещё не записан. Тест узнаёт
+            # об этом из кода заглушки, а не опросом файловой системы.
+            in_window.set()
+            release.wait(timeout=30)
+            pid_file.write_text(str(os.getpid()), encoding="utf-8")
+            return StartResult(
+                run_mode="background", run_id=424242,
+                log_file=str(proj / "log.txt"), exit_code=0, message="ok",
+            )
+        finally:
+            lease.release()
 
     monkeypatch.setattr(api_pipeline, "start_pipeline", fake_start)
 
@@ -345,18 +368,23 @@ def test_concurrent_run_next_still_one_owner(tmp_git_repo, monkeypatch):
     def worker(key: str) -> None:
         results[key] = api.run_next(proj)
 
-    t1 = threading.Thread(target=worker, args=("a",))
-    t2 = threading.Thread(target=worker, args=("b",))
-    t1.start()
-    t2.start()
-    # победитель вошёл в окно запуска (резервация закоммичена, PID-файл
-    # записан); второй обязан отклониться по резервации или по живости
-    assert _wait_until(lambda: pid_file.is_file()), "никто не вошёл в окно запуска"
+    winner = threading.Thread(target=worker, args=("a",))
+    winner.start()
+    # окно запуска подтверждено событием: lease взят, pid ещё не записан
+    assert in_window.wait(timeout=30), "победитель не вошёл в окно запуска"
+    # второй вызов входит в то же окно — отказ обязан прийти по lease
+    late = threading.Thread(target=worker, args=("b",))
+    late.start()
+    late.join(timeout=60)
     release.set()
-    t1.join(timeout=60)
-    t2.join(timeout=60)
-    assert not t1.is_alive() and not t2.is_alive(), "run_next не завершились"
+    winner.join(timeout=60)
+    assert not winner.is_alive() and not late.is_alive(), "run_next не завершились"
 
+    # В окно обязаны войти ОБА вызова: иначе отказ второго пришёл раньше окна
+    # (другой guard), и тест зеленел бы, не проверяя A46.
+    assert entered["n"] == 2, (
+        f"в окно запуска вошли {entered['n']} из 2 — отказ до окна, A46 не проверяется"
+    )
     assert calls["n"] == 1, (
         f"элемент очереди запущен {calls['n']} раза(ов) — конкурентные "
         "run_next дали два запуска (A-13)"
