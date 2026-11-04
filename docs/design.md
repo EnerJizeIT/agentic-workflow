@@ -112,6 +112,8 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `api/wait_event.py` | `wait_for_event` (supervisor wake-up, chunked sleep) |
 | `wait_policy.py` | Листовой дом кэпа одного ожидания (`wait_cap`: env `AWF_WAIT_CAP` > `wait.cap_seconds` > `TRANSPORT_CAP`); `api/wait_event.py` ре-экспортирует имена |
 | `api/hygiene.py` | `reset`, `restore`, `unblock`, todo remove/retire/update, `blocked_draft` (драфт REVIEW-фикса из BLOCKED-заметки) |
+| `context_pack.py` | R2/R9: детерминированный пакет стадии `.agentic/context/STAGE-<todo>-<stage>.md` — восемь секций в порядке K2, потолки и сумма 150, `n/a` с причиной, без модели, часов и окружения; CLI `awf context-pack`, API `build_context_pack`/`render_context_pack` |
+| `context_pack_sections.py` | K2: тела секций пака из существующих артефактов (TODO, git, handoff, GATES, stage-log, роль, доктрина), sha входов, дельта K9; порядок, бюджет и файл держит `context_pack.py` |
 | `_markdown.py` | Разбор markdown-заголовков и тел секций для `dispatch` (source_ref), `blocked_draft` и чек-листа (TODO-0244); на корне пакета, чтобы `checklists` не тянул за собой весь `awf.api` |
 | `api/workflow_commit.py` | `commit_workflow` + dry-run `uncommitted_workflow_files`: workflow-определения `.agentic/` в git изолированным индексом (REPORTS26 F6) |
 | `run_state.py` | `.agentic/state/run.yaml`: лок read→merge→write, shape-проверка (AUD02-06) |

@@ -40,6 +40,14 @@ from __future__ import annotations
 from ..brief import BriefResult
 from ..claim_changes import apply_claim_changes, plan_claim_changes, read_claim
 from ..commit_gate import read_commit_audit
+from ..context_pack import (
+    ContextPackResult,
+    build_context_pack,
+    input_shas,
+    pack_path,
+    parse_input_shas,
+    render_context_pack,
+)
 from ..feedback import FeedbackResult, feedback
 from ..metrics import MetricsResult, collect_metrics
 from ..prove_red import ProveRedResult, prove_red
@@ -313,4 +321,11 @@ __all__ = [
     "wait_for_event",
     # Model configuration validation
     "check_model_config",
+    # R2/R5/R9: the stage context pack (IMP3 reads the same sha table)
+    "build_context_pack",
+    "render_context_pack",
+    "ContextPackResult",
+    "pack_path",
+    "input_shas",
+    "parse_input_shas",
 ]

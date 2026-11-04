@@ -595,6 +595,33 @@ def _build_parser():
         help="Path to project root (default: current directory)",
     )
 
+    p_context_pack = sub.add_parser(
+        "context-pack",
+        help="R5: build .agentic/context/STAGE-<todo>-<stage>.md",
+    )
+    p_context_pack.add_argument(
+        "todo_id", help="TODO id (e.g. TODO-0022)"
+    )
+    p_context_pack.add_argument(
+        "stage_pos", nargs="?", default=None,
+        help="Stage name (alternative to --stage)",
+    )
+    p_context_pack.add_argument(
+        "--stage", default=None, help="Stage name as named in the pipeline"
+    )
+    p_context_pack.add_argument(
+        "--stdout", action="store_true",
+        help="Print the pack; do not create or change a file",
+    )
+    p_context_pack.add_argument(
+        "--out", default=None, help="Write to this path instead of the K2 path"
+    )
+    p_context_pack.add_argument(
+        "--project-dir",
+        default=".",
+        help="Path to project root (default: current directory)",
+    )
+
     p_checklist = sub.add_parser(
         "checklist",
         help="DoD: show/check/apply/hash the unit's completion checklist; "
@@ -1175,6 +1202,9 @@ def _run_command(args) -> int:
         if args.command == "verify-pack":
             from . import cmd_verify_pack
             return cmd_verify_pack.run(args)
+        if args.command == "context-pack":
+            from . import cmd_context_pack
+            return cmd_context_pack.run(args)
         if args.command == "checklist":
             from . import cmd_checklist
             return cmd_checklist.run(args)

@@ -286,3 +286,6 @@ groups:
       - cli: checklist
         inventory_only: true
         when: "DoD: show/check/apply/hash"
+      - cli: context-pack
+        inventory_only: true
+        when: "stage context pack"

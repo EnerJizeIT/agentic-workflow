@@ -56,10 +56,10 @@ def _situation_names(situation: str) -> list[str]:
 
 class TestMapData:
     def test_full_inventory_keeps_every_record(self):
-        """AC20: the full list is still the 65 records / 8 groups."""
+        """AC20: the full list is still the 66 records / 8 groups."""
         groups = load_tool_map()
         assert len(groups) == 8
-        assert len(_entries()) == 65
+        assert len(_entries()) == 66
 
     def test_every_entry_has_a_non_empty_why(self):
         """INV3: `when` is the row's `why`; an empty one is a red test."""

@@ -125,6 +125,23 @@ def done_dir(project_dir: str | Path = ".") -> Path:
     return agentic_dir(project_dir) / "done"
 
 
+def todo_path(project_dir: str | Path, todo_id: str) -> Path | None:
+    """The unit's TODO file: the live inbox copy, else the archive copy.
+
+    ONE accessor for "where does this unit live": the reader of the TODO
+    text, the stage context pack and the sha table of its inputs all name
+    the same file. A second spelling of the two candidates drifts the
+    moment the archive layout moves (TODO-0367 architect review).
+    """
+    for f in (
+        inbox(project_dir) / f"{todo_id}.md",
+        done_dir(project_dir) / todo_id / "TODO.md",
+    ):
+        if f.is_file():
+            return f
+    return None
+
+
 def handoff_dir(project_dir: str | Path = ".") -> Path:
     """Return .agentic/handoff/."""
     return agentic_dir(project_dir) / "handoff"
