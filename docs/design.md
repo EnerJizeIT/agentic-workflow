@@ -136,7 +136,12 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `unit_history.py` | Неключевая история юнита (CTX2): `forget_unit_history` снимает `CLOSER-<id>.json` и `CHECKLIST-<id>.json` на service-rollback, main-rollback и `restore_todo`; все перечисленные пути идут через один помощник |
 | `supervisor.py` | Supervisor prompts (`build_prompt`), signal wait, run-гейты |
 | `verify_context.py` | A42: промпт verify — вердикт пака встроенным текстом, диффстат, короткие TODO/DONE/PROGRESS вместо handoff-истории; бюджет и строка замера стадии в `orchestrator.log` |
-| `bounded_prompt.py` | A42: одно правило урезания промпта по бюджету для verify и replan — необязательные секции первыми, резка по ИМЕНИ секции, каждый рез назван |
+| `bounded_prompt.py` | A42/IMP2: одно правило бюджета и приоритетов P0–P5 — урезание промпта verify/replan (необязательные секции первыми, резка по ИМЕНИ) и `fit_blocks` для блоков контекста стадии |
+| `stage_context.py` | K7/K8 (IMP2): сборщик контекста стадии — тип из `stage_types`, таблица `FAMILIES` и `LIMITS` (6 строк), порядок, проверка P0, рез P5→P1, файл `context/STAGE-<todo>-<stage>.md`, строка `CTX`; поведение движка не меняет (включение — IMP2b) |
+| `stage_context_blocks.py` | K5: рендеры 19 блоков, у каждого один владелец-артефакт; нет артефакта — строка «нет данных: причина — путь», пустой — «блок пуст» |
+| `stage_context_review.py` | K5/AC12: находки фикс-круга — секции `## REVIEW-фикс` из TODO (`hygiene.review_append`), отчёт outbox — запасной источник; прошлые витки закрыты (одна строка `закрыто: N (id)`), `BLOCKER` последним |
+| `stage_context_roles.py` | K6: выборка ядра роли по маркерам `##` (пять приоритетов), остаток — оглавление, покрытие `floor(taken×100/total)`, ниже 70 % — `CTX-ROLE-LOW` |
+| `redact.py` | K12: единое правило секретов — значение под именем `token|key|secret|password|auth|cookie` → `<redacted: имя>`, патч файла-секрета снят целиком с сохранением имени; список слов один, `worker_tree` берёт его отсюда и держит только свою пометку `***` |
 | `agent_stage.py` | Worker spawn (`opencode run`), `collect_handoff()` |
 | `done_owner.py` | A27: `DONE-<id>.json` принадлежит стадии, чей отчёт он описывает — снимок до стадии и возврат байтов автора после чужой перезаписи; пробы читателя живут в `PROBES-<id>.json` |
 | `session_store.py` | R6/R7 (CTX8–CTX9): файл пары `SESSION-<todo>-<stage>.json`, захват id из sqlite opencode по точному `title` и окну `time_created` (`directory` — тай-брейк) под бюджетом 1 с, решение reused/fresh по `engine.reuse_session` |
