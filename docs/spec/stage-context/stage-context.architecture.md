@@ -1,199 +1,173 @@
 # Архитектура: контекст стадии
 
 Статус: REVIEW
-Ревизия: arch-2 (req-5: RR6, RR17 — закрыты; RR9/RR10 учтены; бюджет тот же)
-Входы: `stage-context.md@req-5` (PASS, `rr-5`), `stage-context.requirements-review.md@rr-5`, `stage-context.context.md@ctx-2`, TODO-0374, `.agentic/pipelines/*.yaml`, `.agentic/config.yaml`, `.agentic/roles/`, `awf/`.
-База кода: `main` @ `99e98ed`; в дереве только untracked `docs/spec/stage-context/`.
-
-Код, роли, пайплайны и конфиг не менялись; ниже план.
+Ревизия: arch-4 (req-9, rr-9 PASS; закрыты FR10, FR11, FR13, RR64)
+Входы: `stage-context.md@req-9`; `requirements-review@rr-9`; `readiness@rd-2`; `context@ctx-3`; `test-spec@ts-3`; TODO-0374/0377; `.agentic/pipelines/*.yaml`; `.agentic/roles/`; `awf/`.
+База кода: `main` @ `c523183`; код не менялся.
 
 ## 1. Решение
 
-1. **Один сборщик:** блоки → один текст аргументом `opencode run`; `--file`, `resolve_prev_handoffs`, ветки `build_prompt`, бюджеты verify/replan уходят.
-2. **Тип — `config.yaml stage_types.<имя>`**; пять семейств, `checklist` — строка `reviewer/checklist` внутри `reviewer`.
-3. **Блоки — данные `FAMILIES`** (шесть строк).
-4. **Один потолок:** 8 000 для `execute`/`reviewer`/`reviewer/checklist`; 6 000 для `supervisor`/`spec`/`plan`.
-5. **Роль — существующий файл, выборка по заголовкам `##`**, без тегов и копий.
-6. **Замер — строка в лог и `awf report --context`** (RR6).
+1. **Один сборщик:** блоки → один текст аргументом `opencode run`; `--file` и `build_prompt` уходят.
+2. **Тип — `stage_types.<имя>`**: `<семейство>` или `reviewer/checklist`, из пайплайнов (`init` пишет, `doctor` сверяет).
+3. **Блоки — данные `FAMILIES`**: пять строк и `checklist` с пределами `reviewer`.
+4. **Потолок один — 9 000**; сумма пределов строки ≤ 9 000.
+5. **Роль — существующий файл, выборка по `##`**.
+6. **Текст пишется** в `.agentic/context/STAGE-<todo>-<stage>.md`, путь — в `CTX`.
+7. **Замер — `CTX`** в `orchestrator.log` и `awf report`.
 
-## 2. Границы и точки изменения
+## 2. Точки изменения
 
-| Компонент | Ответственность | Файл |
-|---|---|---|
-| Резолвер типа | имя → строка, отказ | `awf/stage_context_types.py` (новый) |
-| Сборщик | блоки, порядок, потолок, обрезка | `awf/stage_context.py` (новый) |
-| Рендеры | артефакт → текст и факты | `awf/stage_context_blocks.py` (новый) |
-| Выборка роли | ядро по маркерам | `awf/stage_context_roles.py` (новый) |
-| Запуск стадии | один текст вместо `--file` | `awf/agent_stage.py` |
-| Супервизор | `plan`/`verify`/`replan` через сборщик | `awf/supervisor.py` |
-| Проверка и replan | снять бюджеты | `awf/verify_context.py`, `awf/rejection.py` |
-| Обрезка | один механизм приоритетов | `awf/bounded_prompt.py` |
-| Маскирование | одно правило секрета (RR17) | `awf/redact.py` (новый), `awf/worker_tree.py` |
-| Конфиг | объявление типов | `.agentic/config.yaml`, `awf/pipeline.py` |
-| Отчёт | строка замера, инциденты | `awf/cmd_report.py`, `awf/api` |
+- Типы — `awf/stage_context_types.py` (K1, K3, K4); конфиг — `awf/config_write.py` (K2), `awf/config_keys.py`; `init`/`doctor` — `awf/api/lifecycle.py`, `awf/cmd_init.py`, `awf/doctor.py`.
+- Сборщик, рендеры, роль — `awf/stage_context*.py` (три новых); маскирование — `awf/redact.py` (новый), `awf/worker_tree.py`.
+- Запуск — `awf/agent_stage.py`, `awf/supervisor.py`; старые бюджеты — `awf/verify_context.py`, `awf/rejection.py`, `awf/bounded_prompt.py`; пакет — `awf/context_pack.py`, `awf/cmd_report.py`.
 
-Не меняются сигналы, коммит-гейт, DONE/REVIEW, allowlist, `STAGE-DIFF`, права, доктрина.
+Не меняются сигналы, коммит-гейт, DONE/REVIEW, allowlist, `STAGE-DIFF`, права, доктрина, схема.
 
-## 3. Словарь блоков и владельцы
+## 3. Словарь блоков
 
-Закрытый словарь; расширение — новая ревизия (R2). Владелец один:
+Закрытый словарь R2, один владелец на блок. `DIFF` — `git diff --stat` (3 827 у TODO-0370), патч ссылкой; `GATES` — факты `verify_pack.read_gates_facts` (76), не файл (10 875). `COMMIT-AUDIT`, `METRICS`, `MISSING` в текст не входят; факт — `(fact_id, value, owner)`, расхождение — `CTX-CONFLICT` (AC8). Секрет — `<redacted: имя>`/`[redacted: файл-секрет]` (§9, AC27); блок остаётся.
 
-- `PIPELINE-<todo>.yaml` — `STAGE` (task, input, output, allowlist, skip_if), `INPUTART`;
-- TODO — `UNIT`, `CRIT` (`AC#` дословно и команды; для `plan` — формат TODO), `CHECK` (пункты, пробы, результат), `REVIEW` (`## REVIEW-фикс`);
-- `.agentic/roles/<role>.md` — `ROLE` (ядро, остальное ссылки); `.agentic/doctrine/*.md` — `DOCTRINE` (заголовок и первый абзац);
-- `BASELINE-<todo>.sha` + `git status` — `STATE`; дерево против baseline — `DIFF` (diffstat, файлы, патч в доле);
-- `GATES-<todo>.md` — `GATES`; `COMMIT-AUDIT-<todo>.json` — `AUDIT` (в текст не входит); `DONE-<todo>.md`/`.json` — `DONE`; `BLOCKED-<todo>.md` — `BLOCKED`;
-- handoff-файлы — `PREV` (последний в доле) и `PREVLINK` (остальные: путь, статус, итог);
-- `phases.current` — `PHASES`; `paths.find_vision_file` — `VISION`; константы движка — `RULES`, `OUTPUT`.
+## 4. Тип стадии
 
-`METRICS` и `MISSING` в текст не входят. Один факт — один блок: `(fact_id, value, owner)`. `DIFF` файла не имеет, `REVIEW` берётся из TODO, поэтому удаление `.ready` находки не стирает (AC12).
+**Генерация (R14).** Источник — `.agentic/pipelines/*.yaml` (имя, роль): `plan` → `plan`, `verify` → `supervisor`, `spec-*` → `spec`, `checklist-*` → `reviewer/checklist`, иначе по роли: `supervisor`; `agent-architect-review`, `agent-qa-review`, `agent-project-auditor`, `agent-requirements-reviewer` → `reviewer`; остальные `agent-*` → `execute`. Позиция не участвует (AC21); роль вне карты — отказ.
 
-## 4. Тип стадии: один носитель
+**`init`/`doctor`.** `init` пишет `stage_types`, если ключа нет или он отличается; `config_write` меняет только блок с перечитыванием; повторный `init` конфиг не меняет (AC33, RR55). `doctor` сверяет имена и значения, rc≠0, ничего не пишет (RR58).
 
-Тип объявляется в `.agentic/config.yaml`; позиция, роль и `action:`/`kind:` его не задают. Тип — одно из пяти семейств (`plan`, `execute`, `reviewer`, `supervisor`, `spec`); `checklist` — строка внутри `reviewer`, поэтому значение — `<семейство>` или `<семейство>/<строка>`. Одно поле, а не второй носитель (RR9): уточняющего ключа нет.
-
-```yaml
-stage_types:
-  plan: plan
-  agent-implementer: execute
-  agent-architect-review: reviewer
-  agent-qa-review: reviewer
-  agent-project-auditor: reviewer
-  checklist-close: reviewer/checklist
-  checklist-check: reviewer/checklist
-  verify: supervisor
-  spec-context: spec
-  spec-requirements: spec
-  spec-requirements-review: spec
-  spec-design: spec
-  spec-tests: spec
-  spec-finalize: spec
-  spec-readiness: spec
-  implementer-close: reviewer/checklist
-```
-
-Пятнадцать имён объявлены в 12 пайплайнах (семь `spec-*`); `implementer-close` добавлен, потому что он есть в 30 из 212 замороженных снимков, а AC11 запрещает их править; это строка данных того же носителя, не запасное правило. Нет объявления, семейство вне пяти или неизвестная строка → `StageTypeUndeclared` с именем и путём конфига; валидация до запуска.
-
-Вид: `plan` → `plan`; `supervisor` → `verify`; остальные → `execute`. Следствие: `spec-context` на нулевой позиции получает контракт DONE (AC21/AC22). `_compute_kind` удаляется, `Stage.kind` заполняет резолвер.
+**Рантайм.** Нет/пуст ключ — `CTX-TYPE-MISSING` (AC40); нет имени — `CTX-TYPE-DEFAULT`, семейство по роли; `strict` — `CTX-TYPE-STRICT`; значение вне пяти семейств и строки `reviewer/checklist` — `CTX-TYPE-MISSING` (AC41, RR60). Подпроцесса нет.
 
 ## 5. Таблица «тип → блоки»
 
-Порядок строки — порядок текста. Пять семейств, шесть строк: `checklist` — строка `reviewer`.
+| Тип | Блоки в порядке текста |
+|---|---|
+| `plan` | `STAGE`, `PHASES`, `VISION`, `ROLE`, `DOCTRINE`, `STATE`, `PREVLINK`, `CRIT`, `RULES`, `OUTPUT` |
+| `execute` | `STAGE`, `UNIT`, `REVIEW`, `DONE`, `BLOCKED`, `ROLE`, `DOCTRINE`, `STATE`, `PREV`, `PREVLINK`, `CRIT`, `RULES`, `OUTPUT` |
+| `reviewer` | `STAGE`, `UNIT`, `INPUTART`, `DONE`, `DIFF`, `GATES`, `REVIEW`, `ROLE`, `DOCTRINE`, `PREV`, `PREVLINK`, `CRIT`, `RULES`, `OUTPUT` |
+| `reviewer/checklist` | `STAGE`, `CHECK`, `STATE`, `CRIT`, `RULES`, `OUTPUT` |
+| `supervisor` | `STAGE`, `STATE`, `DONE`, `DIFF`, `GATES`, `REVIEW`, `ROLE`, `DOCTRINE`, `PREVLINK`, `CRIT`, `RULES`, `OUTPUT` |
+| `spec` | `STAGE`, `UNIT`, `INPUTART`, `REVIEW`, `ROLE`, `DOCTRINE`, `PREV`, `PREVLINK`, `CRIT`, `RULES`, `OUTPUT` |
 
-| Строка | Блоки | Потолок |
-|---|---|---|
-| `plan` | `STAGE`, `PHASES`, `VISION`, `ROLE`, `DOCTRINE`, `STATE`, `PREVLINK`, `RULES`, `CRIT`, `OUTPUT` | 6 000 |
-| `execute` | `STAGE`, `UNIT`, `ROLE`, `DOCTRINE`, `STATE`, `GATES`, `BLOCKED`, `PREV`, `REVIEW`, `PREVLINK`, `RULES`, `CRIT`, `OUTPUT` | 8 000 |
-| `reviewer` | `STAGE`, `UNIT`, `ROLE`, `DOCTRINE`, `DONE`, `DIFF`, `GATES`, `REVIEW`, `PREV`, `PREVLINK`, `RULES`, `CRIT`, `OUTPUT` | 8 000 |
-| `reviewer/checklist` | `STAGE`, `CHECK`, `STATE`, `PREV`, `RULES`, `CRIT`, `OUTPUT` | 8 000 |
-| `supervisor` | `STAGE`, `STATE`, `ROLE`, `DOCTRINE`, `GATES`, `DIFF`, `DONE`, `REVIEW`, `PREVLINK`, `RULES`, `CRIT`, `OUTPUT` | 6 000 |
-| `spec` | `STAGE`, `UNIT`, `ROLE`, `DOCTRINE`, `INPUTART`, `PREV`, `REVIEW`, `PREVLINK`, `RULES`, `CRIT`, `OUTPUT` | 6 000 |
+Порядок (AC4): `STAGE`/`UNIT` в начале, `CRIT`/`RULES`/`OUTPUT` в конце, `REVIEW` — до материала (C8); `checklist` без роли, доктрины, находок и handoff-ов (C3).
 
-`plan` без handoff-ов и диффа; `reviewer/checklist` без роли; `spec` с `INPUTART`. Таблица — данные `FAMILIES`: новая стадия — строка в `stage_types`, роль — файл; код не меняется (AC2).
+## 6. Бюджет и обрезка
 
-## 6. Бюджет, приоритет и обрезка
+Потолок один — 9 000; `checklist` наследует предел `reviewer` (R3). Предел — доля блока, сумма по строке ≤ 9 000 (AC35). P0 не влез — `CTX-FAIL`; P1–P5 мягкие, остаток забирает R5.
 
-Потолок — на строку после `--` (инструкции, блоки, рамки): `--file` уходит: «сумма файлов» и «текст» — одна величина. `plan` — 6 000 по семейству `supervisor` (A-arch4).
+| Блок | `plan` | `execute` | `reviewer` | `checklist` | `supervisor` | `spec` |
+|---|---:|---:|---:|---:|---:|---:|
+| `STAGE` | 400 во всех шести | | | | | |
+| `UNIT` | | 1 800 | 1 800 | | | 2 800 |
+| `CRIT` | 1 200 | 2 500 | 2 500 | 2 500 | 800 | 2 500 |
+| `RULES` | 350 во всех шести | | | | | |
+| `OUTPUT` | 800 во всех шести | | | | | |
+| `REVIEW` | | 800 | 350 | | 500 | 450 |
+| `DONE` | | 400 | 300 | | 400 | |
+| `INPUTART` | | | 100 | | | 200 |
+| `ROLE` | 900 | 1 200 | 400 | | 1 000 | 800 |
+| `GATES` | | | 250 | | 300 | |
+| `DIFF` | | | 500 | | 3 830 | |
+| `DOCTRINE` | 250 | 150 | 50 | | 150 | 100 |
+| `STATE` | 400 | 150 | | 300 | 400 | |
+| `PREV` | | 250 | 50 | | | 400 |
+| `PREVLINK` | 100 | 100 | 50 | | 70 | 200 |
+| **Σ** | **5 600** | **9 000** | **7 900** | **5 150** | **9 000** | **9 000** |
 
-Классы: P0 — `OUTPUT`, `RULES`, `STAGE`, `UNIT`/`CHECK`, `CRIT`, `PHASES` в `plan`: не режутся, не влезли — сборка падает (AC3); P1 `ROLE` — по разделам, срез помечен; P2 `DOCTRINE` — до заголовков и ссылок; P3 `REVIEW`, `GATES`, `DONE`, `BLOCKED`, `DIFF` — по важности, затем до ссылки; P4 `PREV`, `STATE`, `INPUTART`, `VISION` — до ссылки; P5 `PREVLINK` — первым, «ещё N — см. файл».
+Пустая клетка — блока нет. Вне матрицы: `CHECK` 800 (`checklist`), `PHASES` 700, `VISION` 500 (`plan`), `BLOCKED` 100; `reviewer` = 7 900, запас 1 100 (FR10).
 
-Обрезка снизу: P5, P4, P3, P2, P1; внутри `REVIEW` и `PREV` прочее первым, `BLOCKER` последним (AC10); срез оставляет «ещё N — см. <путь>». Пределы, символы: `STAGE` 400, `UNIT` 600, `CRIT` 1 800, `CHECK` 1 200, `ROLE` 2 200, `DOCTRINE` 900, `PHASES` 700, `STATE` 400, `DIFF` 900, `GATES` 600, `DONE` 500, `PREV` 800, `PREVLINK` 300, `REVIEW` 700, `BLOCKED` 300, `INPUTART` 700, `VISION` 800, `RULES` 500, `OUTPUT` 1 100. Предел не квота: остаток — следующему; `CRIT` не режется, не влез — `CTX-FAIL`.
+**Фикстуры (AC36).** `execute` TODO-0374: `UNIT` 1 569 + `CRIT` 2 374 + `STAGE` 400 + `RULES` 350 + `OUTPUT` 800 = 5 493 (блоки; пределы 5 850, RR61), фон ссылкой (D5). `supervisor` verify TODO-0370: прежний промпт 11 983 (`A42`), `DIFF` 3 827 при 3 830, `GATES` 76 при 300, прочее по пределам — 8 773 ≤ 9 000, `CTX-FAIL` нет; длиннее — срез с пометкой (RR43).
 
-Порядок — таблица §5; проверка индексами `(block_id, start, end)` (AC4).
+**Рез** (R5): P5 `PREV`/`PREVLINK` → P4 `DOCTRINE`/`STATE`/`VISION` → P3 `GATES`/`DIFF`/`BLOCKED` → P2 `ROLE` → P1 `REVIEW`/`DONE`/`INPUTART`; в `REVIEW` общее первым, `BLOCKER` последним; срез оставляет «ещё N: см. `<файл>`» (AC10, AC34).
 
-## 7. Роль: один файл, выборка по маркерам
+## 7. Роль
 
-Маркер — существующий заголовок `##`, новых тегов и копий нет (RR10). Набор миграции — девять файлов `.agentic/roles/`: `supervisor.md` и восемь `agent-*` (`architector`, `architect-review`, `implementer`, `project-auditor`, `qa-review`, `refactoring-specialist`, `requirements-reviewer`, `system-analyst`); файлы вне набора не трогаются (R4). Шапка до первого `## ` (500); разделы из списка до предела `ROLE` (2 200); остальные — строки `- §<заголовок> — <путь>`; нет совпадений — первый раздел тела.
+Маркер — `##`; девять файлов (`supervisor.md`, восемь `agent-*`). Шапка до первого `##` (500), затем разделы по приоритетам до предела `ROLE`; непопавшие — `- §<заголовок> — <путь>`.
 
 | Приоритет | Маркеры |
 |---|---|
-| 1 | `Instructions`, `Инструкции`, `Quick Reference` |
+| 1 | `Instructions`, `Инструкции`, `Quick Reference`, `Роль` |
 | 2 | `Выход`, `Handoff contract`, `Отчёт`, `Готовность`, `Формат находок`, `Итог`, `Результат` |
 | 3 | `Режим`, `Режимы`, `Вход` |
 | 4 | `Запрет`, `Prohibitions`, `Проверка`, `Находки` |
-| 5 | `AWF-OVERRIDE`, `Политика тестов`, `Дисциплина доставки инвариантов`, `BD-31` |
+| 5 | `AWF-OVERRIDE`, `Политика тестов`, `Дисциплина доставки инвариантов` |
 
-AC6: три фразы на роль, список в тесте; нет фразы — переименовать раздел или расширить список; выборка по имени роли запрещена.
+**Покрытие.** `total` — ядро до предела, `taken` — вошедшее; `floor(taken × 100 / total)`, ниже 70 — `CTX-ROLE-LOW` (AC38, D3).
 
 ## 8. Сборка и контракты
 
-Сборка: снимок → `resolve_stage_type` (нет объявления → `StageTypeUndeclared`) → `FAMILIES[family/row]` → рендер из владельцев → P0→P5 → при нехватке P0 `CTX-FAIL`, иначе текст в порядке таблицы → строка `CTX` → `opencode run`. Время и окружение в текст не входят. `STAGE-*.md` не пишется (AC7); `context-pack --stdout` — предпросмотр того же текста.
+Снимок → K3 → `FAMILIES` → рендер → порядок §5 → P0 проверяется, P1–P5 режутся → текст → файл → `CTX` → `opencode run`. Нет каталога или записи — `CTX-FAIL` до подпроцесса (AC31).
 
-| ID | Контракт | Выход |
+| ID | Контракт | Вход → выход |
 |---|---|---|
-| K1 | `resolve_stage_type(config, name)` | `(family, row)`; `StageTypeUndeclared` |
-| K2 | `engine_kind(family)` | `plan`/`execute`/`verify` |
-| K3 | `build_stage_context(...)` | `text`, `blocks`, `cut`, `missing`, `conflicts`, `positions`; на диск не пишет |
-| K4 | `render_block(id, ctx)` | `Block(id, title, text, owner, facts, priority, cap)` или «нет данных» |
-| K5 | `select_role_core(text, family, limit)` | `text`, `kept/toc/dropped_sections` |
-| K6 | `fit_blocks(blocks, cap)` | порядок, `cut`, `failed` |
-| K7 | строка `CTX` | одна строка в лог |
-| K8 | `awf report`, `--context` | строка на стадию, разбивка, реестр владельцев; числа равны `CTX` |
-| K9 | правило снимка | тип из конфига; снимок только читается; `CTX-SNAPSHOT` |
-| K10 | `RULES`, `OUTPUT` | дословный контракт вывода и запретов |
-| K11 | `redact(text)` | маскированный текст и число замен |
+| K1 | `generate_stage_types(pipelines)` | `{имя: значение}`; неизвестная роль — отказ |
+| K2 | `write_stage_types(config_text, mapping)` | заменённый блок, идемпотентно |
+| K3 | `resolve_stage_type(config, name, role)` | `(family, row, source)`; `StageTypeMissing/Default/Strict` |
+| K4 | `engine_kind(family)` | `plan`/`execute`/`verify` для сигналов и гейта |
+| K5 | `render_block(id, ctx)` | `Block(...)` или «нет данных: причина — путь» |
+| K6 | `select_role_core(text, family, limit)` | `text`, `kept`, `taken`, `core_total` |
+| K7 | `build_stage_context(...)` | `text`, `path`, `blocks`, `cut`, `missing`; пишет файл |
+| K8 | `fit_blocks(blocks, cap)` | порядок §5, `cut`, `failed`; P0 не режет |
+| K9 | строка `CTX` | `orchestrator.log` и раздел `awf report` по `(todo, stage, attempt)` |
+| K10 | снимок | тип из конфига, только чтение, `CTX-SNAPSHOT` |
+| K11 | `RULES`, `OUTPUT` | дословный контракт вывода и запретов |
+| K12 | `redact(text)` | маскированный текст и число замен |
 
-## 9. Отсутствие данных, противоречия, секреты
+`context-pack --stdout` — предпросмотр K7 без записи.
 
-Нет артефакта: `нет данных: <причина> — <путь>`, сигнал не меняется (AC9).
+Строки после сборки (`assignment`, `## Stage identity`, `retry_note`) входят в текст: файл равен аргументу (AC31). `replan`/`salvage` — `family=supervisor` (AC14). `STAGE-*.md` — не сигнал (INV10).
 
-Противоречие: блоки дают `(fact_id, value, owner)`; сборщик пишет `CTX-CONFLICT <todo> <stage>: <fact_id> = A (owner A) != B (owner B)`, стадия не падает (AC8). Пары: `unit.status`, `gates.verdict`, `finding.<id>.state`, `stage.list`; строка идёт в отчёт, не в текст.
+## 9. Нет данных, противоречия, секреты
 
-Секреты (R2, AC27, RR17) — правило, а не значение фикстуры. `DIFF` даёт diffstat и файлы; патч попадает в текст, только если прошёл `redact` (K11). Владелец правила один — `awf/redact.py`; `worker_tree.py` его импортирует, второй список запрещён. Правила два:
+Нет артефакта — «нет данных: <причина> — <путь>» (AC9); пустой блок — причина (AC25); `COMMIT-AUDIT` не блок (RR53). `CTX-CONFLICT`: `unit.status`, `gates.verdict`, `finding.<id>.state`, `stage.list` (AC8).
 
-1. Именованное: ключевое слово `token|key|secret|password|auth|cookie` в имени, значение до пробела, `=` или `:` → `<redacted: имя>` (существующее выражение `awf/worker_tree.py:63` плюс `:`).
-2. Файл-секрет: патч файлов `.env*`, `*.pem`, `*.key`, `id_rsa*`, `*credential*`, `*secret*` в текст не идёт — diffstat и строка `[redacted: файл-секрет]`.
+Секреты (RR17): владелец — `awf/redact.py`, `worker_tree.py` импортирует его. Именованное (`token|key|secret|password|auth|cookie`) → `<redacted: имя>`; файл-секрет (`.env*`, `*.pem`, `*.key`, `id_rsa*`) → `[redacted: файл-секрет]`; блок остаётся.
 
-Блок не выбрасывается, вместо значения — пометка; фикстура пишет секрет как `token=…` и файлом `.env` — тест проверяет правило, а не строку (Q2).
+## 10. Снимок
 
-## 10. Снимок и совместимость
-
-`PIPELINE-<todo>.yaml` только читается (INV9); тип — из конфига по имени; форма не расширяется (AC15). Правило: `CTX-SNAPSHOT <todo> <stage>: тип из config stage_types.<name>; снимок без типа — форма не меняется`. Покрывает 212 снимков, включая `implementer-close`; необъявленное имя — отказ. Побайтовая неизменность — тест (AC11).
+`PIPELINE-<todo>.yaml` только читается (INV9), форма не расширяется (AC15). Старые снимки (213, 30 `implementer-close`) не правятся: имя вне карты — `CTX-TYPE-DEFAULT` (AC11, AC32); нет или пуст ключ, значение вне списка — `CTX-TYPE-MISSING` (AC40, AC41). Неизменность — `sha256`.
 
 ## 11. Фикс-круг и reuse
 
-Находки — из `REVIEW` и `DONE` ревьюера, сигнал не читается (AC12); закрытые не пересказываются. `PREV` один, блоки не растут (AC5).
+Находки — из `REVIEW`: новые входят, закрытые не пересказываются (AC12); `PREV` — один handoff, остальные ссылками (AC5). Reuse прежний, текст собирается заново, в `RULES` — «прошлая сессия не источник фактов» (AC13, D7).
 
-Reuse не меняется; при продолжении текст собирается заново, в `RULES` строка «прошлая сессия не источник фактов; факты — из артефактов». AC13: различие со свежей стадией только в строке.
+## 12. Замер и отчёт
 
-## 12. Замер
+```
+CTX <todo> <stage> attempt=<n> type=<family>[/<row>] cap=9000 total=<n>
+    file=<abs> role=<взято>/<всего> role_pct=<n>
+    blocks=<id>:<chars>,... cut=<id>:<chars>,... missing=<id>:<reason>,...
+```
 
-Формат: `CTX <todo> <stage> attempt=<n> type=<family> cap=<n> total=<n> blocks=<id>:<chars>,... cut=<id>:<chars>,... missing=<id>:<reason>,...`. Пример: `CTX TODO-0374 spec-design attempt=1 type=spec cap=6000 total=5812 blocks=STAGE:390,UNIT:540,ROLE:1480 cut=REVIEW:120 missing=PREV:нет-handoff`. Длительность — из пары `Agent stage started/finished`. Команда замера одна — `awf report --context` (RR6): тот же отчёт, флаг печатает разбивку; второй команды и нового артефакта нет. Отчёт соединяет по `(todo, stage, attempt)` и печатает тип, `total/cap`, блоки, срез, пропуски, витки, длительность, минуты QA. Там же реестр владельцев (AC23): файловый блок — путь и sha256, вычисляемый — «на лету» и источник. Инциденты считаются автоматически из `STAGE-DIFF` и `COMMIT-AUDIT` (AC26, AC29); окно из 10 — по порядку номеров юнитов, привязка — первые 10 после внедрения (RR24); readiness берёт числа из отчёта, а не из логов (AC19, AC25).
+Пишется в `.agentic/logs/orchestrator.log` — журнал `awf report` и `budget` (FR11); отдельного файла нет. Пример: `CTX TODO-0374 spec-design attempt=1 type=spec total=5812 file=… role=610/820 role_pct=74 duration=42`.
 
-Точки: IMP1 — ноль `StageTypeUndeclared`; IMP2 — `total`/`cut`; IMP3 — витки, длительность, инциденты; IMP4 — совпадение отчёта и строки, реестр владельцев.
+Сигналы: `CTX-TYPE-DEFAULT`, `CTX-TYPE-MISSING`, `CTX-TYPE-STRICT`, `CTX-ROLE-LOW`, `CTX-CONFLICT`, `CTX-SNAPSHOT`, `CTX-FAIL`; останавливают `CTX-FAIL`, `CTX-TYPE-MISSING`, `CTX-TYPE-STRICT` (AC40, AC41; INV11 дополняет аналитик — RR62).
 
-## 13. Решения, допущения, вопросы
+**`awf report`** (RR6): раздел «Контекст стадий» из строк `CTX` плюс `STAGE-DIFF` и `COMMIT-AUDIT`: тип, `total/cap`, `file=`, `role=` с процентом, блоки, срез, пропуски, длительность, витки, минуты QA (AC19, AC25, AC26).
 
-| ID | Решение | Последствие |
+**Контрольные точки (AC37).** В IMP3 и IMP4 после трёх юнитов три числа против базы `.agentic/done/TODO-0320…0370/handoff/*.md` (26 находок `BLOCKER`/`MAJOR` в 13 юнитах, максимум 4; окно 0338–0347 — медиана 12,12 мин): находки (второй столбец `BLOCKER`/`MAJOR`) — стоп при сумме ≥ 4; витки (`## REVIEW-фикс`) — стоп при любом блоке; медиана — стоп при > 14,5 мин. Порог строже базы (26 на 42 юнита; 0344 даёт 4 в одном — RR65): числа — константа `QUALITY_STOPS` (D9).
+
+## 13. Решения
+
+| ID | Решение | Основание |
 |---|---|---|
-| D1 | тип — `stage_types.<имя>`, одно поле `<семейство>[/<строка>]` (префикс и карта роли дают цепочку RR9 или не различают типы) | неизвестное имя — отказ |
-| D2 | один сборщик, один текст (иначе два способа и два счёта) | старые сборщики удаляются |
-| D3 | роль — выборка по заголовкам `##` (копия нарушает AC6, теги меняют роли) | непопавшие разделы — ссылки |
-| D4 | один потолок, P0–P5 (квоты теряют качество) | крупный `CRIT` останавливает стадию |
-| D5 | доктрина — дайджест и ссылка (2 958 не оставляют места задаче) | правка A4 |
-| D6 | `DIFF` — diffstat, патч после `redact` (полный патч несёт секреты) | у файлов-секретов патча нет |
-| D7 | последний handoff текстом, остальные ссылками (подстановка роли даёт дубли) | ссылки не растут |
-| D8 | замер — `CTX` и `awf report --context` (JSON метрик нарушает AC7) | второй команды нет |
-| D9 | reuse сохраняется, контекст пересобирается; предпросмотр `context-pack --stdout` | строка в `RULES` |
-| D10 | противоречия — `CTX-CONFLICT` (молчаливый выбор теряет расхождение) | набор `fact_id` закрыт |
+| D1 | Тип — `stage_types.<имя>`; нет ключа или значение вне списка — отказ, имя вне карты — WARN; `init` пишет, `doctor` сверяет | R1/R14, A3 |
+| D2 | Один сборщик и путь: `--file`, старый рендер, старые бюджеты уходят; нет записи — `CTX-FAIL` | R10/R13, AC14 |
+| D3 | Роль — выборка по `##`, без переименований; покрытие — от ядра | R4/AC6, AC38 |
+| D4 | P0 — `CTX-FAIL`, P1–P5 — рез; сумма пределов строки ≤ 9 000 | AC3/AC35 |
+| D5 | Доктрина — дайджест, `DIFF` — diffstat, `GATES` — факты, `UNIT` — границы | AC36 |
+| D6 | Handoff: последний текстом, остальные ссылками | AC5 |
+| D7 | Замер — `CTX`; reuse прежний; противоречия — `CTX-CONFLICT` | RR6/AC19, AC13, AC8 |
+| D8 | Роль вне карты: генерация — отказ, рантайм — `execute` + WARN | AC32 |
+| D9 | Пороги качества — константа `QUALITY_STOPS` | AC37; RR65 |
 
-A-arch1: `AC#` влезают в 1 800 (TODO-0374: 1 406), больше — `CTX-FAIL`. A-arch2: заголовки ролей не переименовываются. A-arch3: `stage_types` не меняет схему, `config.py::load` читает YAML как словарь. A-arch4: `plan` получает 6 000 по семейству `supervisor`, хотя R3 его не называет, — порог выведен.
-
-Вопросов нет: RR9–RR11 закрыты в req-5; Q1–Q4 архитектуру не блокируют.
+A-arch1: P0 фикстур влезают в §6. A-arch2: `config.load` читает YAML словарём. A-arch3: `plan` — 5 600, `Stage.kind` из семейства. A-arch4: 5 493 — блоки, 5 850 — пределы (RR61). A-arch5: `checklist` — строка `reviewer`.
 
 ## 14. План IMP
 
-**IMP1 — тип как данные.** R1, AC2, AC11, AC15, AC16; K1, K2. `stage_context_types.py` (`FAMILIES`: пять семейств, шесть строк; `resolve`, `engine_kind`, `StageTypeUndeclared`), `.agentic/config.yaml` (15 имён + `implementer-close`), `pipeline.py` (убрать `_compute_kind`). Зависимостей нет. Проверка: 12 пайплайнов, 15 имён, 212 снимков, отказ на необъявленном и неизвестной строке. Миграция одним коммитом. Замер: ноль `StageTypeUndeclared`.
+**IMP1 — тип как данные.** R1, R7, R14; AC2, AC11, AC15, AC21, AC32, AC33, AC39, AC40. Файлы — §2 (K1–K4). Миграция одним коммитом: `init` пишет ключ, K3 читает, `_compute_kind` удаляется (RR55).
 
-**IMP2 — сборщик.** R2–R6, AC3–AC6, AC9, AC10, AC23, AC24, AC27; K3–K6, K11. `stage_context.py`, `stage_context_blocks.py`, `stage_context_roles.py`, `redact.py` (правило из `worker_tree.py`), `context_pack.py`, `cmd_context_pack.py`. Зависимость IMP1. Проверка: таблицы, индексы, потолки, «нет данных», обрезка с `BLOCKER`, детерминизм, три фразы на девять ролей, путь проекта, секрет-фикстура в двух формах, размеры; код до переключения. Замер: `total`/`cut` ≤ потолка.
+**IMP2 — один сборщик и файл.** R2–R6, R8–R10, R13; AC1, AC3–AC16, AC22–AC24, AC27, AC31, AC34–AC36, AC38. Файлы — §2. Зависимость IMP1. Миграция тем же коммитом: `--file`, `build_prompt`/`build_replan_context`, `resolve_prev_handoffs` и старые бюджеты уходят вместе с K7; флага нет (D2, AC14).
 
-**IMP3 — один путь.** R7–R10, AC7, AC8, AC11–AC15, AC22; K7, K9, K10. `agent_stage.py` (удалить `--file` и `resolve_prev_handoffs`), `supervisor.py`, `verify_context.py`, `rejection.py`, `doctrine.py`, `session_store.py`, `stage_context.py` (`CTX`). Зависимость IMP2. Проверка: нет `--file`; verify ≤6 000 без среза TODO/`AC#` (CTX9); spec получает контракт DONE; старый снимок не меняется; фикс-круг видит находки; продолжение равно свежему. Миграция одним коммитом, старый путь удаляется. Замер: три юнита.
+**IMP3 — отчёт и первая точка.** R11, R12 (часть); AC19, AC23, AC25, AC26, AC29, AC37. Файлы: `awf/cmd_report.py`, модель отчёта, `QUALITY_STOPS` (D9). Зависимость IMP2.
 
-**IMP4 — отчёт.** R11, AC19, AC25, AC26, AC29, AC30; K7, K8. `cmd_report.py`, модель в `awf/api`, `stage_context_metrics.py`. Зависимость IMP3. Проверка: отчёт равен строкам, реестр владельцев с sha256, инциденты из `STAGE-DIFF`/`COMMIT-AUDIT`, минуты QA, пустой блок даёт причину. Замер: совпадение на трёх юнитах.
+**IMP4 — эффект и вторая точка.** R12; AC17, AC18, AC20, AC28, AC30, AC37. Кода нет: окно 10 юнитов, три spec-рана, пересчёт базы, сравнение. Зависимость IMP3.
 
-AC20: четыре юнита, у каждого точка замера; миграция разовая — IMP1 и IMP3 по одному коммиту, двойного поведения нет (AC14).
-
-## 15. Покрытие требований
-
-R1 → AC1, 2, 21, 22 (IMP1/2); R2 → AC8, 23, 27 (IMP2/4); R3 → AC3–5 (IMP2); R4 → AC6 (IMP2); R5 → AC9, 10 (IMP2); R6 → AC24 (IMP2); R7 → AC11 (IMP1/3); R8 → AC12 (IMP3); R9 → AC13 (IMP3); R10 → AC7, 14–16 (IMP3); R11 → AC19, 25, 26 (IMP4); R12 → AC17, 18, 20, 28–30 (IMP4). INV1–INV9 не затрагиваются.
-
+Покрытие: R1 §4/D1/K3; R2 §3/K5/K12; R3 §6/D4/D5; R4 §7/D3/K6; R5 §6/§9/K8; R6 §5/§8; R7 §10/K10; R8 §11; R9 §11/D7; R10 §8/D2; R11 §12/K9/D3; R12 §12/IMP3–IMP4/D9; R13 §8/D2; R14 §4/D1. INV1–INV11 не затрагиваются.
