@@ -83,7 +83,9 @@ def test_assembled_implementer_prompt_states_the_400_line_budget(tmp_path, monke
     stage = Stage(name="agent-implementer", role="agent-implementer", kind="execute")
 
     agent_stage.run_agent_stage(
-        stage, "TODO-0001", project, {}, project / ".agentic" / "logs"
+        stage, "TODO-0001", project,
+        {"models": {"worker": {"model": "p/test"}}},
+        project / ".agentic" / "logs",
     )
 
     assert _flat(RULE) in _assembled_stage_text(captured["cmd"])

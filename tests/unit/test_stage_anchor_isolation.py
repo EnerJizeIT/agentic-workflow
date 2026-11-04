@@ -272,7 +272,9 @@ def test_stage_wiring_token_to_reap_end_to_end(tmp_path, monkeypatch):
 
     stage = Stage(name="agent-dev", role="developer", kind="execute")
     agent_stage.run_agent_stage(
-        stage, "TODO-0001", proj, {}, proj / ".agentic" / "logs"
+        stage, "TODO-0001", proj,
+        {"models": {"worker": {"model": "p/test"}}},
+        proj / ".agentic" / "logs"
     )
 
     token = captured["token"]

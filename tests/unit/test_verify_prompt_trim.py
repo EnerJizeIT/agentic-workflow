@@ -257,7 +257,7 @@ def test_stage_writes_the_timing_line(tmp_path, monkeypatch):
         "verify",
         _TODO_ID,
         proj,
-        {},
+        {"models": {"supervisor": {"model": "p/test"}}},
         str(proj / ".agentic" / "phases" / "plan.md"),
         proj / ".agentic" / "logs",
     )

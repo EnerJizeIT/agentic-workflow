@@ -64,8 +64,10 @@ def model_line(model: str) -> str:
     """The canonical model line for a role file (uniform for all sources).
 
     ``model_line("vllm/llm")`` → ``**Модель:** `vllm/llm` ``; an empty
-    model renders the unassigned placeholder (the config's default model
-    applies — nothing to cross-check against).
+    model renders the unassigned placeholder — nothing to cross-check
+    against. A48: an unassigned role does not fall back to a default: the
+    launch takes ``models.worker.model`` or refuses, so the placeholder is
+    a to-do for the operator, not a promise.
     """
     return f"**Модель:** {model_line_value(model)}"
 
@@ -99,7 +101,11 @@ def _resolve_role_model(project_dir: Path, role_name: str, explicit: str) -> str
 
     Priority: an explicit ``model=`` wins; otherwise
     ``models.<role_name>.model`` of ``.agentic/config.yaml``. Empty
-    result = unassigned (the config's default model applies).
+    result = no own model, so the role file gets the unassigned
+    placeholder. This is the model WRITTEN into the role .md, not the one
+    the launch passes: for the effective model the engine and doctor both
+    ask ``supervisor.get_role_model`` (own → ``models.worker.model`` →
+    refusal, A48).
     """
     if explicit:
         return explicit.strip()
@@ -1317,9 +1323,10 @@ def add_role(
     TODO-0175: every generated role file carries a uniform model line
     near the top (``**Модель:** `vllm/llm` ``), resolved as: explicit
     ``model=`` → ``models.<role_name>.model`` of the project config →
-    the unassigned placeholder (the config's default model applies).
-    The config stays the source of truth — the engine behavior is
-    unchanged; ``check_model_config`` cross-checks the line.
+    the unassigned placeholder. The placeholder names no default: A48
+    resolves the launch model as ``models.<role>.model`` →
+    ``models.worker.model`` → refusal before the spawn, and
+    ``check_model_config`` cross-checks the line.
     ``AddRoleResult.model`` is the resolved model ("" when unassigned).
 
     TODO-0208 (REPORTS33): a skill-sourced role (``from_skill``) ALSO

@@ -43,7 +43,7 @@ def _run_verify(proj: Path, monkeypatch, config: dict | None = None) -> str:
         "verify",
         TODO,
         proj,
-        config or {},
+        {**(config or {}), "models": {"supervisor": {"model": "p/test"}}},
         str(proj / ".agentic" / "phases" / "plan.md"),
         proj / ".agentic" / "logs",
     )

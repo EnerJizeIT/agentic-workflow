@@ -9,6 +9,9 @@ from __future__ import annotations
 from awf import agent_stage
 from awf.pipeline import Stage
 
+# A48: a spawn needs an explicit model; this file owns prompt assembly.
+MODEL_CONFIG = {"models": {"worker": {"model": "p/test"}}}
+
 
 def _capture_run(monkeypatch, tmp_path):
     captured: dict = {}
@@ -48,7 +51,7 @@ def test_retry_note_appended_to_prompt(tmp_path, monkeypatch):
     stage = Stage(name="agent-dev", role="developer", kind="execute")
 
     agent_stage.run_agent_stage(
-        stage, "TODO-0001", proj, {}, proj / ".agentic" / "logs",
+        stage, "TODO-0001", proj, MODEL_CONFIG, proj / ".agentic" / "logs",
         retry_note="## RETRY 1: test push note",
     )
 
@@ -63,7 +66,7 @@ def test_without_retry_note_prompt_unchanged(tmp_path, monkeypatch):
     proj = _project(tmp_path)
     stage = Stage(name="agent-dev", role="developer", kind="execute")
 
-    agent_stage.run_agent_stage(stage, "TODO-0001", proj, {}, proj / ".agentic" / "logs")
+    agent_stage.run_agent_stage(stage, "TODO-0001", proj, MODEL_CONFIG, proj / ".agentic" / "logs")
 
     prompt = captured["cmd"][-1]
     assert "RETRY" not in prompt
@@ -95,6 +98,6 @@ def test_explicit_log_name_for_any_role(tmp_path, monkeypatch):
     proj = _project(tmp_path)
     stage = Stage(name="dev", role="developer", kind="execute")
 
-    agent_stage.run_agent_stage(stage, "TODO-0007", proj, {}, proj / ".agentic" / "logs")
+    agent_stage.run_agent_stage(stage, "TODO-0007", proj, MODEL_CONFIG, proj / ".agentic" / "logs")
 
     assert captured["log_name"] == "awf-developer-TODO-0007.out"

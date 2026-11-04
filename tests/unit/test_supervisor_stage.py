@@ -47,9 +47,17 @@ def _one_x(tmp_path, monkeypatch):
     )
 
 
+def _with_model(config: dict) -> dict:
+    """A48: every spawn needs an explicit model — these tests own --agent."""
+    models = {"worker": {"model": "p/test"}}
+    models.update(config.get("models") or {})
+    return {**config, "models": models}
+
+
 def _worker_argv(tmp_path, monkeypatch, config: dict) -> list[str]:
     captured: dict = {}
     proj = _project(tmp_path)
+    config = _with_model(config)
     monkeypatch.setattr(
         "awf.signal_watch.run_subprocess_until_signal",
         _fake_run(captured), raising=True,
@@ -68,6 +76,7 @@ def _supervisor_argv(
 ) -> list[str]:
     captured: dict = {}
     proj = _project(tmp_path)
+    config = _with_model(config)
     monkeypatch.setattr(
         "awf.signal_watch.run_subprocess_until_signal",
         _fake_run(captured), raising=True,

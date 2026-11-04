@@ -320,7 +320,8 @@ def test_prompt_carries_stage_identity_line(tmp_path, monkeypatch):
     stage = Stage(name=SID, id=SID, role=ROLE, kind="execute")
 
     agent_stage.run_agent_stage(
-        stage, T, proj, {}, proj / ".agentic" / "logs", attempt=3,
+        stage, T, proj, {"models": {ROLE: {"model": "p/test"}}},
+        proj / ".agentic" / "logs", attempt=3,
     )
 
     prompt = captured["cmd"][-1]

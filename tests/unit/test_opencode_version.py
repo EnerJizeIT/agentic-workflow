@@ -259,6 +259,7 @@ def test_worker_argv_always_has_the_flag(tmp_path, monkeypatch, cfg):
     )
     captured = _capture_worker(monkeypatch)
     proj = _worker_project(tmp_path)
+    cfg = {**cfg, "models": {"developer": {"model": "p/test"}}}
     agent_stage.run_agent_stage(
         Stage(name="dev", role="developer", kind="execute"),
         "TODO-0001", proj, cfg, proj / ".agentic" / "logs",
@@ -270,6 +271,7 @@ def test_worker_argv_always_has_the_flag(tmp_path, monkeypatch, cfg):
         "--title", "awf-developer-TODO-0001",
         "--file", str(proj / ".agentic" / "roles" / "developer.md"),
         "--file", str(proj / ".agentic" / "inbox" / "TODO-0001.md"),
+        "--model", "p/test",
         "--", cmd[-1],
     ]
 
@@ -283,7 +285,11 @@ def test_worker_managed_has_no_flag(tmp_path, monkeypatch):
     proj = _worker_project(tmp_path)
     agent_stage.run_agent_stage(
         Stage(name="dev", role="developer", kind="execute"),
-        "TODO-0001", proj, {"opencode": {"managed": True}},
+        "TODO-0001", proj,
+        {
+            "opencode": {"managed": True},
+            "models": {"developer": {"model": "p/test"}},
+        },
         proj / ".agentic" / "logs",
     )
     assert "--standalone" not in captured["cmd"]
@@ -318,6 +324,8 @@ def test_supervisor_argv_v2_has_flag(tmp_path, monkeypatch):
     phases.write_text("# Plan\n")
 
     supervisor.run_supervisor_via_subprocess(
-        "plan", "", proj, {}, str(phases), proj / ".agentic" / "logs"
+        "plan", "", proj,
+        {"models": {"supervisor": {"model": "p/test"}}},
+        str(phases), proj / ".agentic" / "logs"
     )
     assert captured["cmd"][:3] == ["opencode", "run", "--standalone"]

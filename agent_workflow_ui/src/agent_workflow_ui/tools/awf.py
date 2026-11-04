@@ -3204,7 +3204,8 @@ async def awf_check_model_config(
     Call BEFORE ``awf_start`` to catch configuration issues:
     - Provider not in opencode.json → worker silently uses cloud fallback
     - Model ID not in provider's models list → similar fallback
-    - Missing models → worker uses opencode default
+    - Missing models → the role inherits ``models.worker.model`` or the
+      engine refuses the launch (A48)
 
     Args:
         project_dir: Project root. Default is the MCP process cwd ($HOME) —

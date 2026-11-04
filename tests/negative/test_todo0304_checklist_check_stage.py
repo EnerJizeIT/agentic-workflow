@@ -353,7 +353,10 @@ def test_agent_stage_uses_the_session_key(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         agent_stage.run_agent_stage(
             stage=stage, todo_id="TODO-0001", project_dir=project,
-            config={"engine": {"reuse_session": "always"}},
+            config={
+                "engine": {"reuse_session": "always"},
+                "models": {"agent-qa-review": {"model": "p/test"}},
+            },
             logs_dir=project / ".agentic" / "logs",
         )
     # The pair key was bumped under the session key, not the stage name.

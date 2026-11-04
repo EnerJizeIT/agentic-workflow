@@ -21,6 +21,7 @@ from awf.agent_stage import (
 from awf.commit_gate import maybe_commit as _maybe_commit
 from awf.pipeline import Stage
 from awf.signal_watch import run_subprocess_until_signal as _run_subprocess_until_signal
+from awf.supervisor import RoleModelMissingError
 from awf.supervisor import (
     global_roles_dir as _global_roles_dir,
 )
@@ -33,6 +34,11 @@ from awf.supervisor import wait_for_supervisor_signal as _wait_for_supervisor_si
 # BD-18: subprocess.run return value for "success" mocks (legacy — kept for
 # any tests still using subprocess.run-style asserts).
 _OK_RESULT = subprocess.CompletedProcess(args=[], returncode=0)
+
+# A48: every spawn now needs an explicit model. Tests that only care about
+# the argv shape share this config; the refusal itself is pinned in
+# tests/unit/test_role_model_required.py.
+MODEL_CONFIG = {"models": {"worker": {"model": "p/test"}}}
 
 
 def _init_proj_dirs(proj: Path) -> None:
@@ -424,7 +430,7 @@ class TestRunAgentStageCmd:
 
         stage = Stage(name="execute", role="worker", kind="execute")
         _patch_subprocess_for_awf(monkeypatch)
-        _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
+        _run_agent_stage(stage, "TODO-0001", project_dir, MODEL_CONFIG, project_dir / ".agentic" / "logs")
 
         captured = _FakePopen._last_cmds[-1]
         file_indices = [i for i, x in enumerate(captured) if x == "--file"]
@@ -446,18 +452,22 @@ class TestRunAgentStageCmd:
         idx = captured.index("--model")
         assert captured[idx + 1] == "vllm/llm"
 
-    def test_run_agent_stage_no_model_when_not_set_bd24(
+    def test_run_agent_stage_refuses_without_model_a48(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """BD-24: no --model flag when config has no model for the role."""
+        """A48: no model anywhere → refusal, no process (was: silent default)."""
         project_dir = self._setup_project(tmp_path, monkeypatch)
 
         stage = Stage(name="execute", role="worker", kind="execute")
         _patch_subprocess_for_awf(monkeypatch)
-        _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
+        with pytest.raises(RoleModelMissingError) as exc_info:
+            _run_agent_stage(
+                stage, "TODO-0001", project_dir, {},
+                project_dir / ".agentic" / "logs",
+            )
 
-        captured = _FakePopen._last_cmds[-1]
-        assert "--model" not in captured
+        assert "worker" in str(exc_info.value)
+        assert _FakePopen._last_cmds == []
 
     def test_run_agent_stage_has_unique_title_bd23(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -467,7 +477,7 @@ class TestRunAgentStageCmd:
 
         stage = Stage(name="execute", role="worker", kind="execute")
         _patch_subprocess_for_awf(monkeypatch)
-        _run_agent_stage(stage, "TODO-0001", project_dir, {}, project_dir / ".agentic" / "logs")
+        _run_agent_stage(stage, "TODO-0001", project_dir, MODEL_CONFIG, project_dir / ".agentic" / "logs")
 
         captured = _FakePopen._last_cmds[-1]
         assert "--title" in captured
@@ -835,7 +845,7 @@ class TestSupervisorViaSubprocess:
         (agentic / "phases" / "plan.md").write_text("# Plan\nStep 1: do X")
         (agentic / "config.yaml").write_text(
             "project:\n  name: test\n  root: .\n"
-            "models:\n  supervisor:\n    description: current\n"
+            "models:\n  supervisor:\n    model: p/test\n    description: current\n"
             "phases:\n  current: .agentic/phases/plan.md\n"
         )
         return proj
@@ -991,7 +1001,7 @@ class TestSupervisorViaSubprocess:
 
         stage = Stage(name="impl", role="worker", kind="execute")
         with pytest.raises(RuntimeError) as exc_info:
-            _run_agent_stage(stage, "TODO-0001", proj, {}, agentic / "logs")
+            _run_agent_stage(stage, "TODO-0001", proj, MODEL_CONFIG, agentic / "logs")
         assert "7" in str(exc_info.value)
         assert "worker" in str(exc_info.value)
         _FailingPopen._exit_code = 42  # reset
@@ -1234,7 +1244,7 @@ def _make_supervisor_proj(tmp_path: Path) -> Path:
     (agentic / "logs").mkdir()
     (agentic / "config.yaml").write_text(
         "project:\n  name: test\n  root: .\n"
-        "models:\n  supervisor:\n    description: current\n"
+        "models:\n  supervisor:\n    model: p/test\n    description: current\n"
         "phases:\n  current: .agentic/phases/plan.md\n"
     )
     return proj
@@ -1282,7 +1292,7 @@ def _make_supervisor_proj(tmp_path: Path) -> Path:
     (agentic / "logs").mkdir()
     (agentic / "config.yaml").write_text(
         "project:\n  name: test\n  root: .\n"
-        "models:\n  supervisor:\n    description: current\n"
+        "models:\n  supervisor:\n    model: p/test\n    description: current\n"
         "phases:\n  current: .agentic/phases/plan.md\n"
     )
     return proj
@@ -1354,7 +1364,7 @@ class TestHandoffChain:
         stage = Stage(name="qa", role="worker", kind="execute")
         _patch_subprocess_for_awf(monkeypatch)
         prev = [handoff_dir / "system-analysis.md", handoff_dir / "developer.md"]
-        _run_agent_stage(stage, "TODO-0001", proj, {}, proj / ".agentic" / "logs", prev_handoffs=prev)
+        _run_agent_stage(stage, "TODO-0001", proj, MODEL_CONFIG, proj / ".agentic" / "logs", prev_handoffs=prev)
 
         opencode_cmd = _FakePopen._last_cmds[0]
         assert "--file" in opencode_cmd
@@ -1374,7 +1384,7 @@ class TestHandoffChain:
         stage = Stage(name="qa", role="worker", kind="execute")
         _patch_subprocess_for_awf(monkeypatch)
         prev = [handoff_dir / "system-analysis.md", handoff_dir / "developer.md"]
-        _run_agent_stage(stage, "TODO-0001", proj, {}, proj / ".agentic" / "logs", prev_handoffs=prev)
+        _run_agent_stage(stage, "TODO-0001", proj, MODEL_CONFIG, proj / ".agentic" / "logs", prev_handoffs=prev)
 
         opencode_cmd = _FakePopen._last_cmds[0]
         assert any("system-analysis.md" in c for c in opencode_cmd)
@@ -1622,7 +1632,7 @@ class TestSupervisorReplan:
         (agentic / "phases" / "plan.md").write_text("# Plan")
         (agentic / "config.yaml").write_text(
             "project:\n  name: test\n  root: .\n"
-            "models:\n  supervisor:\n    description: current\n"
+            "models:\n  supervisor:\n    model: p/test\n    description: current\n"
             "phases:\n  current: .agentic/phases/plan.md\n"
         )
         return proj

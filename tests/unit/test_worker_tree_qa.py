@@ -122,7 +122,9 @@ def test_stage_reaps_its_worker_tree_on_natural_exit(tmp_path, monkeypatch):
 
     try:
         agent_stage.run_agent_stage(
-            stage, "TODO-0001", proj, {}, proj / ".agentic" / "logs"
+            stage, "TODO-0001", proj,
+            {"models": {"worker": {"model": "p/test"}}},
+            proj / ".agentic" / "logs"
         )
 
         pid = state["worker"].pid
@@ -146,7 +148,9 @@ def test_stage_reaps_even_when_the_wait_raises(tmp_path, monkeypatch):
     try:
         with pytest.raises(RuntimeError):
             agent_stage.run_agent_stage(
-                stage, "TODO-0002", proj, {}, proj / ".agentic" / "logs"
+                stage, "TODO-0002", proj,
+                {"models": {"worker": {"model": "p/test"}}},
+                proj / ".agentic" / "logs"
             )
 
         pid = state["worker"].pid
@@ -216,7 +220,9 @@ def test_stage_env_marker_reaches_setsid_children(tmp_path, monkeypatch):
     stage = Stage(name="agent-dev", role="developer", kind="execute")
 
     agent_stage.run_agent_stage(
-        stage, "TODO-0003", proj, {}, proj / ".agentic" / "logs"
+        stage, "TODO-0003", proj,
+        {"models": {"worker": {"model": "p/test"}}},
+        proj / ".agentic" / "logs"
     )
 
     token = state["token"]

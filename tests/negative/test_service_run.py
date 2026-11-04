@@ -61,6 +61,12 @@ CONFIG_YAML = (
     "  preflight_timeout_seconds: 0\n"
     "  no_output_timeout_seconds: 0\n"
     "  verify_pack: false\n"
+    # A48: a spawn always passes --model; a project without any model now
+    # refuses to start instead of taking opencode's default. One worker
+    # model covers every role by inheritance.
+    "models:\n"
+    "  worker:\n"
+    "    model: shim/model\n"
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent

@@ -59,7 +59,8 @@ def _stub_runner(monkeypatch, worker_text: str, rc: int):
 def _run_stage(project: Path):
     stage = Stage(name="worker", role="worker", kind="execute")
     return agent_stage.run_agent_stage(
-        stage, T, project, {}, project / ".agentic" / "logs",
+        stage, T, project, {"models": {"worker": {"model": "p/test"}}},
+        project / ".agentic" / "logs",
         hard_timeout=None,
     )
 

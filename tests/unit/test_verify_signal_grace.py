@@ -22,7 +22,8 @@ from tests.unit._signal_fakes import (
 def _run_verify(proj: Path, monkeypatch, config: dict):
     install_fake_time(monkeypatch, Clock())
     return supervisor.run_supervisor_via_subprocess(
-        "verify", "TODO-0001", proj, config,
+        "verify", "TODO-0001", proj,
+        {**config, "models": {"supervisor": {"model": "p/test"}}},
         str(proj / ".agentic" / "phases" / "plan.md"),
         proj / ".agentic" / "logs",
     )
@@ -64,7 +65,10 @@ def test_hung_supervisor_is_termed_after_grace_and_signal_returned(
     )
     install_fake_time(monkeypatch, Clock())
 
-    config = {"wait": {"verify_grace_seconds": 6}}
+    config = {
+        "wait": {"verify_grace_seconds": 6},
+        "models": {"supervisor": {"model": "p/test"}},
+    }
     result = supervisor.run_supervisor_via_subprocess(
         "verify", "TODO-0001", proj, config,
         str(proj / ".agentic" / "phases" / "plan.md"),

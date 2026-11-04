@@ -89,7 +89,7 @@ def test_stage_entry_archives_the_previous_report(tmp_path, monkeypatch):
             Stage(name="qa", role="worker", kind="execute"),
             "TODO-0001",
             project,
-            {},
+            {"models": {"worker": {"model": "p/test"}}},
             project / ".agentic" / "logs",
         )
     except RuntimeError:

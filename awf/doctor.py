@@ -48,7 +48,7 @@ import yaml
 
 from . import command_parse, config_keys, paths, suite_command, versions, xdg
 from . import config as cfg_mod
-from .supervisor import argv_agent_flag
+from .supervisor import argv_agent_flag, missing_model_message
 
 OK = "ok"
 WARN = "WARN"
@@ -342,23 +342,56 @@ def _check_models(project_dir: Path, config_problem: str, out: _Lines) -> None:
             raise TypeError(
                 f"check_model_config returned {type(result).__name__}"
             )
-        roles = len(result.get("models") or [])
+        roles = result.get("models") or []
         config_warnings = result.get("warnings") or []
         providers = result.get("providers_available") or []
+        cli_available = result.get("cli_models_available", True)
+        # A48: model_check names the roles it refuses; doctor takes that
+        # structural key instead of re-deriving the rule from the rows.
+        missing_roles = [
+            str(r) for r in (result.get("missing_model_roles") or [])
+        ]
     except Exception as e:  # noqa: BLE001 — R5: a broken surface is "unknown"
         out.warn("models", f"{versions.UNKNOWN} ({type(e).__name__})")
         return
-    if problem or config_warnings:
+    if not cli_available and not providers:
+        # A47: a cold opencode answers with no models at all. That is not an
+        # error; the other rows still run and doctor stays usable.
+        # A48: a missing model is config-level knowledge — the CLI cannot fix
+        # it, so the refusal stays visible even on a cold start.
+        for role in missing_roles:
+            out.warn("models", missing_model_message(role))
+        out.ok("models", "модели не определены (opencode не готов)")
+        return
+    # A48: one line per role — the operator must see WHICH model each role
+    # will run on before launch, and which role has none.
+    for entry in roles:
+        if not isinstance(entry, dict):
+            continue
+        role = str(entry.get("role") or "?")
+        model = entry.get("model")
+        if role in missing_roles:
+            out.warn("models", missing_model_message(role))
+        else:
+            out.ok("models", f"роль {role}: модель {model}")
+    # The missing-model WARNs are already above; the aggregate row carries
+    # the OTHER config warnings (a provider that opencode.json lacks). The
+    # split is by list membership, not by parsing the warning text.
+    missing_warnings = set(result.get("missing_model_warnings") or [])
+    other_warnings = [
+        w for w in config_warnings if w not in missing_warnings
+    ]
+    if problem or other_warnings:
         facts = []
         if problem:
             facts.append(problem)
-        if config_warnings:
+        if other_warnings:
             facts.append(
-                f"{len(config_warnings)} warning(s) — run awf_check_model_config"
+                f"{len(other_warnings)} warning(s) — run awf_check_model_config"
             )
-        out.warn("models", f"{roles} role(s) checked; " + "; ".join(facts))
+        out.warn("models", "; ".join(facts))
         return
-    out.ok("models", f"{roles} role(s) checked, {len(providers)} provider(s)")
+    out.ok("models", f"{len(roles)} role(s) checked, {len(providers)} provider(s)")
 
 
 def _check_agent_names(config: dict[str, Any], config_problem: str, out: _Lines) -> None:

@@ -187,7 +187,9 @@ class TestStaleDecisionWiring:
 
         with pytest.raises(TimeoutError):
             supervisor.run_supervisor_via_subprocess(
-                "verify", "TODO-0001", proj, {}, "phases/plan.md", logs,
+                "verify", "TODO-0001", proj,
+                {"models": {"supervisor": {"model": "p/test"}}},
+                "phases/plan.md", logs,
                 wait_timeout=1,
             )
         text = (logs / "orchestrator.log").read_text(encoding="utf-8")
@@ -210,7 +212,10 @@ class TestStaleDecisionWiring:
             "verify", "TODO-0001", proj,
             # TODO-0364: the window is not what this test measures — keep
             # the run fast.
-            {"wait": {"human_override_seconds": 0}},
+            {
+                "wait": {"human_override_seconds": 0},
+                "models": {"supervisor": {"model": "p/test"}},
+            },
             "phases/plan.md", logs
         )
         assert signal == "APPROVE-TODO-0001"

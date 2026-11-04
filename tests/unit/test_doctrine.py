@@ -153,7 +153,9 @@ class TestWorkerPromptInjection:
     def _run(self, captured, proj):
         stage = Stage(name="agent-dev", role="developer", kind="execute")
         agent_stage.run_agent_stage(
-            stage, TASK_ID, proj, {}, proj / ".agentic" / "logs"
+            stage, TASK_ID, proj,
+            {"models": {"developer": {"model": "p/test"}}},
+            proj / ".agentic" / "logs",
         )
         return captured["cmd"]
 
@@ -233,7 +235,8 @@ class TestSupervisorPromptInjection:
         )
 
         supervisor.run_supervisor_via_subprocess(
-            "plan", "", proj, {}, str(phases), proj / ".agentic" / "logs"
+            "plan", "", proj, {"models": {"supervisor": {"model": "p/test"}}},
+            str(phases), proj / ".agentic" / "logs"
         )
 
         files = []

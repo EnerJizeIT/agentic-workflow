@@ -7,6 +7,10 @@ from pathlib import Path
 
 import pytest
 
+# A48: the spawn-test project factory lives with its helpers; a conftest
+# import registers the fixture for the three role-model test files.
+from tests.unit._role_model_fixtures import role_project  # noqa: F401 — fixture
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
