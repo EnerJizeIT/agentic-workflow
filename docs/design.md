@@ -188,7 +188,8 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `_env.py` | Worker-окружение: `OPENCODE_CONFIG_CONTENT`, `automation.readonly_roles`, реестр permission-ключей и мерж профиля tools стадии (ORCH M7.2) |
 | `_atomic.py`, `_lock.py` | Атомарные записи, file lock (read→merge→write) |
 | `cli.py`, `cmd_*.py` | CLI: `awf start`, `awf baseline`, `awf brief`, `awf metrics`, ... |
-| `pipeline.py` | Разбор пайплайна: Stage, load_stages, kind по позиции (BD-29), валидация YAML (A-06) |
+| `pipeline.py` | Разбор пайплайна: Stage, load_stages, kind из типа стадии (`stage_types`, IMP1), валидация YAML (A-06) |
+| `stage_context_types.py` | IMP1: тип стадии как данные — пять семейств и строка `checklist`, `resolve` из `stage_types` (`CTX-TYPE-DEFAULT`/`MISSING`/`STRICT`), генерация для `init` и сверка для `doctor`, `engine_kind` |
 | `pipeline.py` — тождество стадии | Stage `id` (адрес: имя стадии = id) + `task` (поручение): повторы роли с разными id, дубли id отвергаются (ORCH M3.1) |
 | `pipeline.py` — поручение стадии | Stage `input`/`output` (относительные пути проекта): execute-промпт несёт task/входы/выходы, движок проверяет объявленный выход (существует + свежий) перед переходом к следующей стадии, лимит повтора — на экземпляр стадии (ORCH M3.2) |
 | `pipeline.py` — профиль tools стадии | Stage `tools` (`allow`/`deny` списки permission-ключей: bash/edit/write/webfetch + `<server>_<tool>` MCP): единый реестр ключей (неизвестный — ошибка загрузки), мерж в `awf/_env.py` при спавне поверх M2.2 + readonly_roles — deny сильнее allow, базовые управляющие запреты профилем не отменяются (ORCH M7.2) |

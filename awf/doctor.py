@@ -48,6 +48,7 @@ import yaml
 
 from . import command_parse, config_keys, paths, suite_command, versions, xdg
 from . import config as cfg_mod
+from ._errors import AwfApiError
 from .supervisor import argv_agent_flag, missing_model_message
 
 OK = "ok"
@@ -562,6 +563,54 @@ def _check_config_keys(config: dict[str, Any], out: _Lines) -> None:
         out.ok("config keys", "every key has a reader")
 
 
+def _check_stage_types(root: Path, config: dict[str, Any], out: _Lines) -> None:
+    """IMP1 (AC33/R14): ``stage_types`` names and values match the pipelines.
+
+    Read-only: the doctor generates the expected table and compares — it
+    never writes the config (RR58).  A removed name, a stale value and an
+    extra name are each named in the WARN line.
+    """
+    from .api._templates import awf_templates_dir
+    from .stage_context_types import mapping_for_project
+
+    pipelines = paths.pipelines_dir(root)
+    if not any(pipelines.glob("*.yaml")):
+        # A project that has not chosen a pipeline yet has no stage names to
+        # type; init writes the block with the first pipeline.
+        out.ok("stage types", "no pipelines yet — nothing to compare")
+        return
+    try:
+        expected = mapping_for_project(
+            root, fallback_dir=awf_templates_dir() / "pipelines"
+        )
+    except AwfApiError as e:  # a role outside the rule: a WARN, not a traceback
+        out.warn("stage types", f"cannot generate stage_types: {e}")
+        return
+    live = config.get("stage_types")
+    if not isinstance(live, dict) or not live:
+        out.warn(
+            "stage types",
+            "stage_types is missing or empty in .agentic/config.yaml — "
+            "run 'awf init' to generate it",
+        )
+        return
+    problems: list[str] = []
+    for name, value in expected.items():
+        if name not in live:
+            problems.append(f"'{name}' is not declared (expected {value!r})")
+        elif live[name] != value:
+            problems.append(
+                f"'{name}' is {live[name]!r} (expected {value!r})"
+            )
+    for name in live:
+        if name != "strict" and name not in expected:
+            problems.append(f"'{name}' is not a stage of any pipeline")
+    if problems:
+        out.warn("stage types", "; ".join(problems))
+    else:
+        out.ok("stage types", f"{len(expected)} stage names match the pipelines")
+
+
 def _load_config(root: Path) -> tuple[dict[str, Any], str]:
     """The live config plus one problem line (``""`` when it reads fine).
 
@@ -615,6 +664,7 @@ def run_doctor(project_dir: str | Path = ".") -> DoctorReport:
     else:
         _check_verification(config, out)
         _check_config_keys(config, out)
+        _check_stage_types(root, config, out)
     _check_contract_gate(root, out)
     return DoctorReport(
         rc=1 if out.warnings else 0,

@@ -27,6 +27,11 @@ READ_KEYS: frozenset[str] = frozenset({
     "default_pipeline",
     "discipline",
     "discipline.dirty_policy",
+    # IMP1 (R14): the stage-type table. Its leaves are stage names (user/init
+    # data), so the whole subtree counts as read; ``stage_types.strict`` is
+    # the one code-read switch under it (warn → refuse).
+    "stage_types",
+    "stage_types.*",
     # models is a per-role map: the role names are the user's, so the
     # whole subtree counts as read (models.<role>.model / .description /
     # .agent_name).

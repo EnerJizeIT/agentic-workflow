@@ -59,7 +59,13 @@ def _project(tmp_path: Path) -> Path:
     proj = tmp_path / "proj"
     (proj / ".agentic" / "pipelines").mkdir(parents=True)
     (proj / ".agentic" / "config.yaml").write_text(
-        "project:\n  name: T\n", encoding="utf-8"
+        # IMP1: the type table is part of a live config; an undeclared NAME
+        # still loads (CTX-TYPE-DEFAULT). A missing KEY is refused by
+        # resolve(); load_stages still falls back to the role rule (AC40
+        # open — QA TODO-0378).
+        "project:\n  name: T\n"
+        "stage_types:\n  plan: plan\n  verify: supervisor\n",
+        encoding="utf-8",
     )
     return proj
 

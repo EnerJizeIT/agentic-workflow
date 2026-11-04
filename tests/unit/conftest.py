@@ -251,6 +251,12 @@ def tmp_pipeline_file(tmp_path: Path) -> tuple[Path, dict]:
     }
     (agentic / "config.yaml").write_text(
         "project:\n  name: test-project\ndefault_pipeline: default\n"
+        # IMP1: the fixture pipelines declare their types like a real
+        # project does. A config without the key still loads by the role
+        # rule (AC40's refusal is open — QA TODO-0378).
+        "stage_types:\n"
+        "  plan: plan\n  implement: execute\n  review: execute\n"
+        "  test: execute\n  finalize: supervisor\n  verify: supervisor\n"
     )
 
     return tmp_path, config

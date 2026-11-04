@@ -1,18 +1,20 @@
 """Pipeline parsing — Stage dataclass, load_stages, resolve_pipeline_file.
 
-BD-29: pipeline stages no longer have an `action` field. Awf computes the
-kind (plan / execute / verify) from the stage's position:
+BD-29 / IMP1 (R1, RR55): a stage's kind (plan / execute / verify) is no
+longer computed from its position. It comes from the stage's type — the
+``stage_types.<name>`` entry in ``.agentic/config.yaml`` resolved by
+:mod:`awf.stage_context_types`; a bare pipeline file without a project config
+uses the same R14 name/role rule as data.
 
-- Stage index 0           → kind="plan"   (supervisor creates TODO)
-- Stage index N-1         → kind="verify" (supervisor verifies + commits)
-- All stages between      → kind="execute" (agents do work)
+- ``plan`` family            → ``plan``   (supervisor creates the TODO)
+- ``supervisor`` family      → ``verify`` (supervisor verifies + commits)
+- authoring/review/checklist → ``execute`` (an agent stage does the work)
 
 A-06 (audit 2026-09-25): the loader validates the document FORM before
 building Stage objects (validate_pipeline_document) — the same rule set
 as the write path (awf.api.write_pipeline, shared validator). Legacy
 `action:`/`kind:` keys in YAML are rejected as unknown keys (they were
-read-but-ignored; kind is computed from position, action was never a
-runtime input).
+read-but-ignored; kind comes from the type, action was never a runtime input).
 
 ORCH M3.1: a stage may carry an optional ``id`` (unique stage address —
 the stage NAME becomes it, so one role may appear twice with different
@@ -44,8 +46,8 @@ from .stage_timeout import is_valid as is_valid_stage_timeout
 class Stage:
     """A single stage in a pipeline.
 
-    `kind` is computed at load time from position (see module docstring).
-    It is NOT in pipeline.yaml.
+    `kind` is derived at load time from the stage's TYPE (``stage_types``),
+    not from position. It is NOT in pipeline.yaml.
     """
     name: str
     role: str
@@ -239,25 +241,37 @@ ALLOWED_STAGE_KEYS = frozenset(
 SKIP_IF_ALLOWED = frozenset({"checklist_green", "checklist_close_skipped"})
 
 
-def _compute_kind(position: int, total: int) -> str:
-    """BD-29: compute kind from position in the pipeline.
+def _project_config(pipeline_file: Path) -> tuple[dict[str, Any], Path] | None:
+    """The project config a pipeline file belongs to, or ``None``.
 
-    - First stage  → "plan"
-    - Last stage   → "verify"
-    - Middle       → "execute"
-    - Single stage → "plan" (degenerate — no agents, just supervisor creating+committing)
-
-    Special case: if the stage's role is "supervisor" AND it's not the first
-    or last, kind is still computed by position — but callers should validate
-    that supervisor only appears at endpoints.
+    A pipeline lives under ``<project>/.agentic/pipelines/`` or in the
+    per-unit snapshot area ``<project>/.agentic/context/``; walking up to the
+    first ``.agentic/config.yaml`` keeps both layouts working.  A bare
+    template file loaded by tests has no project and no ``stage_types`` —
+    the caller then uses the data rule without a config.
     """
-    if total <= 1:
-        return "plan"
-    if position == 0:
-        return "plan"
-    if position == total - 1:
-        return "verify"
-    return "execute"
+    for parent in Path(pipeline_file).resolve().parents:
+        candidate = parent / ".agentic" / "config.yaml"
+        if candidate.is_file():
+            return cfg_mod.load(parent), candidate
+    return None
+
+
+def _stage_kind(
+    name: str,
+    role: str,
+    config: tuple[dict[str, Any], Path] | None,
+) -> str:
+    """IMP1/RR55: kind from the stage's type, never from its position."""
+    from .stage_context_types import engine_kind, family_for_stage, load_family
+
+    if config is not None:
+        data, config_path = config
+        return engine_kind(
+            load_family(data, name, role, config_path=config_path)
+        )
+    # A bare template file loaded by tests has no project and no config.
+    return engine_kind(family_for_stage(name, role))
 
 
 def _is_project_relative(value: str) -> bool:
@@ -639,9 +653,14 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
     # AUD7: a fix round rewinds INTO a stage that does work. Rewinding to a
     # supervisor stage (plan/verify) would loop without an agent — that is a
     # pipeline definition error, caught here instead of on the first reject.
+    from .stage_context_types import engine_kind, family_for_stage
+
     kinds = {
-        str(stage.get("id") or stage.get("name") or f"#{i}"): _compute_kind(
-            i, len(result)
+        str(stage.get("id") or stage.get("name") or f"#{i}"): engine_kind(
+            family_for_stage(
+                str(stage.get("id") or stage.get("name") or ""),
+                str(stage.get("role") or ""),
+            )
         )
         for i, stage in enumerate(result)
     }
@@ -684,7 +703,8 @@ def validate_pipeline_document(data: Any, source: str) -> list[dict[str, Any]]:
 def load_stages(pipeline_file: str | Path) -> list[Stage]:
     """Parse a pipeline YAML file and return a list of Stage objects.
 
-    BD-29: kind is computed from position.
+    IMP1/RR55: ``kind`` comes from the stage's type (``stage_types`` in the
+    project config; the name/role rule for a bare file) — never from position.
     A-06: the document form is validated (validate_pipeline_document)
     before any Stage is built — a malformed hand-written YAML raises
     AwfApiError at load instead of surfacing mid-run. Byte-level
@@ -706,9 +726,9 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
 
     raw_stages = validate_pipeline_document(data, p.name)
     result: list[Stage] = []
-    total = len(raw_stages)
+    config = _project_config(p)
 
-    for dict_index, s in enumerate(raw_stages):
+    for s in raw_stages:
         kwargs: dict[str, Any] = {}
         # ORCH M3.1: an explicit id becomes the stage address — the stage
         # name is the id (handoff files ``<name>-<todo>.md`` then stay
@@ -741,7 +761,9 @@ def load_stages(pipeline_file: str | Path) -> list[Stage]:
             kwargs[pk] = s.get(pk, _DEFAULTS[pk])
         kwargs["max_retries"] = s.get("max_retries", _DEFAULTS["max_retries"])
         kwargs["max_rollbacks"] = s.get("max_rollbacks", _DEFAULTS["max_rollbacks"])
-        kwargs["kind"] = _compute_kind(dict_index, total)
+        kwargs["kind"] = _stage_kind(
+            str(kwargs["name"]), str(kwargs["role"]), config
+        )
         result.append(Stage(**kwargs))
 
     # NEG-2 (dogfood-11): rollback targets must exist. Warn at load time

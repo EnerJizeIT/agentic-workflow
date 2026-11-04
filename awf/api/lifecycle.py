@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,37 @@ _SKELETON_DIRS = [
     *_FRESH_DIRS,
     "handoff", "done", "state", "dashboards", "inputs",
 ]
+
+
+def _stage_type_pairs(project_dir: Path, fallback: Path) -> dict[str, str]:
+    """IMP1 (R14/AC33): ``stage name → type`` from the project's pipelines.
+
+    A fresh project has no ``.agentic/pipelines/`` yet; the shipped templates
+    are the starting set.  The generator refuses a role outside its rule; a
+    custom pipeline must not make ``init`` fail, so that name is skipped and
+    the runtime reports ``CTX-TYPE-DEFAULT`` for it (D8) — the type is never
+    guessed into the config.
+    """
+    from ..stage_context_types import pairs_for_project, value_for_stage
+
+    mapping: dict[str, str] = {}
+    for name, role in pairs_for_project(project_dir, fallback):
+        try:
+            mapping[name] = value_for_stage(name, role, strict=True)
+        except AwfApiError as e:
+            print(f"WARNING: stage_types skips '{name}': {e}", file=sys.stderr)
+    return mapping
+
+
+def _apply_stage_types(project_dir: Path, config_text: str) -> str:
+    """Patch the ``stage_types`` block; unchanged text stays byte-identical."""
+    from ..stage_context_types import write_stage_types
+    from ._templates import awf_templates_dir
+
+    return write_stage_types(
+        config_text,
+        _stage_type_pairs(project_dir, awf_templates_dir() / "pipelines"),
+    )
 
 
 def _init_plan_dirs(project_dir: Path) -> list[str]:
@@ -533,10 +565,33 @@ def init_project(
                 created_dirs.append(f".agentic/doctrine/{name}")
             for rel in _seed_checkpoint_template(project_dir):
                 created_dirs.append(rel)
+            # The branch's warning list: defined BEFORE the stage_types
+            # block so an unreadable config is reported instead of an
+            # UnboundLocalError (QA review TODO-0378).
+            warnings: list[str] = []
+            # IMP1 (AC33): a config written before this key existed gets the
+            # block here; the patcher leaves every other byte alone and a
+            # second init returns the same text (idempotent).
+            config_file = agentic / "config.yaml"
+            if config_file.is_file():
+                try:
+                    old_text = config_file.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError) as e:
+                    warnings.append(
+                        f"stage_types not refreshed: {config_file} unreadable ({e})"
+                    )
+                else:
+                    new_text = _apply_stage_types(project_dir, old_text)
+                    if new_text != old_text:
+                        _bootstrap_write(
+                            config_file,
+                            new_text,
+                            operation="init stage_types",
+                        )
+                        created_dirs.append(".agentic/config.yaml")
             config = cfg_mod.load(project_dir)
             project_name_val = config.get("project", {}).get("name", project_dir.name)
             vision_path = paths.find_vision_file(project_dir)
-            warnings: list[str] = []
             vision_excerpt, _reason = _read_vision_excerpt(vision_path)
             if _reason:
                 warnings.append(_reason)
@@ -644,6 +699,9 @@ def init_project(
         typecheck_cmd=typecheck_cmd,
         build_cmd=build_cmd,
     )
+    # IMP1 (R14/AC33): the type table ships with the skeleton, computed from
+    # the project's pipelines (else the shipped templates).
+    config_content = _apply_stage_types(project_dir, config_content)
     # TODO-0234 REVIEW (architect): API-layer writers share ONE barrier
     # (``managed_write_api_text``) so a refusal is an AwfApiError here too,
     # not a raw ManagedPathError leaking out of the API.
