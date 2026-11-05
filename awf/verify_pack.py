@@ -1427,7 +1427,9 @@ def _rerun_claims(
             report.skip("claim", probes=probes)
             continue
         try:
-            argv = shlex.split(cmd)
+            # A66: the shared parser owns the rule — a trailing `` # note``
+            # is prose, not argv. The rerun stays a rerun; nothing is excused.
+            argv = command_parse.split_argv(cmd)
         except ValueError:
             report.skip("malformed", probes=probes)
             continue
