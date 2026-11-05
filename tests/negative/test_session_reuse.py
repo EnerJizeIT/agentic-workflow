@@ -52,6 +52,9 @@ def _project(tmp_path):
     proj = tmp_path / "proj"
     for sub in ("inbox", "outbox", "logs", "roles", "context", "state"):
         (proj / ".agentic" / sub).mkdir(parents=True, exist_ok=True)
+    (proj / ".agentic" / "config.yaml").write_text(
+        f"stage_types:\n  {STAGE}: execute\n", encoding="utf-8"
+    )
     (proj / ".agentic" / "roles" / f"{ROLE}.md").write_text("# role\n", encoding="utf-8")
     (proj / ".agentic" / "inbox" / f"{TODO}.md").write_text("# TODO\n", encoding="utf-8")
     return proj

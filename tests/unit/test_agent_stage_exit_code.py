@@ -48,11 +48,12 @@ def _capture_run(monkeypatch, fake_rc: int, write_signal: bool, outbox: Path):
 
 def _project(tmp_path: Path) -> Path:
     proj = tmp_path / "proj"
-    (proj / ".agentic" / "inbox").mkdir(parents=True)
-    (proj / ".agentic" / "outbox").mkdir(parents=True)
-    (proj / ".agentic" / "logs").mkdir(parents=True)
+    for name in ("inbox", "outbox", "logs", "context", "roles"):
+        (proj / ".agentic" / name).mkdir(parents=True)
+    (proj / ".agentic" / "config.yaml").write_text(
+        "stage_types:\n  agent-dev: execute\n", encoding="utf-8"
+    )
     roles = proj / ".agentic" / "roles"
-    roles.mkdir(parents=True)
     (roles / "developer.md").write_text("# Developer role\n", encoding="utf-8")
     return proj
 

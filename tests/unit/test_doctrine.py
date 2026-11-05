@@ -23,8 +23,12 @@ TASK_ID = "TODO-0001"
 
 def _project(tmp_path, with_doctrine: bool = True, names: tuple = ("a.md", "b.md")):
     proj = tmp_path / "proj"
-    for d in ("inbox", "outbox", "logs", "roles"):
+    for d in ("inbox", "outbox", "logs", "roles", "context"):
         (proj / ".agentic" / d).mkdir(parents=True, exist_ok=True)
+    (proj / ".agentic" / "config.yaml").write_text(
+        "stage_types:\n  plan: plan\n  verify: supervisor\n  agent-dev: execute\n",
+        encoding="utf-8",
+    )
     (proj / ".agentic" / "roles" / "developer.md").write_text(
         "# Developer role\n", encoding="utf-8"
     )
@@ -170,32 +174,30 @@ class TestWorkerPromptInjection:
                 i += 1
         return files
 
-    def test_doctrine_between_role_and_todo(self, tmp_path, monkeypatch):
+    def test_doctrine_is_a_context_block_not_a_file(self, tmp_path, monkeypatch):
         captured = self._capture(monkeypatch)
         proj = _project(tmp_path)
         cmd = self._run(captured, proj)
-        files = self._file_positions(cmd, proj)
-        role = str(proj / ".agentic" / "roles" / "developer.md")
-        doctrine_file = str(proj / ".agentic" / "context" / "DOCTRINE.md")
-        todo = str(proj / ".agentic" / "inbox" / f"{TASK_ID}.md")
-        assert files == [role, doctrine_file, todo]
-        # the doctrine file on disk holds the section with both lessons
-        assert "## Доктрина проекта" in (proj / ".agentic" / "context" / "DOCTRINE.md").read_text()
+        assert "--file" not in cmd
+        prompt = cmd[-1]
+        assert "## Доктрина проекта" in prompt
+        assert "lesson a.md" in prompt
 
-    def test_no_catalog_no_doctrine_file(self, tmp_path, monkeypatch):
-        """Backward compat: without .agentic/doctrine the cmd is as before."""
+    def test_no_catalog_no_doctrine_block(self, tmp_path, monkeypatch):
+        """Without .agentic/doctrine the block states the absence."""
         captured = self._capture(monkeypatch)
         proj = _project(tmp_path, with_doctrine=False)
         cmd = self._run(captured, proj)
-        files = self._file_positions(cmd, proj)
-        assert all("DOCTRINE" not in f for f in files)
-        assert len(files) == 2  # role + todo only
+        assert "--file" not in cmd
+        assert "## Доктрина проекта" not in cmd[-1]
 
     def test_execute_prompt_deterministic(self, tmp_path):
-        """Part B: build_prompt has no time/randomness — same input, same bytes."""
+        """Part B: the builder has no time/randomness — same bytes twice."""
+        from awf.stage_context import build_stage_context
+
         proj = _project(tmp_path)
-        p1 = supervisor.build_prompt("execute", TASK_ID, project_dir=proj)
-        p2 = supervisor.build_prompt("execute", TASK_ID, project_dir=proj)
+        p1 = build_stage_context(proj, TASK_ID, "agent-dev", "developer").text
+        p2 = build_stage_context(proj, TASK_ID, "agent-dev", "developer").text
         assert p1 == p2
 
 
@@ -221,8 +223,11 @@ class TestSupervisorPromptInjection:
         )
 
         proj = tmp_path / "sup"
-        for d in ("inbox", "outbox", "logs", "roles"):
+        for d in ("inbox", "outbox", "logs", "roles", "context"):
             (proj / ".agentic" / d).mkdir(parents=True)
+        (proj / ".agentic" / "config.yaml").write_text(
+            "stage_types:\n  plan: plan\n  verify: supervisor\n", encoding="utf-8"
+        )
         (proj / ".agentic" / "roles" / "supervisor.md").write_text(
             "# Supervisor\n", encoding="utf-8"
         )
@@ -239,15 +244,7 @@ class TestSupervisorPromptInjection:
             str(phases), proj / ".agentic" / "logs"
         )
 
-        files = []
-        i = 0
         cmd = captured["cmd"]
-        while i < len(cmd) - 1:
-            if cmd[i] == "--file":
-                files.append(cmd[i + 1])
-                i += 2
-            else:
-                i += 1
-        role = str(proj / ".agentic" / "roles" / "supervisor.md")
-        doctrine_file = str(proj / ".agentic" / "context" / "DOCTRINE.md")
-        assert files == [role, doctrine_file, str(phases)]
+        assert "--file" not in cmd
+        assert "## Доктрина проекта" in cmd[-1]
+        assert "01-lesson.md" in cmd[-1]

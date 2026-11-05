@@ -47,7 +47,6 @@ def _mock_pipeline(monkeypatch, behavior, baseline_sha: str | None = "abc123"):
 
     monkeypatch.setattr(pipeline_engine, "_run_agent_stage", mock_agent)
     monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
-    monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
     monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: baseline_sha)
     monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "")
     # R-03: the gate returns a typed outcome; the worker stage's policy is

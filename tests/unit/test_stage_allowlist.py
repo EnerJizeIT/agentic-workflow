@@ -111,7 +111,6 @@ def test_path_outside_allowlist_blocks_stage(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pipeline_engine, "_run_agent_stage", fake_worker)
     monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
-    monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
     monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: None)
     monkeypatch.setattr(pipeline_engine, "_write_state", lambda *a, **kw: None)
     monkeypatch.setattr(pipeline_engine, "_handle_escalate", fake_escalate)
@@ -200,7 +199,6 @@ def _patch_engine(monkeypatch, repo: Path, worker, state_calls: list[dict]):
 
     monkeypatch.setattr(pipeline_engine, "_run_agent_stage", worker)
     monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
-    monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
     monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: None)
     monkeypatch.setattr(pipeline_engine, "_write_state", fake_state)
     monkeypatch.setattr(pipeline_engine, "_handle_escalate", fake_escalate)

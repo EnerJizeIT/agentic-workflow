@@ -13,9 +13,6 @@ from awf.agent_stage import (
     collect_handoff as _collect_handoff,
 )
 from awf.agent_stage import (
-    resolve_prev_handoffs as _resolve_prev_handoffs,
-)
-from awf.agent_stage import (
     run_agent_stage as _run_agent_stage,
 )
 from awf.commit_gate import maybe_commit as _maybe_commit
@@ -49,6 +46,16 @@ def _init_proj_dirs(proj: Path) -> None:
     (agentic / "outbox").mkdir(parents=True)
     (agentic / "context").mkdir(parents=True)
     (agentic / "logs").mkdir(parents=True)
+    # IMP2b: the stage text comes from the builder — a project needs its
+    # declared stage types (a missing key is CTX-TYPE-MISSING by design).
+    config = agentic / "config.yaml"
+    if not config.exists():
+        config.write_text(
+            "stage_types:\n  plan: plan\n  verify: supervisor\n  replan: supervisor\n"
+            "  execute: execute\n  agent-dev: execute\n  qa: execute\n"
+            "  agent-implementer: execute\n",
+            encoding="utf-8",
+        )
 
 
 class _FakePopen:
@@ -65,10 +72,16 @@ class _FakePopen:
     pid = 12345
     # Class-level sink so tests can introspect the last invocation.
     _last_cmds: list[list[str]] = []
-    stdout = ""
-    stderr = ""
+    # Bytes, like a real Popen with no ``text=True``: ``subprocess.run``
+    # hands these to ``CompletedProcess`` and callers decode them.
+    stdout = b""
+    stderr = b""
 
     def __init__(self, cmd, cwd=None, **kwargs):
+        # ``subprocess.run`` builds its ``CompletedProcess`` from
+        # ``process.args``: a fake without it crashes the real call sites
+        # (git helpers reached through the patched Popen).
+        self.args = cmd
         self.cmd = cmd
         self.cwd = cwd
         self.returncode = 0
@@ -118,7 +131,7 @@ class _FailingPopen(_FakePopen):
 def _fake_run(cmd, *args, **kwargs):
     """Stub subprocess.run so git command calls inside _collect_handoff
     and elsewhere don't actually shell out during tests."""
-    return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+    return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=b"", stderr=b"")
 
 
 def _patch_subprocess_for_awf(monkeypatch):
@@ -424,8 +437,8 @@ class TestRunAgentStageCmd:
     def test_run_agent_stage_no_skill_only_role_and_todo(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """BD-27: form embeds skill into role.md — no separate .agentic/skills/.
-        Agent cmd has exactly 2 --file args: role.md + TODO-NNNN.md."""
+        """IMP2b: role, TODO and doctrine travel inside the prompt text —
+        the argv carries no ``--file`` at all."""
         project_dir = self._setup_project(tmp_path, monkeypatch)
 
         stage = Stage(name="execute", role="worker", kind="execute")
@@ -433,8 +446,8 @@ class TestRunAgentStageCmd:
         _run_agent_stage(stage, "TODO-0001", project_dir, MODEL_CONFIG, project_dir / ".agentic" / "logs")
 
         captured = _FakePopen._last_cmds[-1]
-        file_indices = [i for i, x in enumerate(captured) if x == "--file"]
-        assert len(file_indices) == 2
+        assert "--file" not in captured
+        assert captured[-1].strip()
 
     def test_run_agent_stage_passes_model_when_set_bd24(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -847,6 +860,7 @@ class TestSupervisorViaSubprocess:
             "project:\n  name: test\n  root: .\n"
             "models:\n  supervisor:\n    model: p/test\n    description: current\n"
             "phases:\n  current: .agentic/phases/plan.md\n"
+            "stage_types:\n  plan: plan\n  verify: supervisor\n  replan: supervisor\n"
         )
         return proj
 
@@ -866,8 +880,8 @@ class TestSupervisorViaSubprocess:
         assert "--auto" in cmd
         # A13: this config names no agent for the supervisor — no flag.
         assert "--agent" not in cmd
-        assert any("supervisor.md" in c for c in cmd)
-        assert any("plan.md" in c for c in cmd)
+        assert "--file" not in cmd
+        assert "# Plan" in cmd[-1]
         out = capsys.readouterr().out
         assert "Spawning supervisor subprocess" in out
 
@@ -933,7 +947,7 @@ class TestSupervisorViaSubprocess:
         for role in ("developer", "tester", "qa"):
             assert not any(f"{role}-TODO-0042.md" in c for c in cmd), role
         assert "Read ALL handoffs" not in cmd[-1]
-        assert "do NOT run tests" in cmd[-1]
+        assert "прошлая сессия не источник фактов" in cmd[-1]
 
     def test_auto_no_supervisor_md_falls_back_to_skip(
         self, tmp_path: Path, capsys
@@ -991,6 +1005,8 @@ class TestSupervisorViaSubprocess:
         (agentic / "inbox").mkdir(parents=True)
         (agentic / "inbox" / "TODO-0001.md").write_text("task")
         (agentic / "logs").mkdir(parents=True)
+        (agentic / "context").mkdir(parents=True)
+        (agentic / "config.yaml").write_text("stage_types:\n  execute: execute\n")
         fake_home = tmp_path / "home"
         (fake_home / ".config" / "awf" / "roles").mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: fake_home)
@@ -1354,41 +1370,47 @@ class TestHandoffChain:
     def test_run_agent_stage_forwards_prev_handoffs(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """BD-15: prev_handoffs list is passed as --file args."""
+        """IMP2b: handoffs are PREV/PREVLINK blocks, not ``--file`` args."""
         proj = self._setup_project(tmp_path, monkeypatch)
         handoff_dir = proj / ".agentic" / "handoff"
         handoff_dir.mkdir(parents=True)
-        (handoff_dir / "system-analysis.md").write_text("# Handoff sys-analysis\n...")
-        (handoff_dir / "developer.md").write_text("# Handoff developer\n...")
+        older = handoff_dir / "system-analysis-TODO-0001.md"
+        newer = handoff_dir / "developer-TODO-0001.md"
+        older.write_text("# Handoff sys-analysis\nOLDER-BODY", encoding="utf-8")
+        newer.write_text("# Handoff developer\nNEWER-BODY", encoding="utf-8")
+        import os
+
+        os.utime(older, (1_000_000, 1_000_000))
+        os.utime(newer, (2_000_000, 2_000_000))
 
         stage = Stage(name="qa", role="worker", kind="execute")
         _patch_subprocess_for_awf(monkeypatch)
-        prev = [handoff_dir / "system-analysis.md", handoff_dir / "developer.md"]
-        _run_agent_stage(stage, "TODO-0001", proj, MODEL_CONFIG, proj / ".agentic" / "logs", prev_handoffs=prev)
+        _run_agent_stage(stage, "TODO-0001", proj, MODEL_CONFIG, proj / ".agentic" / "logs")
 
         opencode_cmd = _FakePopen._last_cmds[0]
-        assert "--file" in opencode_cmd
-        assert any("system-analysis.md" in c for c in opencode_cmd)
-        assert any("developer.md" in c for c in opencode_cmd)
+        assert "--file" not in opencode_cmd
+        prompt = opencode_cmd[-1]
+        assert "NEWER-BODY" in prompt
+        assert "system-analysis-TODO-0001.md" in prompt
 
-    def test_run_agent_stage_filters_missing_handoffs(
+    def test_run_agent_stage_forwards_the_newest_handoff_only(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """BD-15: prev_handoffs that don't exist on disk are skipped."""
+        """IMP2b: the newest handoff is the PREV block; older ones are links."""
         proj = self._setup_project(tmp_path, monkeypatch)
         handoff_dir = proj / ".agentic" / "handoff"
         handoff_dir.mkdir(parents=True)
-        (handoff_dir / "system-analysis.md").write_text("# Handoff\n...")
-        # developer.md intentionally NOT created
+        (handoff_dir / "system-analysis-TODO-0001.md").write_text(
+            "# Handoff\nOLDER-BODY", encoding="utf-8"
+        )
 
         stage = Stage(name="qa", role="worker", kind="execute")
         _patch_subprocess_for_awf(monkeypatch)
-        prev = [handoff_dir / "system-analysis.md", handoff_dir / "developer.md"]
-        _run_agent_stage(stage, "TODO-0001", proj, MODEL_CONFIG, proj / ".agentic" / "logs", prev_handoffs=prev)
+        _run_agent_stage(stage, "TODO-0001", proj, MODEL_CONFIG, proj / ".agentic" / "logs")
 
-        opencode_cmd = _FakePopen._last_cmds[0]
-        assert any("system-analysis.md" in c for c in opencode_cmd)
-        assert not any("developer.md" in c for c in opencode_cmd)
+        prompt = _FakePopen._last_cmds[0][-1]
+        assert "OLDER-BODY" in prompt
+        assert "--file" not in _FakePopen._last_cmds[0]
 
     def test_collect_handoff_writes_file_with_progress_and_done(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1533,44 +1555,6 @@ class TestHandoffChain:
         assert "Worker did not leave progress notes" not in body
         assert "Work complete" in body
 
-    def test_resolve_prev_handoffs_skips_supervisor_stages(self, tmp_path) -> None:
-        """BD-15/19: supervisor stages don't produce handoffs — only agent roles.
-
-        Day-3: paths are keyed by STAGE name; legacy role-named files still
-        resolve through the fallback.
-        """
-        proj = tmp_path / "proj"
-        proj.mkdir()
-        (proj / ".agentic").mkdir()
-        stages = [
-            Stage(name="plan", role="supervisor", kind="plan"),
-            Stage(name="r1", role="analyst", kind="execute"),
-            Stage(name="r2", role="dev", kind="execute"),
-            Stage(name="verify", role="supervisor", kind="verify"),
-            Stage(name="r3", role="qa", kind="execute"),
-        ]
-        # Current stage is index 4 (qa). Previous agent stages = analyst, dev.
-        prev = _resolve_prev_handoffs(stages, 4, proj, todo_id="TODO-0042")
-        assert [p.name for p in prev] == ["r1-TODO-0042.md", "r2-TODO-0042.md"]
-
-        # In-flight legacy run: a role-named file resolves via fallback.
-        handoff_dir = proj / ".agentic" / "handoff"
-        handoff_dir.mkdir(parents=True, exist_ok=True)
-        (handoff_dir / "analyst-TODO-0042.md").write_text("legacy\n", encoding="utf-8")
-        prev = _resolve_prev_handoffs(stages, 4, proj, todo_id="TODO-0042")
-        assert [p.name for p in prev] == ["analyst-TODO-0042.md", "r2-TODO-0042.md"]
-
-    def test_resolve_prev_handoffs_empty_for_first_agent_stage(self, tmp_path) -> None:
-        """First agent stage has no prior handoffs."""
-        proj = tmp_path / "proj"
-        proj.mkdir()
-        (proj / ".agentic").mkdir()
-        stages = [
-            Stage(name="plan", role="supervisor", kind="plan"),
-            Stage(name="impl", role="worker", kind="execute"),
-        ]
-        prev = _resolve_prev_handoffs(stages, 1, proj)
-        assert prev == []
 
     def test_handoff_naming_includes_todo_id_bd19(self, tmp_path, monkeypatch) -> None:
         """BD-19: filename is role-<todo>.md so retries don't overwrite prior handoffs."""
@@ -1599,24 +1583,6 @@ class TestHandoffChain:
         assert (handoff_dir / "worker-TODO-0001.md").exists()
         assert (handoff_dir / "worker-TODO-0002.md").exists()
 
-    def test_resolve_prev_handoffs_no_todo_id_falls_back_to_glob(self, tmp_path) -> None:
-        """BD-19: when todo_id is empty, scan handoff_dir for <role>-*.md files."""
-        proj = tmp_path / "proj"
-        proj.mkdir()
-        handoff_dir = proj / ".agentic" / "handoff"
-        handoff_dir.mkdir(parents=True)
-        # Seed multiple handoffs for analyst across TODOs
-        (handoff_dir / "analyst-TODO-0001.md").write_text("v1")
-        (handoff_dir / "analyst-TODO-0002.md").write_text("v2")  # newer
-
-        stages = [
-            Stage(name="r1", role="analyst", kind="execute"),
-            Stage(name="r2", role="dev", kind="execute"),
-        ]
-        # No todo_id provided — should pick newest analyst-*.md
-        prev = _resolve_prev_handoffs(stages, 1, proj, todo_id="")
-        assert len(prev) == 1
-        assert "analyst-TODO-0002.md" in prev[0].name
 
 
 class TestSupervisorReplan:
@@ -1634,6 +1600,7 @@ class TestSupervisorReplan:
             "project:\n  name: test\n  root: .\n"
             "models:\n  supervisor:\n    model: p/test\n    description: current\n"
             "phases:\n  current: .agentic/phases/plan.md\n"
+            "stage_types:\n  plan: plan\n  verify: supervisor\n  replan: supervisor\n"
         )
         return proj
 

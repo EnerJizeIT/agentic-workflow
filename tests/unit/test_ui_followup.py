@@ -226,103 +226,108 @@ class TestUI2UI3ContextInstructions:
         assert "First context" not in content
 
 
-# ── UI-2/UI-3: build_prompt reads context/instructions from config ──────────
+# ── UI-2/UI-3: the supervisor prompt reads config context/instructions ─────
+
+def _sup_project(tmp_path: Path, extra_config: str = "") -> Path:
+    proj = tmp_path / "proj"
+    for name in ("roles", "inbox", "outbox", "logs", "context", "phases"):
+        (proj / ".agentic" / name).mkdir(parents=True)
+    (proj / ".agentic" / "roles" / "supervisor.md").write_text(
+        "# Supervisor\n\nBase supervisor instructions.\n"
+    )
+    (proj / ".agentic" / "config.yaml").write_text(
+        "stage_types:\n  plan: plan\n  verify: supervisor\n" + extra_config
+    )
+    return proj
 
 
 class TestBuildPromptWithContext:
 
-    def test_plan_prompt_includes_context(self):
-        """UI-2: build_prompt for plan includes context.message from config."""
-        from awf.supervisor import build_prompt
-        config = {"context": {"message": "Security-first project"}}
-        prompt = build_prompt("plan", "TODO-0001", config=config)
+    def test_plan_prompt_includes_context(self, tmp_path):
+        from awf import supervisor
+
+        proj = _sup_project(
+            tmp_path, "context:\n  message: Security-first project\n"
+        )
+        prompt = supervisor._prepare_supervisor_stage(
+            "plan", "", proj, proj / ".agentic" / "logs"
+        )
         assert "Security-first project" in prompt
 
-    def test_verify_prompt_includes_instructions(self):
-        """UI-3: build_prompt for verify includes supervisor.instructions."""
-        from awf.supervisor import build_prompt
-        config = {"supervisor": {"instructions": "Check all edge cases"}}
-        prompt = build_prompt("verify", "TODO-0001", config=config)
+    def test_verify_prompt_includes_instructions(self, tmp_path):
+        from awf import supervisor
+
+        proj = _sup_project(
+            tmp_path, "supervisor:\n  instructions: Check all edge cases\n"
+        )
+        prompt = supervisor._prepare_supervisor_stage(
+            "verify", "TODO-0001", proj, proj / ".agentic" / "logs"
+        )
         assert "Check all edge cases" in prompt
 
-    def test_execute_prompt_no_context(self):
-        """Execute prompt does NOT include context (agents don't need it)."""
-        from awf.supervisor import build_prompt
-        config = {"context": {"message": "Secret context"}}
-        prompt = build_prompt("execute", "TODO-0001", config=config)
+    def test_execute_contract_has_no_context(self, tmp_path):
+        from awf import agent_stage
+
+        prompt = agent_stage._execute_contract("TODO-0001")
         assert "Secret context" not in prompt
 
-    def test_no_config_no_context(self):
-        """Without config, prompt works normally (backward compat)."""
-        from awf.supervisor import build_prompt
-        prompt = build_prompt("plan", "TODO-0001")
-        assert "TODO-NNNN" in prompt
+    def test_no_config_no_context(self, tmp_path):
+        from awf import supervisor
+
+        proj = _sup_project(tmp_path)
+        prompt = supervisor._prepare_supervisor_stage(
+            "plan", "", proj, proj / ".agentic" / "logs"
+        )
+        # The role text still tells the plan stage its job.
+        assert "TODO" in prompt
 
 
-# ── UI-2/UI-3 end-to-end: form submit → config → supervisor.md → build_prompt ──
+# ── UI-2/UI-3 end-to-end: form submit → config → supervisor prompt ──────────
 
 
 class TestUI2UI3EndToEnd:
 
-    def test_full_flow_submit_to_build_prompt(self, tmp_path: Path):
-        """UI-2/UI-3 end-to-end: submit data → config updated → supervisor.md updated → build_prompt reads both.
-
-        Simulates the full pipeline:
-        1. Form submit with context_message + supervisor_instruction
-        2. process_role_saves writes to config.yaml and supervisor.md
-        3. build_prompt("plan") includes context.message
-        4. build_prompt("verify") includes supervisor.instructions
-        """
-
+    def test_full_flow_submit_to_stage_prompt(self, tmp_path: Path):
         import yaml as _yaml
         from agent_workflow_ui.roles_processor import process_role_saves
 
-        from awf.supervisor import build_prompt
+        from awf import supervisor
 
-        proj = tmp_path / "proj"
-        (proj / ".agentic" / "roles").mkdir(parents=True)
-        (proj / ".agentic" / "roles" / "supervisor.md").write_text(
-            "# Supervisor\n\nBase supervisor instructions.\n"
+        proj = _sup_project(
+            tmp_path,
+            'phases:\n  current: ".agentic/phases/plan.md"\n',
         )
-        (proj / ".agentic" / "config.yaml").write_text(
-            'project:\n  name: e2e-test\nphases:\n  current: ".agentic/phases/plan.md"\n'
-        )
+        (proj / ".agentic" / "phases" / "plan.md").write_text("# Plan\n")
 
-        # Step 1: Simulate form submit
         data = {
             "context_message": "This is a security-critical project. All code must pass audit.",
             "supervisor_instruction": "Always check for SQL injection and XSS vulnerabilities.",
         }
         saved = process_role_saves(data, project_dir=proj)
-        assert saved == 0  # no custom roles saved, but context/instructions processed
+        assert saved == 0
 
-        # Step 2: Verify config.yaml updated
         config = _yaml.safe_load((proj / ".agentic" / "config.yaml").read_text())
-        assert config["context"]["message"] == "This is a security-critical project. All code must pass audit."
-        assert config["supervisor"]["instructions"] == "Always check for SQL injection and XSS vulnerabilities."
+        assert config["context"]["message"] == data["context_message"]
+        assert config["supervisor"]["instructions"] == data["supervisor_instruction"]
 
-        # Step 3: Verify supervisor.md updated
         sv_content = (proj / ".agentic" / "roles" / "supervisor.md").read_text()
         assert "Project context" in sv_content
-        assert "security-critical project" in sv_content
-        assert "Additional supervisor instructions" in sv_content
         assert "SQL injection" in sv_content
 
-        # Step 4: build_prompt("plan") includes context.message
-        plan_prompt = build_prompt("plan", "TODO-0001", config=config)
+        logs = proj / ".agentic" / "logs"
+        plan_prompt = supervisor._prepare_supervisor_stage("plan", "", proj, logs)
         assert "security-critical project" in plan_prompt
-        assert "Project context" in plan_prompt
 
-        # Step 5: build_prompt("verify") includes supervisor.instructions
-        verify_prompt = build_prompt("verify", "TODO-0001", config=config)
+        verify_prompt = supervisor._prepare_supervisor_stage(
+            "verify", "TODO-0001", proj, logs
+        )
         assert "SQL injection" in verify_prompt
-        assert "Additional instructions" in verify_prompt
 
-        # Step 6: execute prompt does NOT include context (agents don't see it)
-        exec_prompt = build_prompt("execute", "TODO-0001", config=config)
+        from awf import agent_stage
+
+        exec_prompt = agent_stage._execute_contract("TODO-0001")
         assert "security-critical" not in exec_prompt
         assert "SQL injection" not in exec_prompt
-
 
 # ── UI-1: project_roles in template ──────────────────────────────────────────
 

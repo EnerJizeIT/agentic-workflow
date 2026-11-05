@@ -1,4 +1,4 @@
-"""Tests for BD-10 pipeline context injection in build_prompt.
+"""Tests for BD-10 pipeline context injection in the stage prompt.
 
 Validates that execute-stage workers get pipeline context telling them:
 - Position in pipeline (stage N of M)
@@ -14,7 +14,7 @@ import pytest
 import yaml
 
 from awf import api
-from awf.supervisor import _build_pipeline_context, build_prompt
+from awf.supervisor import _build_pipeline_context
 
 
 @pytest.fixture
@@ -168,18 +168,43 @@ class TestPriorCompletedTodos:
         assert "Your scope: implementation" in ctx
 
 
-class TestBuildPromptPipelineContext:
-    """build_prompt injects pipeline context for execute stages."""
+class TestStagePromptPipelineContext:
+    """The execute stage's text carries the pipeline context."""
 
-    def test_execute_prompt_has_pipeline_context(self, project):
+    def test_execute_prompt_has_pipeline_context(self, project, monkeypatch):
+        from awf import agent_stage
+        from awf.pipeline import Stage
+
         _write_state(project, "agent-implementer", 2)
-        prompt = build_prompt("execute", "TODO-0002", project_dir=project)
+        (project / ".agentic" / "inbox" / "TODO-0002.md").write_text(
+            "# TODO-0002\n", encoding="utf-8"
+        )
+        (project / ".agentic" / "roles" / "implementer.md").write_text(
+            "# Implementer\n", encoding="utf-8"
+        )
+        captured: dict = {}
+
+        def fake_run(cmd, cwd, **kwargs):
+            captured["cmd"] = cmd
+
+            class _R:
+                returncode = 0
+
+            return _R()
+
+        monkeypatch.setattr(
+            "awf.signal_watch.run_subprocess_until_signal", fake_run, raising=True
+        )
+        monkeypatch.setattr(agent_stage, "collect_handoff", lambda *a, **kw: None)
+        monkeypatch.setattr(agent_stage, "clean_stage_signals", lambda *a, **kw: None)
+
+        agent_stage.run_agent_stage(
+            Stage(name="agent-implementer", role="implementer", kind="execute"),
+            "TODO-0002", project,
+            {"models": {"implementer": {"model": "p/test"}}},
+            project / ".agentic" / "logs",
+        )
+        prompt = captured["cmd"][-1]
         assert "Pipeline context" in prompt
         assert "stage 3 of 4" in prompt
-        assert "implementation" in prompt.lower()
-
-    def test_execute_prompt_without_project_dir(self):
-        """No project_dir → no pipeline context (backward compat)."""
-        prompt = build_prompt("execute", "TODO-0001")
-        assert "Pipeline context" not in prompt
-        assert "DONE-TODO-0001.ready" in prompt  # signal contract still there
+        assert "DONE-TODO-0002.ready" in prompt

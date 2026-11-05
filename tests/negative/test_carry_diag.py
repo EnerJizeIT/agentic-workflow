@@ -145,8 +145,11 @@ def test_agent_stage_wiring_is_lazy_with_a_signal(tmp_path, monkeypatch):
     from awf import agent_stage
 
     proj = tmp_path / "proj"
-    for d in ("inbox", "outbox", "logs", "roles"):
+    for d in ("inbox", "outbox", "logs", "roles", "context"):
         (proj / ".agentic" / d).mkdir(parents=True)
+    (proj / ".agentic" / "config.yaml").write_text(
+        "stage_types:\n  agent-dev: execute\n", encoding="utf-8"
+    )
     (proj / ".agentic" / "roles" / "developer.md").write_text(
         "# Developer\n", encoding="utf-8"
     )
@@ -191,8 +194,11 @@ def test_retry_attempt_does_not_inherit_the_previous_log_tail(tmp_path, monkeypa
     from awf import agent_stage
 
     proj = tmp_path / "proj"
-    for d in ("inbox", "outbox", "logs", "roles"):
+    for d in ("inbox", "outbox", "logs", "roles", "context"):
         (proj / ".agentic" / d).mkdir(parents=True)
+    (proj / ".agentic" / "config.yaml").write_text(
+        "stage_types:\n  agent-dev: execute\n", encoding="utf-8"
+    )
     (proj / ".agentic" / "roles" / "developer.md").write_text(
         "# Developer\n", encoding="utf-8"
     )
@@ -504,7 +510,6 @@ def _mock_pipeline(monkeypatch, log_text: str, behavior):
 
     monkeypatch.setattr(pipeline_engine, "_run_agent_stage", mock_agent)
     monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
-    monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
     monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: "abc123")
     monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "")
     monkeypatch.setattr(pipeline_engine, "_log", lambda *a, **kw: None)

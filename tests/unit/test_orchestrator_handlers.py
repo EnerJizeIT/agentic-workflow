@@ -230,9 +230,6 @@ class TestPipelineEngineUnpacking:
         monkeypatch.setattr(
             pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None
         )
-        monkeypatch.setattr(
-            pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: []
-        )
         monkeypatch.setattr(pipeline_engine, "_run_agent_stage", lambda *a, **kw: None)
 
         # Write BLOCKED signal
@@ -286,9 +283,6 @@ class TestPipelineEngineUnpacking:
 
         monkeypatch.setattr(
             pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None
-        )
-        monkeypatch.setattr(
-            pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: []
         )
         monkeypatch.setattr(pipeline_engine, "_run_agent_stage", lambda *a, **kw: None)
 

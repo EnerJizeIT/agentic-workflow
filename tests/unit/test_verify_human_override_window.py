@@ -173,6 +173,9 @@ def _bound_project(tmp_path: Path) -> tuple[Path, str, str]:
     agentic = proj / ".agentic"
     for name in ("inbox", "outbox", "logs", "roles", "phases", "context"):
         (agentic / name).mkdir(parents=True)
+    (agentic / "config.yaml").write_text(
+        "stage_types:\n  verify: supervisor\n", encoding="utf-8"
+    )
     (agentic / "roles" / "supervisor.md").write_text("# Role\n", encoding="utf-8")
     (agentic / "phases" / "plan.md").write_text("# Plan\n", encoding="utf-8")
     baseline = subprocess.run(

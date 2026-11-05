@@ -18,9 +18,13 @@ from tests.unit._signal_fakes import (
 )
 
 
-def test_verify_prompt_forbids_waiting_for_the_engine():
+def test_verify_prompt_forbids_waiting_for_the_engine(tmp_path):
     """The subprocess is told that the signal ends its work."""
-    prompt = supervisor.build_prompt("verify", "TODO-0001")
+    proj = make_project(tmp_path)
+    prompt = supervisor._prepare_supervisor_stage(
+        "verify", "TODO-0001", proj, proj / ".agentic" / "logs"
+    )
+    assert prompt is not None
     assert "Signal ends your work" in prompt
     assert "Do NOT poll `awf status`" in prompt
     assert "do NOT wait for the commit" in prompt
@@ -134,5 +138,5 @@ def test_only_verify_spawns_with_a_grace_window(tmp_path, monkeypatch):
     assert waited[0][2].get("publish_waiting") is True
     plan_prompt = captured[0][2][-1]
     verify_prompt = captured[1][2][-1]
-    assert "Signal ends your work" not in plan_prompt
-    assert "Signal ends your work" in verify_prompt
+    assert "# Plan" in plan_prompt
+    assert "## Состояние" in verify_prompt

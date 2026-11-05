@@ -30,8 +30,14 @@ def _fake_run(captured: dict, holder_signal: str = ""):
 
 def _project(tmp_path, role: str = "supervisor"):
     proj = tmp_path / "proj"
-    for d in ("inbox", "outbox", "logs", "roles"):
+    for d in ("inbox", "outbox", "logs", "roles", "context"):
         (proj / ".agentic" / d).mkdir(parents=True)
+    # IMP2b: the stage text comes from the builder, so the project needs
+    # its declared stage types and the context dir the text is written to.
+    (proj / ".agentic" / "config.yaml").write_text(
+        "stage_types:\n  plan: plan\n  verify: supervisor\n  agent-dev: execute\n",
+        encoding="utf-8",
+    )
     (proj / ".agentic" / "roles" / f"{role}.md").write_text("# Role\n")
     (proj / ".agentic" / "roles" / "developer.md").write_text("# Dev\n")
     phases = proj / ".agentic" / "phases"

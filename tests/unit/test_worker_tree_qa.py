@@ -80,8 +80,11 @@ def _worker_with_grandchild() -> tuple[subprocess.Popen, list[worker_tree.ProcIn
 
 def _stage_project(tmp_path):
     proj = tmp_path / "proj"
-    for d in ("inbox", "outbox", "logs", "roles"):
+    for d in ("inbox", "outbox", "logs", "roles", "context"):
         (proj / ".agentic" / d).mkdir(parents=True)
+    (proj / ".agentic" / "config.yaml").write_text(
+        "stage_types:\n  agent-dev: execute\n", encoding="utf-8"
+    )
     (proj / ".agentic" / "roles" / "developer.md").write_text(
         "# Developer role\n", encoding="utf-8"
     )

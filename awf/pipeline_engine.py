@@ -27,7 +27,6 @@ from . import unit_contract as _unit_contract
 from ._errors import AwfApiError as _AwfApiError
 from ._log import log as _log
 from ._worker_exit import worker_log_tail
-from .agent_stage import resolve_prev_handoffs as _resolve_prev_handoffs
 from .agent_stage import run_agent_stage as _run_agent_stage
 from .commit_gate import maybe_commit as _maybe_commit
 from .infra import managed_fs
@@ -2668,8 +2667,6 @@ def execute_agent_stage(
     _ensure_baseline_sha(project_dir, current_todo, logs_dir)
     _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir, phase="run")
 
-    prev_handoffs = _resolve_prev_handoffs(stages, stage_idx, project_dir, todo_id=current_todo)
-
     # NEG-4 (day-2 B1): stage-scoped work evidence. A pre-existing diff from an
     # earlier stage must not count as THIS stage's work — otherwise
     # attempt_auto_done synthesizes a false DONE for a worker that wrote
@@ -2775,9 +2772,10 @@ def execute_agent_stage(
             worker_run += 1
             try:
                 _run_agent_stage(stage, current_todo, project_dir, config, logs_dir,
-                                 prev_handoffs=prev_handoffs, hard_timeout=stage_cap.seconds,
+                                 hard_timeout=stage_cap.seconds,
                                  retry_note=retry_note, attempt=worker_run,
-                                 log_holder=log_holder)
+                                 log_holder=log_holder,
+                                 pipeline_name=pipeline_name)
             except managed_fs.ManagedPathError as e:
                 # TODO-0235 (REVIEW N1): a barrier refusal stops the stage
                 # with a record and a salvage note — never a raw escape.

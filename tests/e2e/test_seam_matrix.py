@@ -62,6 +62,9 @@ CONFIG_YAML = (
     "models:\n"
     "  worker:\n"
     "    model: stub/model\n"
+    "stage_types:\n"
+    "  plan: plan\n  implement: execute\n  intruder: execute\n"
+    "  verify: supervisor\n"
 )
 
 # plan -> worker -> verify, verify без коммита: швы 3/4 про

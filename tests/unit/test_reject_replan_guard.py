@@ -323,9 +323,6 @@ def _wire_readiness(monkeypatch, worker, fail_message: str) -> None:
         lambda *_a, **_k: pytest.fail(fail_message),
     )
     monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        pipeline_engine, "_resolve_prev_handoffs", lambda *_a, **_k: []
-    )
     monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *_a, **_k: None)
 
 

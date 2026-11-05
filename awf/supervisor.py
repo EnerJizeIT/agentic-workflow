@@ -26,10 +26,12 @@ from .arbiter import (
     human_verify_decision,
     overruled_auto_verdicts,
 )
-from .doctrine import materialize_doctrine
 from .pipeline import Stage, load_stages, resolve_pipeline_file
 from .todo_ids import is_valid_todo_id
 from .xdg import awf_roles_dir
+
+#: TODO-0383: verify/replan decide from facts, not from the unit.
+SUPERVISOR_CAP = 6000
 
 log = logging.getLogger(__name__)
 
@@ -270,91 +272,73 @@ def _build_pipeline_context(
     if after:
         parts.append(f"After you: {', '.join(after)}")
 
-    # 5. Explicit scope boundary — match common role name patterns
+    # 5. Explicit scope boundary — match common role name patterns.
     role_lower = current_stage_name.lower()
-    if "analyst" in role_lower and after:
-        parts.append("\nYour scope: requirements analysis. Implementation, architecture, QA — other stages handle those.")
-    elif "architect" in role_lower and after:
-        parts.append("\nYour scope: architecture/design. Requirements, implementation, QA — other stages handle those.")
-    elif "implement" in role_lower and before:
-        parts.append("\nYour scope: implementation. Requirements and architecture should already exist — use them, don't recreate.")
-    elif "qa" in role_lower or "review" in role_lower:
-        parts.append("\nYour scope: quality review. Don't implement — review what others built.")
-    elif "audit" in role_lower:
-        parts.append("\nYour scope: project audit. Don't implement — assess overall quality.")
-
-    # 6. Prior completed work from done/ — R1/AC1: only the last eight
-    #    units, never the whole archive. The list must not grow with
-    #    history (CTX5: 297 ids were 3 288 of 5 654 prompt characters).
+    scope = {
+        "analyst": "requirements analysis",
+        "architect": "architecture/design",
+        "implement": "implementation",
+        "qa": "quality review",
+        "review": "quality review",
+        "audit": "project audit",
+    }
+    for key, text in scope.items():
+        if key in role_lower:
+            parts.append(f"Your scope: {text}; other stages own the rest.")
+            break
+    # 6. Prior completed work from done/ — the last eight units max.
     done_dir = paths.done_dir(project_dir)
     if done_dir.is_dir():
         completed = _recent_completed_todos(done_dir, todo_id)
         if completed:
-            parts.append(f"\nPrior completed TODOs: {', '.join(completed)}")
-            parts.append("Full list: awf report, .agentic/done/")
-            parts.append("Their output files already exist — review them, don't redo.")
+            parts.append(f"Prior completed TODOs: {', '.join(completed)}")
+            parts.append("Full list: awf report, .agentic/done/ — files exist, don't redo.")
 
     return "\n".join(parts)
 
 
 ## ─── Stage-specific snippets (focused injection) ───────────────────────
 # Each snippet is ~15-20 lines of DIRECTLY RELEVANT instructions for one
-# stage. Appended to build_prompt() output so Qwen sees focused rules at
+# stage. Appended to the supervisor prompt so Qwen sees focused rules at
 # the END of the prompt (recency bias → higher compliance).
 
 _SNIPPET_ALWAYS = """\
 ## ⚡ Critical rules (always apply)
-- DO NOT edit source files, awf tooling, or templates. All changes through pipeline.
-- Commit follows the stage policy: `on_approved` in .agentic/pipelines/*.yaml —
-  commit_and_next/commit_and_report = the engine commits after approve.
-  NEVER run `git add`, `git commit` or `git push`: a refused gate is a REVIEW
-  with the reason, never a manual commit.
-- You ARE the decision maker. Do NOT ask user "should I approve?" — decide yourself.
-- No active run: GO IDLE after start — the engine tracks signals itself, do NOT
-  poll awf_wait_for_event/awf_status in a loop. In an active run (забег): keep
-  the loop awf_wait_for_event(actionable_only=True) → awf_approve(evidence=...)
-  → awf_run_next (see phase-run.md).
-- If MCP tool times out → bash fallback: `python3 -m awf status --project-dir <path>`
-- Metrics (U8c): `awf_metrics` / `awf metrics` (on owner request and at the end
-  of a run) — report to the desktop, copy to `metrics.mirror_dir` if set.
+- DO NOT edit source files, tooling or templates; changes go through the pipeline.
+- NEVER run `git add`, `git commit` or `git push`: the engine commits after
+  approve; a refused gate is a REVIEW with the reason.
+- You ARE the decision maker — decide yourself, do not ask the user.
+- No active run: GO IDLE, don't poll in a loop. In an active run: wait for the
+  event → awf_approve(evidence=...) → awf_run_next (see phase-run.md).
+- MCP timeout → bash fallback `python3 -m awf status --project-dir <path>`.
+- Metrics: `awf_metrics` / `awf metrics` on request; copy to `metrics.mirror_dir`.
 """
 
 _SNIPPET_PLAN = """\
 ## Plan stage — write the TODO (single contract)
-1. Study project vision (above) + phases file (.agentic/phases/plan.md)
-2. Determine next uncompleted step toward goal
-3. Write .agentic/inbox/TODO-NNNN.md:
-   - Goal: what this increment achieves (1-3 sentences)
-   - Tasks: specific, testable steps for the first agent stage
-   - Context: what the agent needs to know about existing code
-   - Verify: commands to check success
-   - Optional: TODO может нести машиночитаемый блок в самом верху (--- / ---, ключи verify/gates/prove_red) — валидируется при dispatch, формат: docs/unit-contract.md
-4. Create signal: .agentic/inbox/TODO-NNNN.ready
-5. The checkpoint form shows this TODO to the user — approve, edit, or reject
-6. Workers are capable — give autonomy, don't over-specify
+1. Study the vision and `.agentic/phases/plan.md`; pick the next uncompleted step.
+2. Write `.agentic/inbox/TODO-NNNN.md`: Goal, Tasks (testable), Context, Verify.
+   An optional top block (---) carries verify/gates/prove_red — see
+   docs/unit-contract.md.
+3. Create the `.ready` signal; the checkpoint form shows the TODO to the user.
+4. Workers are capable — give autonomy, don't over-specify.
 """
 
 _SNIPPET_VERIFY = """\
 ## Verify stage — YOU are the reviewer, not a relay
-1. The verify pack facts are already in this prompt (verdict, red sections,
-   first reason) together with the diff and the TODO — do NOT run tests or
-   any verify command: the verdict is decided from those facts.
-2. TODO-{todo_id}.md is the contract (Goal, Success criteria, Verify).
-   For EACH success criterion in the TODO:
-   - Mark ✅ met or ❌ not met
-   - If ❌ → you MUST write REVIEW with specifics, not approve
-3. Check the diff block: changes must be the unit's own source changes,
-   not a stray file or an empty tree.
-4. Read the actual code changes for correctness where the facts leave doubt.
-5. DECIDE YOURSELF (do NOT ask user):
-   - ALL criteria met → create .agentic/inbox/ACK-{todo_id}.ready
-     (in an ACTIVE run — approve via awf_approve(evidence=...) instead;
-     the engine ignores a file-based ACK without RUN-EVIDENCE)
-   - ANY criterion not met → write .agentic/outbox/REVIEW-{todo_id}.md
-     listing which criteria failed and what to fix
-6. DO NOT relay "pipeline waits for your decision" — that's YOUR call.
-7. The verdict is yours, the commit is the engine's: NEVER run `git add`,
-   `git commit` or `git push`. A refused gate is a REVIEW with the reason.
+1. Pack facts are in this prompt (verdict, red sections, diff, TODO).
+   Do not run tests or any verify command — decide from those facts.
+2. TODO-{todo_id}.md is the contract. Mark every criterion ✅/❌; a ❌ means
+   REVIEW with specifics, not approve. Check the diff is the unit's own work.
+3. DECIDE YOURSELF (do NOT ask the user):
+   - all met → .agentic/inbox/ACK-{todo_id}.ready (active run:
+     awf_approve(evidence=...));
+   - any missed → .agentic/outbox/REVIEW-{todo_id}.md with what to fix.
+4. The verdict is yours; the commit is the engine's. NEVER run `git add`,
+   `git commit` or `git push`.
+
+## Signal ends your work
+Do NOT poll `awf status` and do NOT wait for the commit.
 """
 
 _SNIPPET_SALVAGE = """\
@@ -394,164 +378,6 @@ def _stage_snippet(kind: str, todo_id: str = "") -> str:
     if snippet and todo_id:
         snippet = snippet.replace("{todo_id}", todo_id)
     return snippet
-
-
-def build_prompt(
-    kind: str,
-    todo_id: str,
-    config: dict | None = None,
-    project_dir: Path | None = None,
-    pipeline_name: str | None = None,
-) -> str:
-    """BD-29: build prompt for a stage kind.
-
-    Three kinds: plan / execute / verify.
-    UI-2/UI-3: if config has context.message or supervisor.instructions,
-    they are appended to the prompt so supervisor sees user's input.
-
-    П6: if project_dir is provided AND kind is "plan", auto-inject the
-    project's vision/README excerpt so supervisor (LLM) has concrete
-    context instead of guessing where to look.
-    """
-    # Base prompt per kind
-    if kind == "plan":
-        base = (
-            "You are the supervisor. Read the phases/plan file. Determine the next step "
-            "that is not yet completed. Create a TODO file at "
-            ".agentic/inbox/TODO-NNNN.md (use next sequential ID). "
-            "Baseline is created automatically by awf (П3) — no need to run "
-            "`awf baseline` manually. Then create the .ready signal at "
-            ".agentic/inbox/TODO-NNNN.ready. If a TODO already exists in inbox, review "
-            "it — refine, accept, or replace as needed (do NOT blindly skip). Keep the TODO "
-            "at the goal level (what success looks like), do NOT micromanage individual "
-            "roles — each role's skill.md already defines its zone."
-        )
-    elif kind == "verify":
-        base = (
-            f"You are the supervisor. Verify TODO {todo_id}. The facts are already in "
-            "this prompt: the verify pack verdict (red sections and the first reason), "
-            "the diff against the baseline and short DONE/PROGRESS excerpts. The pack "
-            "already ran the checks — do not run them again and do not go looking for "
-            "more history on disk. Decide: is the work complete and correct? "
-            "If yes, write ACK signal at "
-            f".agentic/inbox/ACK-{todo_id}.ready. If no, do NOT ack — leave a note in "
-            f".agentic/outbox/REVIEW-{todo_id}.md explaining what's wrong.\n\n"
-            "## Signal ends your work\n"
-            "Your work ends when you write the signal file. Do NOT poll `awf status` "
-            "and do NOT wait for the commit — committing is the engine's gate, "
-            "not your step."
-        )
-    elif kind == "salvage":
-        base = (
-            f"You are the supervisor. The worker at a previous stage ran but did NOT create "
-            f"DONE-{todo_id}.ready. This is a SALVAGE situation. Two common causes: "
-            f"(1) the worker finished but forgot the signal — git diff then shows work; "
-            f"(2) the worker hit its output-token limit mid-reply (truncated → no tool call → "
-            f"clean exit) — git diff is then EMPTY and no progress notes exist. "
-            f"Read .agentic/inbox/SALVAGE-{todo_id}.md FIRST: it lists what happened and, "
-            f"for repeat salvages, what to change before retrying. "
-            f"If the work in `git diff --stat` (baseline .agentic/context/BASELINE-{todo_id}.sha) "
-            f"is acceptable → create .agentic/inbox/ACK-{todo_id}.ready. "
-            f"If not → create .agentic/outbox/REVIEW-{todo_id}.md with feedback — do NOT just "
-            f"retry the same scope when the diff is empty."
-        )
-    else:
-        # execute (default) — no context/instructions for agent stages.
-        # DF5-1: signal contract FIRST, before skill content. Workers
-        # (especially Qwen/vLLM) skip the one-liner buried at the end
-        # when skill file is 100+ lines of detail. This anchor goes first.
-        base = (
-            f"## CRITICAL completion contract (read this BEFORE your skill)\n"
-            f"Pipeline BLOCKS until you create the signal file. This is non-negotiable.\n\n"
-            f"  ✅ Done?   → touch .agentic/outbox/DONE-{todo_id}.ready AND write a\n"
-            f"               1-line summary: .agentic/outbox/DONE-{todo_id}.md\n"
-            f"  🚫 Blocked? → write .agentic/outbox/BLOCKED-{todo_id}.md with the reason,\n"
-            f"               then touch .agentic/outbox/BLOCKED-{todo_id}.ready (no DONE file)\n\n"
-            f"Optional machine facts for the next role: .agentic/outbox/DONE-{todo_id}.json —\n"
-            f"a JSON object with keys files_changed, tests_run, gates, notes, e.g.:\n"
-            f'  {{"files_changed": ["awf/x.py", "tests/unit/test_x.py"],\n'
-            f'   "tests_run": [{{"cmd": "python3 -m pytest tests/unit/test_x.py -q", "result": "12 passed"}}],\n'
-            f'   "gates": ["contracts", "ratchet"], "notes": "one line"}}\n'
-            f"tests_run items are OBJECTS {{cmd, result}}, not strings — a file that\n"
-            f"violates the schema (or is broken JSON) is skipped by the handoff.\n"
-            f"If you review or audit another stage's work, your own facts go to\n"
-            f"  .agentic/outbox/PROBES-{todo_id}.json — leave DONE-{todo_id}.json to its author.\n"
-            f"Full format: docs/unit-contract.md.\n\n"
-            f"## OUTPUT DISCIPLINE (dogfood-11: works with any model, any output limit)\n"
-            f"Your reply has a limited token budget. Work in small pieces:\n"
-            f"- Write code straight into files (write/edit tools). NEVER draft whole\n"
-            f"  files inside your reasoning or reply text.\n"
-            f"- Create the file skeleton first, then fill in one function or section\n"
-            f"  per step.\n"
-            f"- One file per step. Keep replies short — no long explanations.\n"
-            f"- If a reply is growing large, STOP, save what you have, and continue\n"
-            f"  in the next step.\n\n"
-            f"## WORKSPACE DISCIPLINE (SPEC-2)\n"
-            f"- Temporary files: ONLY /tmp/opencode/** or the test framework's\n"
-            f"  tmp_path. Never invent your own /tmp paths — external paths are\n"
-            f"  permission-gated and a headless run cannot answer an ask prompt.\n"
-            f"- Live runs of external processes (real API calls, smoke runs): ONLY\n"
-            f"  when the task explicitly asks for them; ordinary checks = tests with\n"
-            f"  markers. Expensive commands: prefer reporting over repeated runs.\n\n"
-            f"## Task\n"
-            f"Execute your part of {todo_id} according to your role/skill instructions. "
-            f"You see the TODO goal and handoffs from previous roles (if any). Add YOUR contribution — "
-            f"don't redo prior work. "
-            f"Do not commit — the engine's commit gate commits after verification; "
-            f"leave your changes in the working tree."
-        )
-        # BD-10: pipeline context — tell worker its place in the team.
-        # Without this, system-analyst tries to implement code, implementer
-        # tries to write requirements, etc. Worker needs to know:
-        # - What stage it is (position in pipeline)
-        # - What comes before/after (don't do others' work)
-        # - What prior TODOs produced (don't redo)
-        if project_dir is not None:
-            ctx = _build_pipeline_context(project_dir, todo_id, pipeline_name)
-            if ctx:
-                base += "\n\n" + ctx
-        return base
-
-    # П6: auto-inject project vision/README excerpt for plan stage.
-    # Without this, supervisor (LLM) sees only generic instructions and
-    # has to guess where project context lives.
-    if kind == "plan" and project_dir is not None:
-        from .paths import find_vision_file
-        vision = find_vision_file(project_dir)
-        if vision is not None:
-            try:
-                content = vision.read_text(encoding="utf-8")
-                # Truncate to keep prompt manageable (LLM context budget).
-                # 4000 chars ~ 1000 tokens — enough for vision summary.
-                if len(content) > 4000:
-                    excerpt = content[:4000] + "\n\n[... truncated ...]"
-                else:
-                    excerpt = content
-                try:
-                    rel = vision.relative_to(project_dir)
-                except ValueError:
-                    rel = vision
-                base += f"\n\n## Project vision (auto-injected from {rel})\n{excerpt}"
-            except OSError:
-                pass  # non-fatal — supervisor falls back to generic prompt
-
-    # UI-2/UI-3: append user's context + instructions for supervisor stages
-    if config and kind in ("plan", "verify", "salvage"):
-        ctx_msg = cfg_mod.get(config, "context.message", "") or ""
-        sup_instr = cfg_mod.get(config, "supervisor.instructions", "") or ""
-        if ctx_msg:
-            base += f"\n\n## Project context (from user)\n{ctx_msg}"
-        if sup_instr:
-            base += f"\n\n## Additional instructions (from user)\n{sup_instr}"
-
-    # Stage-specific focused snippet injection.
-    # Order: always rules first (context), then stage-specific (actionable LAST).
-    # Recency bias: Qwen pays most attention to the END of the prompt.
-    snippet = _stage_snippet(kind, todo_id)
-    if snippet:
-        base += "\n\n" + _SNIPPET_ALWAYS + "\n" + snippet
-
-    return base
 
 
 def global_roles_dir() -> Path:
@@ -1288,104 +1114,84 @@ def run_supervisor_stage(
     )
 
 
-def _replan_budget_chars() -> int:
-    """A32/A34: the engine's existing cap for text handed to a role.
-
-    The value is ``pipeline_engine.FIX_ROUND_MAX_CHARS`` — the cap A7
-    already uses for the same kind of text. ``awf.rejection`` owns the
-    accessor (it owns the prompt), this wrapper stays here so the stage can
-    substitute a budget in tests without reaching across modules.
-    """
-    from .rejection import replan_budget_chars
-
-    return replan_budget_chars()
-
-
-def build_replan_context(
-    todo_id: str, project_dir: Path, logs_dir: Path | None = None
-) -> tuple[str, list[str]]:
-    """A32/A34: the bounded replan prompt (owner: :mod:`awf.rejection`).
-
-    The stage keeps this thin call so the budget stays substitutable here.
-    """
-    from .rejection import build_replan_context as _build
-
-    return _build(todo_id, project_dir, logs_dir, budget=_replan_budget_chars())
-
-
 def _prepare_supervisor_stage(
     kind: str,
     todo_id: str,
     project_dir: Path,
-    config: dict,
-    phases_file: str,
     logs_dir: Path,
-    pipeline_name: str | None,
-) -> tuple[list[str], str] | None:
-    """Build extra_files + prompt for a supervisor stage kind.
+    config: dict | None = None,
+) -> str | None:
+    """IMP2b: the same builder as an agent stage, no ``--file`` attachments.
 
-    Returns None to indicate the stage should be skipped.
-    Returns (extra_files, prompt) otherwise.
+    Returns None to indicate the stage should be skipped, the prompt
+    otherwise. Role, doctrine, phases and facts are blocks of
+    :func:`awf.stage_context.build_stage_context` — the builder reads the
+    phase plan and the pipeline itself, so this function needs neither.
+    ``config`` is passed through when the caller already loaded it (the
+    spawn reads two keys from it); otherwise the builder loads it once.
+
+    verify/replan get :data:`SUPERVISOR_CAP` (TODO-0383); ``plan`` keeps the
+    one 9 000 cap of the family table.
     """
-    phases_path = (
-        project_dir / phases_file if not Path(phases_file).is_absolute() else Path(phases_file)
-    )
-
-    extra_files: list[str] = []
-    prompt = ""
-
-    if kind == "plan":
-        if phases_path.is_file():
-            extra_files.append(str(phases_path))
-        prompt = build_prompt(
-            "plan", todo_id, config=config, project_dir=project_dir, pipeline_name=pipeline_name
-        )
-
-    elif kind == "verify":
-        if not todo_id:
-            print("[auto mode] No todo_id for verify — skip.")
-            _log(logs_dir, "Supervisor verify auto-skipped (no todo_id)")
-            return None
-        # A42: pack facts inline, handoffs out. The prompt is bounded and
-        # carries the verdict; every attachment vanished except the role
-        # file and the doctrine, which the spawn adds by itself.
-        from .verify_context import build_verify_prompt
-
-        prompt, dropped = build_verify_prompt(
-            todo_id,
-            project_dir,
-            config=config,
-            pipeline_name=pipeline_name,
-            logs_dir=logs_dir,
-        )
-        if dropped:
-            print(f"  verify context cut: {', '.join(dropped)}")
-
-    elif kind == "replan":
-        if not todo_id:
-            print("[auto mode] No todo_id for replan — skip.")
-            _log(logs_dir, "Supervisor replan auto-skipped (no todo_id)")
-            return None
-        # A32/A34: the replan prompt is bounded and carries exactly three
-        # sources — the reviewer's report, the current TODO, the report of
-        # the stage that slid. Handoff history and DONE archives never
-        # enter (that is what blew the context window on 01.11). The
-        # closing instruction is part of the budgeted text (one builder).
-        prompt, dropped = build_replan_context(todo_id, project_dir, logs_dir)
-        if dropped:
-            print(f"  replan context cut: {', '.join(dropped)}")
-
-    elif kind == "salvage":
+    if kind == "salvage":
         print("[auto mode] salvage not automated — skipping.")
         _log(logs_dir, "Supervisor salvage auto-skipped (not automatable)")
         return None
-
-    else:
+    if kind not in ("plan", "verify", "replan"):
         print(f"[auto mode] Unknown kind {kind!r} — skipping.")
         _log(logs_dir, f"Supervisor stage {kind} auto-skipped (unknown kind)")
         return None
+    if kind in ("verify", "replan") and not todo_id:
+        print(f"[auto mode] No todo_id for {kind} — skip.")
+        _log(logs_dir, f"Supervisor {kind} auto-skipped (no todo_id)")
+        return None
 
-    return extra_files, prompt
+    from .stage_context import CAP, StageContextError, build_stage_context
+
+    cap = SUPERVISOR_CAP if kind in ("verify", "replan") else CAP
+    # Verify and replan carry facts only: links to other handoffs (PREVLINK)
+    # are exactly the history that blew the 01.11 run. A replan also needs
+    # the BLOCKED note that started it — a fact, not handoff history.
+    exclude = ("PREVLINK",) if kind in ("verify", "replan") else ()
+    extra = ("BLOCKED",) if kind == "replan" else ()
+    # QA-1: the engine's replan wait accepts only a TODO carrying this
+    # marker; without the closing line the escalation can only time out.
+    # The stage type is the project's declaration: ``build_stage_context``
+    # fills it from ``config.yaml`` when the caller's dict does not carry it.
+    if config is None:
+        config = cfg_mod.load(project_dir)
+    if kind == "replan":
+        suffix = (
+            f"Replan policy only: write a new TODO with ``replan_for: {todo_id}`` "
+            "in its contract block, baseline it, and create its ``.ready`` signal."
+        )
+    else:
+        # UI-2/UI-3 plus the focused supervisor rules the old builder
+        # appended. The rules go FIRST: the user's text is unbounded and the
+        # tail cap trims its end, so a long message must not eat the rules.
+        suffix = "\n\n".join(
+            part
+            for part in (
+                _SNIPPET_ALWAYS,
+                _stage_snippet(kind, todo_id),
+                cfg_mod.get(config, "context.message", ""),
+                cfg_mod.get(config, "supervisor.instructions", ""),
+            )
+            if part
+        )
+    try:
+        ctx = build_stage_context(
+            project_dir, todo_id or "", kind, "supervisor",
+            config=config, cap=cap, exclude=exclude, extra=extra, suffix=suffix,
+        )
+    except StageContextError as e:
+        # CTX-FAIL must stop the stage before the subprocess, exactly as
+        # it does for an agent stage. The engine turns RuntimeError into a
+        # clean stop with the reason.
+        _log(logs_dir, str(e))
+        raise RuntimeError(str(e)) from e
+    print(f"  context: {ctx.file} ({len(ctx.text)} chars, cap {ctx.cap})")
+    return ctx.text
 
 
 def _replan_marker_of(inbox: Path, todo_sig: str) -> str | None:
@@ -1623,10 +1429,10 @@ def run_supervisor_via_subprocess(
             )
         return ""
 
-    prepared = _prepare_supervisor_stage(
-        kind, todo_id, project_dir, config, phases_file, logs_dir, pipeline_name
+    prompt = _prepare_supervisor_stage(
+        kind, todo_id, project_dir, logs_dir, config=config
     )
-    if prepared is None:
+    if prompt is None:
         if kind == "verify" and todo_id:
             return _wait_for_verify_decision(
                 todo_id, project_dir, logs_dir,
@@ -1635,7 +1441,6 @@ def run_supervisor_via_subprocess(
                 context="no subprocess",
             )
         return ""
-    extra_files, prompt = prepared
     # A48: refuse before the spawn — a command without --model takes
     # opencode's default model instead of the one this project chose. The
     # check sits AFTER the skip decision: a stage that spawns nothing
@@ -1656,16 +1461,8 @@ def run_supervisor_via_subprocess(
         "--title", f"awf-supervisor-{kind}",
     ]
     cmd += ["--model", role_model]
-    cmd += ["--file", str(role_file)]
-    # U9: doctrine section after the role's instructions and before the
-    # stage's task context (extra_files) — the same position for every role.
-    doctrine_file = materialize_doctrine(project_dir)
-    if doctrine_file is not None:
-        cmd += ["--file", str(doctrine_file)]
-        print(f"  doctrine: {doctrine_file}")
-        _log(logs_dir, f"U9: doctrine section injected: {doctrine_file}")
-    for f in extra_files:
-        cmd += ["--file", f]
+    # IMP2b: no ``--file`` — the role, doctrine and facts are blocks of the
+    # stage context text; the text is the only positional argument.
     cmd += ["--", prompt]
 
     # K2: the supervisor spawn reads the SAME helper as the worker, so the
@@ -1682,8 +1479,6 @@ def run_supervisor_via_subprocess(
 
     print(f"[auto mode] Spawning supervisor subprocess: agent={agent_name}")
     print(f"  role: {role_file}")
-    for f in extra_files:
-        print(f"  ctx:  {f}")
     print()
 
     _log(logs_dir, f"Supervisor {kind} subprocess started (agent={agent_name})")
@@ -1711,7 +1506,6 @@ def run_supervisor_via_subprocess(
 
     signal_holder: dict[str, str] = {}
     log_holder: dict[str, str] = {}
-    files_in_prompt = sum(1 for part in cmd if part == "--file")
     spawn_started = time.time()
 
     # TODO-0338 (A35): only the verify subprocess can deadlock with the
@@ -1774,8 +1568,8 @@ def run_supervisor_via_subprocess(
 
     _log(logs_dir, f"Supervisor {kind} subprocess finished (exit={result.returncode})")
     if kind == "verify":
-        # A42: one narration line — prompt size, attachments, duration and
-        # the shell calls the subprocess printed. "Slow" becomes a number.
+        # A42: one narration line — prompt size, duration and the shell
+        # calls the subprocess printed. "Slow" becomes a number.
         from .verify_context import (
             count_logged_commands,
             format_verify_timing,
@@ -1792,7 +1586,6 @@ def run_supervisor_via_subprocess(
             format_verify_timing(
                 todo_id,
                 prompt_chars=len(prompt),
-                files=files_in_prompt,
                 duration=max(0.0, time.time() - spawn_started),
                 commands=commands,
             ),

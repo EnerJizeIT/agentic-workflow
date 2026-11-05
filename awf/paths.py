@@ -249,7 +249,7 @@ def find_vision_file(project_dir: str | Path = ".") -> Path | None:
     from node_modules/README, etc).
 
     Returns the first match from ``_VISION_CANDIDATES`` or ``None``.
-    Callers (cmd_init for plan.md stub, supervisor.build_prompt for
+    Callers (cmd_init for plan.md stub, the stage builder for
     context injection) use this to give LLM-supervisor a starting point
     instead of an empty plan.md / generic prompt.
     """

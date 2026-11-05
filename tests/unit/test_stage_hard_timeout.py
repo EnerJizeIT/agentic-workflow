@@ -55,7 +55,6 @@ def _mock_pipeline(monkeypatch, log_text: str, behavior):
 
     monkeypatch.setattr(pipeline_engine, "_run_agent_stage", mock_agent)
     monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
-    monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
     monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: "abc123")
     monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "")
     monkeypatch.setattr(pipeline_engine, "_log", lambda *a, **kw: None)

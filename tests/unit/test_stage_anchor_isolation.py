@@ -236,8 +236,11 @@ def test_stage_wiring_token_to_reap_end_to_end(tmp_path, monkeypatch):
     from awf.pipeline_state import read_state
 
     proj = tmp_path / "proj"
-    for d in ("inbox", "outbox", "logs", "roles"):
+    for d in ("inbox", "outbox", "logs", "roles", "context"):
         (proj / ".agentic" / d).mkdir(parents=True)
+    (proj / ".agentic" / "config.yaml").write_text(
+        "stage_types:\n  agent-dev: execute\n", encoding="utf-8"
+    )
     (proj / ".agentic" / "roles" / "developer.md").write_text("# Role\n")
 
     captured: dict = {}

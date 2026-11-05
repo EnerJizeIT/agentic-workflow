@@ -34,7 +34,10 @@ ROLE_MARKERS: tuple[tuple[int, tuple[str, ...]], ...] = (
     ),
     (3, ("Режим", "Режимы", "Вход")),
     (4, ("Запрет", "Prohibitions", "Проверка", "Находки")),
-    (5, ("AWF-OVERRIDE", "Политика тестов", "Дисциплина доставки инвариантов")),
+    (5, (
+        "AWF-OVERRIDE", "Политика тестов", "Дисциплина доставки инвариантов",
+        "Iteration adaptation", "Бюджет файла",
+    )),
 )
 
 #: The header before the first ``##`` never exceeds this many characters.
@@ -47,6 +50,17 @@ ROLE_LOW_PCT = 70
 MIN_PARTIAL = 200
 
 _HEADING = re.compile(r"^##\s+(?P<title>.+?)\s*$", re.MULTILINE)
+
+#: A role file opens with YAML front matter (``name``/``description``/...).
+#: It is metadata, not role content: without stripping it the "header" was
+#: the first 500 characters of YAML and a cut ``ROLE`` block delivered a
+#: fragment of the description instead of the instructions.
+_FRONT_MATTER = re.compile(r"\A\ufeff?---[ \t]*\r?\n.*?\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
+
+
+def _strip_front_matter(text: str) -> str:
+    """*text* without a leading ``---`` YAML block; anything else untouched."""
+    return _FRONT_MATTER.sub("", text, count=1)
 
 
 @dataclass
@@ -102,6 +116,7 @@ def select_role_core(
     if not text or family == "reviewer/checklist" or limit <= 0:
         return RoleSelection(source=source)
 
+    text = _strip_front_matter(text)
     header, sections = _split_sections(text)
     header = header[:HEADER_LIMIT]
     ranked: list[tuple[int, int, str, str]] = []

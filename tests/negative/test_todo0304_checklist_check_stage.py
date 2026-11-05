@@ -80,7 +80,10 @@ def _project(tmp_path: Path) -> Path:
     for sub in ("inbox", "outbox", "logs", "context", "state", "roles"):
         (project / ".agentic" / sub).mkdir(parents=True, exist_ok=True)
     (project / ".agentic" / "config.yaml").write_text(
-        "project:\n  name: CheckStage\n", encoding="utf-8"
+        "project:\n  name: CheckStage\n"
+        "stage_types:\n  checklist-close: reviewer/checklist\n"
+        "  checklist-check: reviewer/checklist\n  agent-qa-review: reviewer\n",
+        encoding="utf-8",
     )
     # Hermetic: the stage resolves its role from the project, never from the
     # machine's ~/.config/awf/roles (CI has none; a clean HOME reproduced the

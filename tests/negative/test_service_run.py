@@ -67,6 +67,11 @@ CONFIG_YAML = (
     "models:\n"
     "  worker:\n"
     "    model: shim/model\n"
+    "stage_types:\n"
+    "  plan: plan\n"
+    "  agent-implementer: execute\n"
+    "  agent-qa-review: reviewer\n"
+    "  verify: supervisor\n"
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent

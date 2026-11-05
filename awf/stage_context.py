@@ -1,14 +1,7 @@
-"""K7: the stage context builder — one text, one file, one measurement (R2–R6, R13).
+"""K7: the stage context builder — one text, one file, one measurement.
 
-The stage's type comes from :func:`awf.stage_context_types.resolve` (IMP1),
-the block set and limits from :data:`FAMILIES`/:data:`LIMITS` (arch §5/§6),
-the role from :mod:`awf.stage_context_roles`, the blocks from
-:mod:`awf.stage_context_blocks`, the cut from
-:func:`awf.bounded_prompt.fit_blocks`. Nothing is enabled yet (IMP2b).
-
-Text goes to ``.agentic/context/STAGE-<todo>-<stage>.md`` and a ``CTX`` line
-to ``.agentic/logs/orchestrator.log``; a missing context dir or a P0 block
-that does not fit is ``CTX-FAIL`` BEFORE the subprocess starts (R13).
+Type/blocks/role/cut: :mod:`.stage_context_types`, :data:`.FAMILIES`,
+:mod:`.stage_context_roles`, :func:`awf.bounded_prompt.fit_blocks`.
 """
 from __future__ import annotations
 
@@ -20,18 +13,17 @@ from typing import Any
 
 import yaml
 
-from . import paths
+from . import _log, paths
 from ._atomic import atomic_write_text
 from ._errors import AwfApiError
-from .bounded_prompt import Block, fit_blocks, fit_to_limit
+from .bounded_prompt import SUFFIX_MAX, Block, fit_blocks, fit_to_limit, minimum_blocks_len
 from .stage_context_roles import ROLE_LOW_PCT
 from .stage_context_types import display_type, resolve
 
 #: R3: one cap for all five families; ``checklist`` inherits ``reviewer``.
 CAP = 9000
 
-#: arch §5: the block order of each type. ``reviewer/checklist`` is the
-#: sixth row — no role, no doctrine, no findings, no handoffs (C3).
+#: arch §5: the block order of each type (``checklist`` — no role/no findings).
 FAMILIES: dict[str, tuple[str, ...]] = {
     "plan": (
         "STAGE", "PHASES", "VISION", "ROLE", "DOCTRINE", "STATE", "PREVLINK",
@@ -90,6 +82,11 @@ LIMITS: dict[str, dict[str, int]] = {
 }
 
 
+#: arch §6: blocks outside the family matrix (the replan stage injects
+#: ``BLOCKED``). An empty :data:`LIMITS` cell still means "no such block".
+EXTRA_LIMITS: dict[str, int] = {"BLOCKED": 100}
+
+
 class StageContextError(AwfApiError):
     """The stage text cannot be built at all: ``CTX-FAIL``."""
 
@@ -97,7 +94,6 @@ class StageContextError(AwfApiError):
 @dataclass
 class StageInput:
     """Everything a renderer may read: the unit, the stage, the artifact dirs."""
-
     project_dir: Path
     todo_id: str
     stage_name: str
@@ -109,7 +105,7 @@ class StageInput:
     snapshot: dict = field(default_factory=dict)
 
     def limit(self, block_id: str) -> int:
-        return int(self.limits.get(block_id, 0))
+        return int(self.limits.get(block_id) or EXTRA_LIMITS.get(block_id, 0))
 
 
 @dataclass
@@ -133,28 +129,18 @@ class StageContext:
     def ctx_line(self, todo_id: str, stage_name: str, attempt: int) -> str:
         """arch §12: the one measurement line."""
         type_name = display_type(self.family, self.row)
-        blocks = ",".join(
-            f"{block.id}:{len(block.full())}" for block in self.blocks if block.full()
-        )
-        cut = ",".join(
-            f"{block.id}:{block.cut}" for block in self.blocks if block.cut
-        )
+        blocks = ",".join(f"{b.id}:{len(b.full())}" for b in self.blocks if b.full())
+        cut = ",".join(f"{b.id}:{b.cut}" for b in self.blocks if b.cut)
         missing = ",".join(f"{block_id}:{reason}" for block_id, reason in self.missing.items())
         return (
-            f"CTX {todo_id} {stage_name} attempt={attempt} type={type_name} "
-            f"cap={self.cap} total={len(self.text)} file={self.file} "
-            f"role={self.role_taken}/{self.role_total} role_pct={self.role_pct} "
-            f"blocks={blocks} cut={cut} missing={missing}"
+            f"CTX {todo_id} {stage_name} attempt={attempt} type={type_name} cap={self.cap} "
+            f"total={len(self.text)} file={self.file} role={self.role_taken}/{self.role_total} "
+            f"role_pct={self.role_pct} blocks={blocks} cut={cut} missing={missing}"
         ).strip()
 
 
 def split_front_matter(text: str) -> tuple[dict, str]:
-    """``(meta, body)`` of a markdown file with an optional ``---`` header.
-
-    The location comes from
-    :func:`awf.unit_contract.split_contract_front_matter`, the owner of the
-    TODO contract — a local rule would give one file two answers.
-    """
+    """``(meta, body)`` of TODO text; the parser is ``unit_contract``'s splitter."""
     from .unit_contract import split_contract_front_matter
 
     meta, body = split_contract_front_matter(text)
@@ -195,8 +181,7 @@ def present_block(block_id: str, ctx: StageInput, text: str, path: Path | str) -
     if not text.strip():
         return missing_block(block_id, ctx, "блок пуст", path)
     block = Block(id=block_id, text=text.strip(), limit=ctx.limit(block_id), source=str(path), owner=str(path))
-    # PREVLINK's 100-char limit is a share of the budget, not a hard clip:
-    # AC5 wants the OTHER handoffs named by path, and a marker names none.
+    # PREVLINK's share is a budget, not a clip: AC5 wants every path named.
     if block_id == "PREVLINK":
         return block
     return fit_to_limit(block)
@@ -257,21 +242,13 @@ def _done_meta(project_dir: Path, todo_id: str) -> dict:
 
 
 def gates_report(ctx: StageInput) -> tuple[Path, dict | None]:
-    """The GATES artifact: its path and its facts (``None`` when absent).
-
-    One reader for the block and the conflict check: two reads of one report
-    could disagree about the verdict the stage is shown.
-    """
+    """The GATES artifact: its path and its facts; one reader for block and conflict check."""
     path = paths.context_dir(ctx.project_dir) / f"GATES-{ctx.todo_id}.md"
     if not path.is_file():
         return path, None
     from .verify_pack import read_gates_facts
 
     return path, read_gates_facts(path)
-
-
-def _target_file(project_dir: Path, todo_id: str, stage_name: str) -> Path:
-    return paths.context_dir(project_dir) / f"STAGE-{todo_id}-{stage_name}.md"
 
 
 def build_stage_context(
@@ -284,23 +261,32 @@ def build_stage_context(
     config: dict | None = None,
     snapshot: dict | None = None,
     cap: int = CAP,
+    exclude: tuple[str, ...] = (),
+    extra: tuple[str, ...] = (),
+    suffix: str = "",
 ) -> StageContext:
     """K7: build, check P0, cut P1–P5, write the file, log ``CTX``.
 
-    Raises :class:`StageContextError` (``CTX-FAIL``) when P0 does not fit or
-    the context dir cannot take the file — the caller must not start the
-    subprocess then (A9).
+    ``exclude``/``extra`` change the type's block set (a replan drops
+    ``PREVLINK`` and adds ``BLOCKED``); ``suffix`` shares the cap.
     """
     from . import stage_context_blocks as blocks_module
 
     project = Path(project_dir).resolve()
     config_path = paths.config_file(project)
-    if config is None:
-        config = load_config(project)
+    # The project's ``stage_types`` is the owner; an in-memory config (the
+    # spawn passes the keys it reads) only overrides what it carries.
+    if not isinstance(config, dict) or "stage_types" not in config:
+        disk = load_config(project)
+        config = disk if not config else {**disk, **config}
     family, row = resolve(config, stage_name, role, config_path=config_path)
     type_name = display_type(family, row)
-    order = FAMILIES.get(type_name)
-    if order is None:
+    base = [b for b in FAMILIES.get(type_name, ()) if b not in exclude]
+    at = base.index("CRIT") if "CRIT" in base else len(base)
+    order = tuple(base[:at] + [b for b in extra if b not in exclude] + base[at:])
+    if any(b not in LIMITS[type_name] and b not in EXTRA_LIMITS for b in extra):
+        raise StageContextError(f"CTX-FAIL: extra без доли в {type_name}: {', '.join(extra)}")
+    if not order:
         raise StageContextError(f"CTX-FAIL: у типа {type_name!r} нет набора блоков")
     if snapshot is None:
         snapshot = load_snapshot(project, todo_id)
@@ -317,17 +303,37 @@ def build_stage_context(
         snapshot=snapshot,
     )
     blocks = [blocks_module.render_block(block_id, ctx) for block_id in order]
-    text, cut, failed = fit_blocks(blocks, cap)
+    suffix = suffix.strip()[:SUFFIX_MAX]
+    floor = LIMITS[type_name].get("ROLE", 0)
+    # Vitok 5: the tail (the stage's own policy) is reserved whole, then the
+    # role floor; where both do not fit (verify at 6 000) the floor yields
+    # and the cut is visible in ``CTX``.
+    room = cap - (len(suffix) + 2 if suffix else 0)
+    reserve = minimum_blocks_len(blocks, floor)
+    if reserve > room:
+        reserve = minimum_blocks_len(blocks)
+    if reserve > room:
+        raise StageContextError(
+            f"CTX-FAIL: минимум блоков {reserve} > {room} (роль {floor}, хвост {len(suffix)})"
+        )
+    text, cut, failed = fit_blocks(blocks, max(1, room))
     role_block = next((block for block in blocks if block.id == "ROLE"), None)
     role_taken, role_total = (role_block.taken, role_block.total) if role_block else (0, 0)
+    if role_block is not None and role_block.cut:
+        # AC38 measures what the stage actually reads: a role cut down to its
+        # marker must not report the whole selected core as delivered.
+        role_taken = max(0, role_taken - role_block.cut)
     if failed:
         sizes = ", ".join(f"{block.id}:{len(block.full())}/{block.limit}" for block in blocks)
         raise StageContextError(
             f"CTX-FAIL: P0 не влез в потолок ({cap}); сработало: {', '.join(failed)}; "
             f"блоки {sizes}"
         )
-
-    target = _target_file(project, todo_id, stage_name)
+    if suffix:
+        out = next((b.full() for b in reversed(blocks) if b.id == "OUTPUT" and b.full()), "")
+        at = text.rfind(out) if out else -1
+        text = text[:at] + suffix + "\n\n" + text[at:] if at >= 0 else f"{text}\n\n{suffix}"
+    target = paths.context_dir(project) / f"STAGE-{todo_id}-{stage_name}.md"
     if not paths.context_dir(project).is_dir():
         raise StageContextError(f"CTX-FAIL: каталога нет — {paths.context_dir(project)}")
     try:
@@ -363,23 +369,18 @@ def build_stage_context(
         role_total=role_total,
         role_pct=100 if role_total <= 0 else min(100, (role_taken * 100) // role_total),
     )
-    _log_ctx(project, result, todo_id, stage_name, attempt)
+    try:
+        _log.log(paths.logs_dir(project), result.ctx_line(todo_id, stage_name, attempt))
+    except OSError:
+        pass
     if result.role_pct < ROLE_LOW_PCT:
         print(f"WARN CTX-ROLE-LOW: {todo_id} {stage_name} role={result.role_pct}%", flush=True)
     return result
 
 
-def _log_ctx(project: Path, result: StageContext, todo_id: str, stage_name: str, attempt: int) -> None:
-    from . import _log
-
-    try:
-        _log.log(paths.logs_dir(project), result.ctx_line(todo_id, stage_name, attempt))
-    except OSError:
-        return
-
-
 __all__ = [
     "CAP",
+    "EXTRA_LIMITS",
     "FAMILIES",
     "LIMITS",
     "StageContext",
@@ -395,6 +396,5 @@ __all__ = [
     "read_section",
     "read_text",
     "split_front_matter",
-    "todo_file",
-    "todo_text",
+    "todo_file", "todo_text",
 ]

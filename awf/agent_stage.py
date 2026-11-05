@@ -13,7 +13,7 @@ from . import _net, paths, session_store, suite_guard, worker_tree
 from ._atomic import atomic_write_text
 from ._log import log as _log
 from ._worker_exit import signal_present_line, worker_exit_line, worker_log_tail
-from .doctrine import materialize_doctrine
+from .bounded_prompt import SUFFIX_MAX
 from .infra import managed_fs
 from .pipeline import Stage
 from .pipeline_state import bump_stage_attempt
@@ -25,12 +25,12 @@ from .signals import (
     short_id,
     stage_signal_paths,
 )
+from .stage_context import StageContextError, build_stage_context
 from .supervisor import (
+    _build_pipeline_context,
     argv_agent_flag,
-    build_prompt,
     get_agent_name,
     require_role_model,
-    resolve_role_file,
 )
 
 
@@ -72,26 +72,104 @@ def _done_digest(body: str) -> list[str]:
     return lines[:DONE_DIGEST_LINES]
 
 
+def _execute_contract(todo_id: str) -> str:
+    """The worker's completion contract (DF5-1): signal, DONE.json, discipline.
+
+    IMP2b moved the prompt to the stage builder and this text travels as
+    the builder's suffix — inside the same cap and the same file. The
+    suffix is placed just before ``OUTPUT``, so the contract and the
+    stage's closing instruction stay together at the end of the text.
+    """
+    return (
+        f"## CRITICAL completion contract\n"
+        f"Pipeline BLOCKS until the signal file exists.\n"
+        f"✅ Done → touch .agentic/outbox/DONE-{todo_id}.ready and write "
+        f".agentic/outbox/DONE-{todo_id}.md (1 line).\n"
+        f"🚫 Blocked → .agentic/outbox/BLOCKED-{todo_id}.md with the reason + .ready "
+        f"(no DONE).\n"
+        f"Facts → DONE-{todo_id}.json (files_changed, tests_run, gates, notes; "
+        f"docs/unit-contract.md).\n"
+        f"Review/audit facts → PROBES-{todo_id}.json; leave DONE.json to its author.\n\n"
+        f"## OUTPUT & WORKSPACE DISCIPLINE\n"
+        f"- Code straight to files; never draft a whole file in the reply. Skeleton "
+        f"first, one section per step; if the reply grows, STOP and continue next step.\n"
+        f"- Temp files: only /tmp/opencode/** or pytest tmp_path.\n"
+        f"- Live external runs only when the task asks; checks are tests with markers.\n\n"
+        f"## Task\n"
+        f"Execute your part of {todo_id} per the role/skill; use the TODO and prior "
+        f"handoffs, don't redo. Don't commit — the engine commits after verification."
+    )
+
+
+def _stage_tail(
+    static: list[str], required: list[str], limit: int = SUFFIX_MAX
+) -> tuple[str, int]:
+    """The stage tail under *limit*: static guidance gives way, this run's lines stay.
+
+    ``static`` is the same text for every unit (the completion contract, the
+    pipeline position); ``required`` is what this run alone carries (the
+    assignment, the stage identity, the retry push). The static part is
+    trimmed at its own end, so a retry — the run that needs its note most —
+    never loses the note to the cap. Returns ``(text, trimmed_chars)``.
+    """
+    required_text = "\n\n".join(part for part in required if part)
+    room = limit - len(required_text) - (2 if required_text else 0)
+    whole = "\n\n".join(part for part in static if part)
+    kept = whole[: max(0, room)]
+    if len(kept) < len(whole):
+        # Whole lines only: a tail ending mid-word reads as a broken
+        # instruction, and the block boundary is what the reader sees.
+        cut = kept.rfind("\n")
+        kept = kept[:cut] if cut > 0 else ""
+    static_text = kept.strip()
+    text = "\n\n".join(part for part in (static_text, required_text) if part)
+    return text, len(whole) - len(static_text)
+
+
+def _build_agent_context(
+    project_dir: Path,
+    todo_id: str,
+    stage_name: str,
+    role: str,
+    logs_dir: Path,
+    *,
+    attempt: int,
+    suffix: str,
+):
+    """IMP2b: the stage text and the tail inside the one cap.
+
+    The tail (assignment, stage identity, retry note) goes to the builder as
+    ``suffix``: one call, one ``CTX`` line, one write, so ``total`` equals
+    the final text — file and argv. ``CTX-FAIL`` becomes
+    :class:`RuntimeError`: the engine stops instead of spawning blind.
+    """
+    try:
+        ctx = build_stage_context(
+            project_dir, todo_id, stage_name, role,
+            attempt=attempt, suffix=suffix,
+        )
+    except StageContextError as e:
+        _log(logs_dir, str(e))
+        raise RuntimeError(str(e)) from e
+    return ctx
+
+
 def run_agent_stage(
     stage: Stage,
     todo_id: str,
     project_dir: Path,
     config: dict,
     logs_dir: Path,
-    prev_handoffs: list[Path] | None = None,
     hard_timeout: int | None = None,
     retry_note: str | None = None,
     attempt: int = 1,
     log_holder: dict[str, str] | None = None,
+    pipeline_name: str | None = None,
 ) -> None:
     """Spawn opencode run for an agent stage.
 
     KAUD-4: ``hard_timeout`` overrides default 3600s timeout. Pass through
     from CLI --timeout or config. None = use BD20_HARD_TIMEOUT default.
-
-    BD-15: ``prev_handoffs`` is a list of handoff .md files from previous
-    pipeline stages (in pipeline order). Each is passed to the agent as
-    ``--file`` so the agent sees what previous roles did.
 
     dogfood-11: ``retry_note`` is appended to the prompt when the stage is
     being retried after a silent exit (worker answered with text / hit its
@@ -102,6 +180,10 @@ def run_agent_stage(
     U6b: ``log_holder`` (optional dict) is populated with
     ``{"log_path": ...}`` — the worker log file the run appends to. The
     caller (execute_agent_stage) reads its tail to classify network deaths.
+
+    ``pipeline_name`` is the pipeline the run executes; the pipeline-context
+    line uses it when the unit has no frozen snapshot (old unit, manual
+    launch) — the caller has it, so the degradation must not guess.
     """
     role = stage.role
     kind = stage.kind
@@ -117,37 +199,33 @@ def run_agent_stage(
     print("=" * 41)
     print()
 
-    role_file = resolve_role_file(role, project_dir)
-    inbox = paths.inbox(project_dir)
-    todo_file = inbox / f"{todo_id}.md"
-
-    prompt = build_prompt(kind, todo_id, project_dir=project_dir)
-    # ORCH M3.2: the stage's assignment (task + declared input/output)
-    # goes LAST in the prompt — recency bias, the same rule the
-    # supervisor snippets follow. Empty block when the stage has no
-    # task (back-compat: the prompt is byte-identical to before).
-    assignment = _stage_assignment_block(stage)
-    if assignment:
-        prompt = prompt + "\n\n" + assignment
-        _log(logs_dir, f"ORCH M3.2: stage assignment appended to {role} prompt")
-    # ORCH M4.3: the worker gets its stage identity in the prompt (one line)
-    # so the DONE.json stage block is a copy, not a guess.
+    # IMP2b: one builder, one text, no attachments. The role, doctrine,
+    # TODO and handoffs are blocks of the stage context; the text goes as
+    # the single positional argument of ``opencode run`` and the very same
+    # bytes are already on disk at ``context/STAGE-<todo>-<stage>.md``.
     s_id = stage.id or stage.name
     stage_identity = (
         "## Stage identity\n"
-        f'stage_id="{s_id}", attempt={attempt}, role="{role}" — if you write '
-        f'DONE.json, include "stage": {{"stage_id": "{s_id}", "attempt": {attempt}}} '
-        "(the engine cross-checks it in the handoff)."
+        f'stage_id="{s_id}", attempt={attempt}, role="{role}" — copy into DONE.json: '
+        f'"stage": {{"stage_id": "{s_id}", "attempt": {attempt}}}'
     )
-    prompt = prompt + "\n\n" + stage_identity
-    _log(logs_dir, f"ORCH M4.3: stage identity appended to {role} prompt")
-    if retry_note:
-        prompt = prompt + "\n\n" + retry_note
-        _log(logs_dir, f"dogfood-11: retry note appended to {role} prompt")
+    contract = _execute_contract(todo_id) if kind == "execute" else ""
+    pipeline_context = _build_pipeline_context(project_dir, todo_id, pipeline_name)
+    suffix, trimmed = _stage_tail(
+        [contract, pipeline_context],
+        [_stage_assignment_block(stage), stage_identity, retry_note or ""],
+    )
+    if trimmed:
+        _log(logs_dir, f"CTX-TAIL-CUT: {trimmed} chars of static guidance trimmed")
+    ctx = _build_agent_context(
+        project_dir, todo_id, s_id, role, logs_dir, attempt=attempt,
+        suffix=suffix,
+    )
+    prompt = ctx.text
 
     print(f"Running agent: {agent_name}")
-    print(f"Role file: {role_file}")
-    print(f"Task: {todo_file}")
+    print(f"Task: {paths.inbox(project_dir) / f'{todo_id}.md'}")
+    print(f"Context: {ctx.file} ({len(prompt)} chars)")
     print()
 
     # Clean stale signals this kind could produce
@@ -249,29 +327,14 @@ def run_agent_stage(
     cmd += argv_agent_flag(config, role)
     cmd += [
         "--title", title,
-        "--file", str(role_file),
     ]
-    # U9: doctrine section between the role's instructions and the task —
-    # every role gets the project lessons without editing role templates.
-    doctrine_file = materialize_doctrine(project_dir)
-    if doctrine_file is not None:
-        cmd += ["--file", str(doctrine_file)]
-        print(f"Doctrine in:  {doctrine_file}")
-        _log(logs_dir, f"U9: doctrine section injected: {doctrine_file}")
-    cmd += ["--file", str(todo_file)]
     # A48: always explicit — the model came from require_role_model above,
     # and a spawn without this flag would use opencode's default instead.
     cmd += ["--model", role_model]
-    # R7/K5: --session after --model; every earlier --file is kept (AC28).
+    # R7/K5: --session after --model. IMP2b: no ``--file`` at all — role,
+    # doctrine, TODO and handoffs are blocks of the stage context above.
     if session_decision.reused:
         cmd += ["--session", session_decision.session_id]
-
-    if prev_handoffs:
-        for hf in prev_handoffs:
-            if hf.is_file():
-                cmd += ["--file", str(hf)]
-                print(f"Handoff in:  {hf}")
-                _log(logs_dir, f"Forwarding handoff: {hf}")
 
     cmd += ["--", prompt]
 
@@ -727,40 +790,3 @@ def collect_handoff(
     print(f"Handoff out: {out_file}")
     _log(logs_dir, f"Handoff written: {out_file}")
     return out_file
-
-
-def resolve_prev_handoffs(
-    pipeline_stages: list[Stage],
-    current_stage_idx: int,
-    project_dir: Path,
-    todo_id: str = "",
-) -> list[Path]:
-    """BD-15/19: return handoff paths for all AGENT stages before current_stage_idx."""
-    handoff_dir = paths.handoff_dir(project_dir)
-    result: list[Path] = []
-    for i in range(current_stage_idx):
-        st = pipeline_stages[i]
-        if st.role == "supervisor":
-            continue
-        if todo_id:
-            primary = handoff_dir / f"{st.name}-{todo_id}.md"
-            legacy = handoff_dir / f"{st.role}-{todo_id}.md"
-            if not primary.is_file() and legacy.is_file():
-                result.append(legacy)  # in-flight runs from before the rename
-            else:
-                result.append(primary)
-        else:
-            # P2: sort by name (numeric ID) instead of mtime — deterministic
-            # even when rapid retry creates files in the same second.
-            import re
-            def _sort_key(p: Path) -> tuple[int, str]:
-                m = re.search(r"(\d+)", p.name)
-                return (int(m.group(1)) if m else 0, p.name)
-            candidates = sorted(
-                handoff_dir.glob(f"{st.role}- *.md".replace(" ", "")),
-                key=_sort_key,
-                reverse=True,
-            )
-            if candidates:
-                result.append(candidates[0])
-    return result

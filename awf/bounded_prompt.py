@@ -1,11 +1,9 @@
 """A42/K8: the one place where a text that is over budget gets cut.
 
-Two builders hand a role text that can outgrow its budget: the replan prompt
-(``rejection.build_replan_context``) and the verify prompt
-(``verify_context.build_verify_prompt``). The stage context builder
-(``stage_context.build_stage_context``) hands over named blocks. All three
-obey the same rules, so the rules live here once instead of being re-typed
-next to each caller:
+Two shapes obey the same rules: the stage context builder
+(``stage_context.build_stage_context``) hands over named blocks, and
+``fit_prompt`` still serves named sections. IMP2b moved every live prompt
+to the builder, so the rules live here once instead of next to each caller:
 
 - sections are named pairs ``(label, text)`` and the caller keeps the
   formatting: ``render(items)`` produces the whole prompt, head and tail
@@ -44,7 +42,8 @@ BLOCK_PRIORITY: dict[str, int] = {
     "PHASES": P0,
     "RULES": P0,
     "OUTPUT": P0,
-    "REVIEW": P1,
+    # QA-11/vitok 5: the findings are why the round exists — never cut.
+    "REVIEW": P0,
     "DONE": P1,
     "INPUTART": P1,
     "ROLE": P2,
@@ -58,9 +57,10 @@ BLOCK_PRIORITY: dict[str, int] = {
     "PREVLINK": P5,
 }
 
-#: R5 cut order: the whole P5 first, P1 last, ``REVIEW`` last inside P1.
-#: Within one class the order is arch §6's: ``DOCTRINE``/``STATE``/``VISION``,
-#: then ``GATES``/``DIFF``/``BLOCKED``, then ``ROLE``.
+#: R5 cut order: P5 first, then the facts/narrative; ``ROLE`` LAST so a unit
+#: whose contract fills the cap does not pay with the role (QA-11). P0 blocks
+#: (``REVIEW`` included since vitok 5) are never in this list — they are the
+#: reason the stage runs.
 CUT_ORDER: tuple[str, ...] = (
     "PREVLINK",
     "PREV",
@@ -70,11 +70,18 @@ CUT_ORDER: tuple[str, ...] = (
     "GATES",
     "DIFF",
     "BLOCKED",
-    "ROLE",
     "INPUTART",
     "DONE",
-    "REVIEW",
+    "ROLE",
 )
+
+#: Vitok 5: the stage tail is static guidance; the unit text keeps the rest.
+SUFFIX_MAX = 1500
+
+#: P0 blocks that still honour their own share: the findings keep the tail
+#: (``BLOCKER``/closed) and let the body go. P0 for the cut order means
+#: "never dropped by the cap", not "never trimmed".
+SHARED_P0: frozenset[str] = frozenset({"REVIEW"})
 
 #: First guess of what the cut marker costs: callers add the real marker
 #: length on top (it carries the artifact path), so this only seeds the cut.
@@ -149,7 +156,9 @@ def fit_to_limit(block: Block) -> Block:
     take part: ``PREVLINK`` is exempt because AC5 wants every other handoff
     named by path, and its share is the budget, not a hard clip.
     """
-    if block.priority == P0 or block.missing or block.limit <= 0:
+    # REVIEW is P0 for the cut order (never dropped by the cap), but its own
+    # share still applies: tail (BLOCKER/closed) survives, body gets a marker.
+    if (block.priority == P0 and block.id not in SHARED_P0) or block.missing or block.limit <= 0:
         return block
     if len(block.full()) <= block.limit:
         return block
@@ -239,6 +248,28 @@ def fit_blocks(blocks: Sequence[Block], cap: int) -> tuple[str, list[str], list[
     return text, cut, []
 
 
+def minimum_blocks_len(blocks: Sequence[Block], floor: int = 0) -> int:
+    """The smallest text :func:`fit_blocks` can produce for *blocks*.
+
+    Every soft block keeps a marker naming its artifact, a missing block
+    keeps its one line, P0 is never cut, and ``ROLE`` is only promised down
+    to *floor*. A caller that reserves room for a tail must leave this many
+    characters, or the fitter takes the rest off the role it promised.
+    """
+    parts = [block for block in blocks if block.full()]
+    total = 2 * max(0, len(parts) - 1)
+    for block in parts:
+        if block.missing:
+            total += len(block.full())
+        elif block.id == "ROLE" and floor:
+            total += min(floor, len(block.full()))
+        elif block.priority:
+            total += len(cut_marker(1, block.source))
+        else:
+            total += len(block.full())
+    return total
+
+
 def fit_prompt(
     render: Renderer,
     *,
@@ -296,6 +327,7 @@ __all__ = [
     "BLOCK_PRIORITY",
     "CUT_ORDER",
     "MARKER_RESERVE",
+    "SUFFIX_MAX",
     "Block",
     "cut_block",
     "cut_marker",
@@ -304,4 +336,5 @@ __all__ = [
     "fit_blocks",
     "fit_prompt",
     "fit_to_limit",
+    "minimum_blocks_len",
 ]

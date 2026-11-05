@@ -44,8 +44,14 @@ def install_fake_time(monkeypatch, clock: Clock, on_sleep=None) -> None:
 def make_project(tmp_path: Path) -> Path:
     """A project skeleton with the dirs and role file the supervisor needs."""
     proj = tmp_path / "proj"
-    for d in ("inbox", "outbox", "logs", "roles"):
+    for d in ("inbox", "outbox", "logs", "roles", "context"):
         (proj / ".agentic" / d).mkdir(parents=True)
+    # IMP2b: the stage text comes from the builder — the project declares
+    # its stage types and owns the context dir the text is written to.
+    (proj / ".agentic" / "config.yaml").write_text(
+        "stage_types:\n  plan: plan\n  verify: supervisor\n  agent-dev: execute\n",
+        encoding="utf-8",
+    )
     (proj / ".agentic" / "roles" / "supervisor.md").write_text("# Role\n")
     phases = proj / ".agentic" / "phases"
     phases.mkdir()
@@ -112,9 +118,15 @@ def hanging_popen(signal_file: Path):
 
         def __init__(self, cmd, cwd=None, **kwargs):
             self.cmd = cmd
+            self.args = cmd
             self.pid = 999999999  # never a real group — killpg must not run
             self.returncode = None
-            signal_file.write_text("", encoding="utf-8")
+            self.stdout = b""
+            self.stderr = b""
+            # ``subprocess.run`` (the git read in the STATE block) uses the
+            # same patched Popen; only the supervisor spawn writes a verdict.
+            if not (cmd and str(cmd[0]).split("/")[-1] == "git"):
+                signal_file.write_text("", encoding="utf-8")
 
         def poll(self):
             return None
@@ -128,6 +140,15 @@ def hanging_popen(signal_file: Path):
 
         def terminate(self):
             self.kill()
+
+        def communicate(self, input=None, timeout=None):
+            return (self.stdout, self.stderr)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
 
     return _Hanging
 

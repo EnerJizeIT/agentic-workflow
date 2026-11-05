@@ -181,7 +181,6 @@ class TestF4AutoRetry:
 
         monkeypatch.setattr(pipeline_engine, "_run_agent_stage", mock_agent)
         monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
-        monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
         monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: "abc123")
         monkeypatch.setattr(pipeline_engine, "wait_for_signal", lambda *a, **kw: None)
         monkeypatch.setattr(pipeline_engine, "_log", lambda *a, **kw: None)
@@ -456,7 +455,6 @@ class TestSalvageEscalation:
 
         monkeypatch.setattr(pipeline_engine, "_run_agent_stage", mock_agent)
         monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
-        monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
         monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: None)
         monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "")
         monkeypatch.setattr(pipeline_engine, "wait_for_signal", lambda *a, **kw: None)
@@ -513,7 +511,6 @@ class TestSalvageEscalation:
         """Shared mocks: silent worker, no auto-done, no signals."""
         monkeypatch.setattr(pipeline_engine, "_run_agent_stage", lambda *a, **kw: None)
         monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
-        monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
         monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: None)
         monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "")
         monkeypatch.setattr(pipeline_engine, "wait_for_signal", lambda *a, **kw: None)
@@ -677,7 +674,6 @@ class TestSalvageEscalation:
 
         monkeypatch.setattr(pipeline_engine, "_run_agent_stage", mock_agent)
         monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
-        monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
         monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: "abc123")
         monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "")
         monkeypatch.setattr(pipeline_engine, "wait_for_signal", lambda *a, **kw: None)
@@ -891,7 +887,6 @@ class TestU6bNetRetry:
         monkeypatch.setattr(pipeline_engine, "_log", lambda d, msg: log_lines.append(msg))
         monkeypatch.setattr(pipeline_engine, "_run_agent_stage", mock_agent)
         monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
-        monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
         monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: "abc123")
         monkeypatch.setattr(pipeline_engine, "wait_for_signal", lambda *a, **kw: None)
         monkeypatch.setattr(pipeline_state_mod, "write_state", fake_write_state)
@@ -1163,7 +1158,6 @@ class TestU6cNetRetryOnCrash:
         monkeypatch.setattr(pipeline_engine, "_log", lambda d, msg: log_lines.append(msg))
         monkeypatch.setattr(pipeline_engine, "_run_agent_stage", mock_agent)
         monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
-        monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
         monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: "abc123")
         monkeypatch.setattr(pipeline_engine, "wait_for_signal", lambda *a, **kw: None)
         monkeypatch.setattr(pipeline_state_mod, "write_state", fake_write_state)

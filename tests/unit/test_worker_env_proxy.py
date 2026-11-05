@@ -229,13 +229,14 @@ class TestStageLogLine:
 
     def _project(self, base: Path) -> Path:
         proj = base / "stage-proxy"
-        for sub in ("inbox", "outbox", "logs", "roles"):
+        for sub in ("inbox", "outbox", "logs", "roles", "context"):
             (proj / ".agentic" / sub).mkdir(parents=True)
         (proj / ".agentic" / "roles" / "developer.md").write_text(
             "# Developer role\n", encoding="utf-8"
         )
         (proj / ".agentic" / "config.yaml").write_text(
-            "project:\n  name: test\n", encoding="utf-8"
+            "project:\n  name: test\nstage_types:\n  agent-dev: execute\n",
+            encoding="utf-8",
         )
         return proj
 

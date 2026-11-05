@@ -2,7 +2,7 @@
 
 - П2: cmd_init writes plan.md stub pointing to vision/README
 - П3: orchestrator auto-creates baseline SHA
-- П6: supervisor.build_prompt injects vision excerpt
+- П6: the plan stage context injects the vision excerpt
 - П7: plan_checkpoint cleans up stale /tmp/ HTML
 """
 from __future__ import annotations
@@ -15,7 +15,6 @@ from conftest import _git_init, _git_init_bare  # AUD12-08: shared git boilerpla
 from awf import paths
 from awf.pipeline_engine import _ensure_baseline_sha
 from awf.plan_checkpoint import _cleanup_stale_temp_html
-from awf.supervisor import build_prompt
 
 # ── find_vision_file (П2 helper, also used by П6) ────────────────────────────
 
@@ -132,49 +131,57 @@ class TestEnsureBaselineSha:
         assert "baseline creation failed" in log_content
 
 
-# ── build_prompt vision injection (П6) ───────────────────────────────────────
+# ── plan stage vision injection (П6) ────────────────────────────────────────
 
 
-class TestBuildPromptVisionInjection:
+def _plan_project(tmp_path: Path) -> Path:
+    proj = tmp_path / "proj"
+    for name in ("inbox", "outbox", "logs", "context", "roles"):
+        (proj / ".agentic" / name).mkdir(parents=True)
+    (proj / ".agentic" / "config.yaml").write_text(
+        "stage_types:\n  plan: plan\n  verify: supervisor\n"
+    )
+    (proj / ".agentic" / "roles" / "supervisor.md").write_text("# Supervisor\n")
+    return proj
+
+
+def _plan_prompt(proj: Path) -> str:
+    from awf.stage_context import build_stage_context
+    return build_stage_context(proj, "", "plan", "supervisor").text
+
+
+class TestPlanVisionInjection:
     def test_plan_prompt_includes_vision_excerpt(self, tmp_path):
-        """П6: plan prompt auto-injects vision content."""
-        vision = tmp_path / "1. PRODUCT-VISION.md"
-        vision.write_text(
-            "# Vision\nBuild a Chrome extension for Jira.\n",
-            encoding="utf-8",
+        """П6: the plan stage sees the vision file."""
+        proj = _plan_project(tmp_path)
+        (proj / "1. PRODUCT-VISION.md").write_text(
+            "# Vision\nBuild a Chrome extension for Jira.\n", encoding="utf-8"
         )
-        prompt = build_prompt("plan", "TODO-0001", project_dir=tmp_path)
+        prompt = _plan_prompt(proj)
         assert "Chrome extension for Jira" in prompt
-        assert "1. PRODUCT-VISION.md" in prompt
 
     def test_plan_prompt_truncates_long_vision(self, tmp_path):
-        """Long vision is truncated to keep prompt budget manageable."""
-        vision = tmp_path / "VISION.md"
-        # 10000 chars — well over the 4000 limit
-        vision.write_text("X" * 10000, encoding="utf-8")
-        prompt = build_prompt("plan", "TODO-0001", project_dir=tmp_path)
-        assert "[... truncated ...]" in prompt
-        # Truncated excerpt + boilerplate < full vision
+        """The VISION block is cut to its share and names the rest."""
+        proj = _plan_project(tmp_path)
+        (proj / "VISION.md").write_text("X" * 10000, encoding="utf-8")
+        prompt = _plan_prompt(proj)
+        assert "… ещё" in prompt
         assert len(prompt) < 10000
 
-    def test_plan_prompt_without_project_dir_backward_compat(self):
-        """П6: project_dir is optional. Without it, no vision injection."""
-        prompt = build_prompt("plan", "TODO-0001", project_dir=None)
-        # Generic supervisor prompt still present
-        assert "You are the supervisor" in prompt
-        # No vision section
-        assert "Project vision (auto-injected" not in prompt
-
     def test_plan_prompt_no_vision_file_in_project(self, tmp_path):
-        """Empty project — no vision. Prompt still works (no excerpt)."""
-        prompt = build_prompt("plan", "TODO-0001", project_dir=tmp_path)
-        assert "You are the supervisor" in prompt
-        assert "Project vision (auto-injected" not in prompt
+        """Empty project — no vision block, the text still works."""
+        proj = _plan_project(tmp_path)
+        prompt = _plan_prompt(proj)
+        assert "видения нет" in prompt
 
     def test_verify_prompt_does_not_get_vision(self, tmp_path):
-        """П6: vision only injected for plan stage. Verify stays focused."""
-        (tmp_path / "VISION.md").write_text("project vision", encoding="utf-8")
-        prompt = build_prompt("verify", "TODO-0001", project_dir=tmp_path)
+        """П6: vision is a plan block; verify stays focused."""
+        proj = _plan_project(tmp_path)
+        (proj / "VISION.md").write_text("project vision", encoding="utf-8")
+        from awf.stage_context import build_stage_context
+        prompt = build_stage_context(
+            proj, "TODO-0001", "verify", "supervisor"
+        ).text
         assert "project vision" not in prompt
 
 
