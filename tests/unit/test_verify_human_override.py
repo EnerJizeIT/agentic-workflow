@@ -22,11 +22,18 @@ from pathlib import Path
 
 from awf import arbiter, supervisor
 from awf import opencode_version as ov
-from tests.unit._signal_fakes import Clock, make_project
+from tests.unit._signal_fakes import (
+    Clock,
+    install_fake_time,
+    make_project,
+    window_clock,
+)
 
 TODO = "TODO-0001"
 
-#: The wall clock the freshness check sees, so "just issued" is stable.
+#: The wall clock the freshness check sees. Deliberately in the past: any
+#: real mtime is then fresher, so "just issued" cannot depend on the second
+#: the test crosses.
 JUST_NOW = 1_700_000_000.0
 
 
@@ -72,20 +79,6 @@ def _fake_subprocess(writes: list[Path]):
     return fake_run
 
 
-def _install_window(monkeypatch, on_sleep=None) -> Clock:
-    """A fake monotonic clock advanced by the fake ``time.sleep``."""
-    clock = Clock()
-
-    def fake_sleep(dt: float) -> None:
-        clock.t += dt
-        if on_sleep is not None:
-            on_sleep()
-
-    monkeypatch.setattr("time.monotonic", clock.monotonic)
-    monkeypatch.setattr("time.sleep", fake_sleep)
-    return clock
-
-
 def _log(proj: Path) -> str:
     return (proj / ".agentic" / "logs" / "orchestrator.log").read_text(
         encoding="utf-8"
@@ -109,7 +102,7 @@ class TestHumanWinsInsideWindow:
                 written.append(True)
                 _write_human_approve(proj)
 
-        _install_window(monkeypatch, on_sleep)
+        window_clock(monkeypatch, on_sleep)
         monkeypatch.setattr(
             "awf.signal_watch.run_subprocess_until_signal",
             _fake_subprocess([_write_auto_review(proj)]),
@@ -134,7 +127,7 @@ class TestHumanWinsInsideWindow:
         self, tmp_path, monkeypatch
     ):
         proj = make_project(tmp_path)
-        clock = _install_window(monkeypatch)
+        clock = window_clock(monkeypatch)
         monkeypatch.setattr(
             "awf.signal_watch.run_subprocess_until_signal",
             _fake_subprocess([_write_auto_review(proj)]),
@@ -152,7 +145,7 @@ class TestAutoAppliesAfterWindow:
         self, tmp_path, monkeypatch
     ):
         proj = make_project(tmp_path)
-        clock = _install_window(monkeypatch)
+        clock = window_clock(monkeypatch)
         monkeypatch.setattr(
             "awf.signal_watch.run_subprocess_until_signal",
             _fake_subprocess([_write_auto_review(proj)]),
@@ -172,8 +165,10 @@ class TestExistingHumanDecisionIsInstant:
     def test_pre_existing_approve_needs_no_window(self, tmp_path, monkeypatch):
         proj = make_project(tmp_path)
         _write_human_approve(proj)
-        monkeypatch.setattr("awf.supervisor.time.time", lambda: JUST_NOW + 0.5)
-        _install_window(monkeypatch)
+        # The wall clock goes on the fake the engine reads: setting it
+        # before installing the clock would be lost with the module swap.
+        fake = install_fake_time(monkeypatch, Clock())
+        monkeypatch.setattr(fake, "time", lambda: JUST_NOW + 0.5)
         monkeypatch.setattr(
             "awf.signal_watch.run_subprocess_until_signal",
             lambda *a, **kw: (_ for _ in ()).throw(
@@ -209,7 +204,7 @@ class TestOwningTheVerdictEndsTheWindow:
                     encoding="utf-8",
                 )
 
-        clock = _install_window(monkeypatch, on_sleep)
+        clock = window_clock(monkeypatch, on_sleep)
         monkeypatch.setattr(
             "awf.signal_watch.run_subprocess_until_signal",
             _fake_subprocess([]),
@@ -241,7 +236,7 @@ class TestMovedTreeIsNotOverridden:
                     proj, {"source": "human", "verified_sha": "b" * 64}
                 )
 
-        _install_window(monkeypatch, on_sleep)
+        window_clock(monkeypatch, on_sleep)
         monkeypatch.setattr(
             "awf.signal_watch.run_subprocess_until_signal",
             _fake_subprocess([_write_auto_review(proj)]),

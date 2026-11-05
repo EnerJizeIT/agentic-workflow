@@ -26,12 +26,11 @@ import pytest
 from awf import arbiter, git_utils
 from awf import opencode_version as ov
 from tests.unit._signal_fakes import (
-    Clock,
     approve,
-    install_fake_time,
     log_text,
     make_project,
     run_verify,
+    window_clock,
 )
 
 TODO = "TODO-0001"
@@ -44,13 +43,6 @@ def opencode_ok(monkeypatch):
         "awf.opencode_version.probe_version",
         lambda *a, **kw: ov.Probe("ok", (1, 19, 4)),
     )
-
-
-def _window_clock(monkeypatch, on_sleep=None) -> Clock:
-    """A fake monotonic clock; ``on_sleep`` writes a decision mid-window."""
-    clock = Clock()
-    install_fake_time(monkeypatch, clock, on_sleep)
-    return clock
 
 
 def _fake_subprocess_writing(files: list[tuple[Path, str]]):
@@ -89,7 +81,7 @@ class TestHumanReviewOverrulesAutoApprove:
                     encoding="utf-8",
                 )
 
-        _window_clock(monkeypatch, on_sleep)
+        window_clock(monkeypatch, on_sleep)
 
         assert run_verify(
             proj, monkeypatch, TODO, {"wait": {"human_override_seconds": 60}},
@@ -221,7 +213,7 @@ class TestBoundApproveInsideTheWindow:
                     encoding="utf-8",
                 )
 
-        _window_clock(monkeypatch, on_sleep)
+        window_clock(monkeypatch, on_sleep)
         auto = _fake_subprocess_writing([(_auto_review(proj), "# auto\n")])
 
         approve_signal = proj / ".agentic" / "inbox" / f"APPROVE-{TODO}.ready"
@@ -254,7 +246,7 @@ class TestWindowResolution:
                 written.append(True)
                 approve(proj, TODO)
 
-        clock = _window_clock(monkeypatch, on_sleep)
+        clock = window_clock(monkeypatch, on_sleep)
 
         assert run_verify(
             proj, monkeypatch, TODO, {"wait": {"human_override_seconds": 60}},
@@ -274,7 +266,7 @@ class TestWindowResolution:
         proj = make_project(tmp_path)
         approve_signal = proj / ".agentic" / "inbox" / f"APPROVE-{TODO}.ready"
         review = _auto_review(proj)
-        clock = _window_clock(monkeypatch)
+        clock = window_clock(monkeypatch)
 
         assert run_verify(
             proj, monkeypatch, TODO, {"wait": {"human_override_seconds": 60}},
