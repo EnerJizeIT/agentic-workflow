@@ -266,7 +266,9 @@ class TestStageLogLine:
 
         agent_stage.run_agent_stage(
             Stage(name="agent-dev", role="developer", kind="execute"),
-            "TODO-0001", proj, {}, proj / ".agentic" / "logs",
+            "TODO-0001", proj,
+            {"models": {"developer": {"model": "p/test"}}},
+            proj / ".agentic" / "logs",
         )
         return logs
 

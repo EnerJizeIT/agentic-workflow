@@ -48,7 +48,8 @@ import yaml
 
 from . import command_parse, config_keys, paths, suite_command, versions, xdg
 from . import config as cfg_mod
-from .supervisor import argv_agent_flag
+from ._errors import AwfApiError
+from .supervisor import argv_agent_flag, missing_model_message
 
 OK = "ok"
 WARN = "WARN"
@@ -342,23 +343,56 @@ def _check_models(project_dir: Path, config_problem: str, out: _Lines) -> None:
             raise TypeError(
                 f"check_model_config returned {type(result).__name__}"
             )
-        roles = len(result.get("models") or [])
+        roles = result.get("models") or []
         config_warnings = result.get("warnings") or []
         providers = result.get("providers_available") or []
+        cli_available = result.get("cli_models_available", True)
+        # A48: model_check names the roles it refuses; doctor takes that
+        # structural key instead of re-deriving the rule from the rows.
+        missing_roles = [
+            str(r) for r in (result.get("missing_model_roles") or [])
+        ]
     except Exception as e:  # noqa: BLE001 — R5: a broken surface is "unknown"
         out.warn("models", f"{versions.UNKNOWN} ({type(e).__name__})")
         return
-    if problem or config_warnings:
+    if not cli_available and not providers:
+        # A47: a cold opencode answers with no models at all. That is not an
+        # error; the other rows still run and doctor stays usable.
+        # A48: a missing model is config-level knowledge — the CLI cannot fix
+        # it, so the refusal stays visible even on a cold start.
+        for role in missing_roles:
+            out.warn("models", missing_model_message(role))
+        out.ok("models", "модели не определены (opencode не готов)")
+        return
+    # A48: one line per role — the operator must see WHICH model each role
+    # will run on before launch, and which role has none.
+    for entry in roles:
+        if not isinstance(entry, dict):
+            continue
+        role = str(entry.get("role") or "?")
+        model = entry.get("model")
+        if role in missing_roles:
+            out.warn("models", missing_model_message(role))
+        else:
+            out.ok("models", f"роль {role}: модель {model}")
+    # The missing-model WARNs are already above; the aggregate row carries
+    # the OTHER config warnings (a provider that opencode.json lacks). The
+    # split is by list membership, not by parsing the warning text.
+    missing_warnings = set(result.get("missing_model_warnings") or [])
+    other_warnings = [
+        w for w in config_warnings if w not in missing_warnings
+    ]
+    if problem or other_warnings:
         facts = []
         if problem:
             facts.append(problem)
-        if config_warnings:
+        if other_warnings:
             facts.append(
-                f"{len(config_warnings)} warning(s) — run awf_check_model_config"
+                f"{len(other_warnings)} warning(s) — run awf_check_model_config"
             )
-        out.warn("models", f"{roles} role(s) checked; " + "; ".join(facts))
+        out.warn("models", "; ".join(facts))
         return
-    out.ok("models", f"{roles} role(s) checked, {len(providers)} provider(s)")
+    out.ok("models", f"{len(roles)} role(s) checked, {len(providers)} provider(s)")
 
 
 def _check_agent_names(config: dict[str, Any], config_problem: str, out: _Lines) -> None:
@@ -529,6 +563,54 @@ def _check_config_keys(config: dict[str, Any], out: _Lines) -> None:
         out.ok("config keys", "every key has a reader")
 
 
+def _check_stage_types(root: Path, config: dict[str, Any], out: _Lines) -> None:
+    """IMP1 (AC33/R14): ``stage_types`` names and values match the pipelines.
+
+    Read-only: the doctor generates the expected table and compares — it
+    never writes the config (RR58).  A removed name, a stale value and an
+    extra name are each named in the WARN line.
+    """
+    from .api._templates import awf_templates_dir
+    from .stage_context_types import mapping_for_project
+
+    pipelines = paths.pipelines_dir(root)
+    if not any(pipelines.glob("*.yaml")):
+        # A project that has not chosen a pipeline yet has no stage names to
+        # type; init writes the block with the first pipeline.
+        out.ok("stage types", "no pipelines yet — nothing to compare")
+        return
+    try:
+        expected = mapping_for_project(
+            root, fallback_dir=awf_templates_dir() / "pipelines"
+        )
+    except AwfApiError as e:  # a role outside the rule: a WARN, not a traceback
+        out.warn("stage types", f"cannot generate stage_types: {e}")
+        return
+    live = config.get("stage_types")
+    if not isinstance(live, dict) or not live:
+        out.warn(
+            "stage types",
+            "stage_types is missing or empty in .agentic/config.yaml — "
+            "run 'awf init' to generate it",
+        )
+        return
+    problems: list[str] = []
+    for name, value in expected.items():
+        if name not in live:
+            problems.append(f"'{name}' is not declared (expected {value!r})")
+        elif live[name] != value:
+            problems.append(
+                f"'{name}' is {live[name]!r} (expected {value!r})"
+            )
+    for name in live:
+        if name != "strict" and name not in expected:
+            problems.append(f"'{name}' is not a stage of any pipeline")
+    if problems:
+        out.warn("stage types", "; ".join(problems))
+    else:
+        out.ok("stage types", f"{len(expected)} stage names match the pipelines")
+
+
 def _load_config(root: Path) -> tuple[dict[str, Any], str]:
     """The live config plus one problem line (``""`` when it reads fine).
 
@@ -582,6 +664,7 @@ def run_doctor(project_dir: str | Path = ".") -> DoctorReport:
     else:
         _check_verification(config, out)
         _check_config_keys(config, out)
+        _check_stage_types(root, config, out)
     _check_contract_gate(root, out)
     return DoctorReport(
         rc=1 if out.warnings else 0,

@@ -21,6 +21,7 @@ import subprocess
 import time
 from pathlib import Path
 
+import yaml
 from conftest import _git_init  # AUD12-08: shared git boilerplate
 
 from awf import api
@@ -73,6 +74,14 @@ class TestRealDetach:
     def test_detached_start_pid_file_state_and_kill(self, tmp_path, monkeypatch):
         repo = _git_repo(tmp_path)
         api.init_project(repo, project_name="Detach")
+        # A48: a spawn always passes --model, so a project without any model
+        # refuses to start and the detached child would exit at once (the
+        # zombie this test mistook for a live stage). One worker model
+        # covers the supervisor stage too, by inheritance.
+        cfg_path = repo / ".agentic" / "config.yaml"
+        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+        cfg.setdefault("models", {}).setdefault("worker", {})["model"] = "stub/model"
+        cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
 
         # Minimal pipeline (same shape as the initialized_project fixture)
         # so the child can enter the plan stage and stay there.

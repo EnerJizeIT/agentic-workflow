@@ -53,6 +53,7 @@ from .signals import (
     stage_signal_paths,
     wait_for_signal,
 )
+from .supervisor import RoleModelMissingError as _RoleModelMissingError
 from .supervisor import VerifyWaitStopped as _VerifyWaitStopped
 from .supervisor import run_supervisor_stage as _run_supervisor_stage
 from .transitions import resolve_transition
@@ -719,6 +720,11 @@ def _handle_escalate(
         sup_signal = _run_supervisor_stage(
             replan_stage, current_todo, auto, project_dir, logs_dir, pipeline_name
         )
+    except _RoleModelMissingError as e:
+        # A48: the same config refusal as the main stage — name the role,
+        # stop; it is not a crash of the replan.
+        _stop_on_missing_model(s_name, logs_dir, e)
+        return stage_idx, current_todo, 1
     except (RuntimeError, TimeoutError) as e:
         print("ERROR: supervisor replan after BLOCKED crashed. Pipeline stopped.", file=sys.stderr)
         print(f"  Details: {e}", file=sys.stderr)
@@ -1626,6 +1632,11 @@ def execute_supervisor_stage(
             print(f"STOP: {e}", file=sys.stderr)
             _log(logs_dir, f"verify: wait stopped — {e}")
             return current_todo, 0, 1
+        except _RoleModelMissingError as e:
+            # A48: same refusal as the agent stage — the role has no model,
+            # so nothing is spawned. Not a crash: name the role and stop.
+            _stop_on_missing_model(s_name, logs_dir, e)
+            return current_todo, 0, 1
         except (RuntimeError, TimeoutError) as e:
             print(
                 f"ERROR: supervisor stage '{s_name}' crashed. Pipeline stopped.",
@@ -1692,6 +1703,14 @@ def execute_supervisor_stage(
                 replan_signal = _run_supervisor_stage(
                     replan_stage, current_todo, auto, project_dir, logs_dir, pipeline_name
                 )
+            except _RoleModelMissingError as e:
+                # A48: same refusal as the main stage; still consume the
+                # REVIEW decision like the generic branch below.
+                _stop_on_missing_model(s_name, logs_dir, e)
+                _consume_verify_decision_guarded(
+                    project_dir, rejected_todo, sup_signal, logs_dir, s_name
+                )
+                return current_todo, 0, 1
             except (RuntimeError, TimeoutError) as e:
                 print(f"ERROR: replan after REVIEW failed: {e}", file=sys.stderr)
                 _consume_verify_decision_guarded(
@@ -2278,6 +2297,32 @@ def _close_stage_blocked(
     _log(logs_dir, log_line)
 
 
+def _stop_on_missing_model(
+    stage_name: str,
+    logs_dir: Path,
+    exc: Exception,
+) -> None:
+    """A48: a role with no model is a config refusal, not a crashed stage.
+
+    ``run_agent_stage`` and ``run_supervisor_via_subprocess`` raise
+    ``RoleModelMissingError`` (a ``RuntimeError``) before any process
+    exists. On the two main spawn surfaces the generic crash branch would
+    print "stage crashed" and bury the cause, so both catch it here first:
+    print the role's name, stop, return 1. The direct supervisor waits
+    (escalate, REVIEW replan, salvage) catch it the same way. The rollback
+    replan is the one deliberate exception: A34 continues at the target
+    stage, records the reason (``replan_error`` + PROGRESS note) and the
+    next stage refuses again with this sentence — no false success.
+
+    Deliberately NOT a BLOCKED closure (unlike ``_stop_on_auth_failure``):
+    nothing about this unit is salvageable, the fix is one config key, and
+    the next ``awf continue`` after that key runs the same unit.
+    """
+    print(f"ERROR: {exc}", file=sys.stderr)
+    print("Pipeline stopped.", file=sys.stderr)
+    _log(logs_dir, f"Pipeline stopped at stage {stage_name}: {exc}")
+
+
 def _stop_on_auth_failure(
     project_dir: Path,
     todo_id: str,
@@ -2738,6 +2783,12 @@ def execute_agent_stage(
                 # with a record and a salvage note — never a raw escape.
                 _unsafe_stage_stop(project_dir, current_todo, s_name, logs_dir, e)
                 return current_todo, stage_idx, 1
+            except _RoleModelMissingError as e:
+                # A48: no model is a configuration refusal, not a crashed
+                # stage — say WHICH role and stop instead of a generic
+                # "agent stage crashed" with the reason buried in the log.
+                _stop_on_missing_model(s_name, logs_dir, e)
+                return current_todo, stage_idx, 1
             except (RuntimeError, TimeoutError) as e:
                 # U6c: a crash is not automatically a non-network death —
                 # U6b turns "no signal + rc!=0" into a RuntimeError, so the
@@ -3032,6 +3083,11 @@ def execute_agent_stage(
                 salvage_stage, current_todo, auto=False,
                 project_dir=project_dir, logs_dir=logs_dir, pipeline_name=pipeline_name
             )
+        except _RoleModelMissingError as e:
+            # A48: the salvage wait cannot run without a model — name the
+            # role and stop, the same refusal the main stage reports.
+            _stop_on_missing_model(s_name, logs_dir, e)
+            return current_todo, stage_idx, 1
         except (RuntimeError, TimeoutError) as e:
             print("ERROR: supervisor salvage crashed. Pipeline stopped.", file=sys.stderr)
             print(f"  Details: {e}", file=sys.stderr)

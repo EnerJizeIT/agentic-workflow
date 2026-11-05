@@ -30,7 +30,11 @@ def _project(tmp_path: Path) -> Path:
     proj = tmp_path / "proj"
     (proj / ".agentic").mkdir(parents=True)
     (proj / ".agentic" / "config.yaml").write_text(
-        "project:\n  name: Policies\n", encoding="utf-8"
+        "project:\n  name: Policies\n"
+        # IMP1: a live config carries the stage-type table; the stages this
+        # test writes (plan / agent-qa-review / verify) are covered.
+        "stage_types:\n  plan: plan\n  agent-qa-review: reviewer\n  verify: supervisor\n",
+        encoding="utf-8",
     )
     return proj
 

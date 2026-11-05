@@ -15,6 +15,9 @@ import pytest
 from awf import agent_stage
 from awf.pipeline import Stage
 
+# A48: a spawn needs an explicit model; this file owns exit-code semantics.
+MODEL_CONFIG = {"models": {"worker": {"model": "p/test"}}}
+
 
 def _capture_run(monkeypatch, fake_rc: int, write_signal: bool, outbox: Path):
     captured: dict = {}
@@ -67,7 +70,7 @@ def test_signal_present_nonzero_exit_is_not_a_failure(tmp_path, monkeypatch):
     stage = Stage(name="agent-dev", role="developer", kind="execute")
 
     agent_stage.run_agent_stage(
-        stage, "TODO-0001", proj, {}, proj / ".agentic" / "logs"
+        stage, "TODO-0001", proj, MODEL_CONFIG, proj / ".agentic" / "logs"
     )
 
     assert captured.get("handoff"), (
@@ -89,6 +92,6 @@ def test_no_signal_nonzero_exit_stays_a_failure(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="exited with code 1"):
         agent_stage.run_agent_stage(
-            stage, "TODO-0001", proj, {}, proj / ".agentic" / "logs"
+            stage, "TODO-0001", proj, MODEL_CONFIG, proj / ".agentic" / "logs"
         )
     assert "handoff" not in captured

@@ -90,6 +90,40 @@ def _load_recent_models(db_path: Path, limit: int | None = None) -> set[str]:
     return set(opencode_db.recent_models(db_path, limit=limit))
 
 
+def _pipeline_roles(project_dir: Path, config_data: dict) -> list[str]:
+    """A48: role names of the live pipeline, in first-seen order.
+
+    A role may be named by a stage and missing from ``models:`` entirely.
+    Doctor must warn about it before launch — ``require_role_model`` would
+    refuse it at spawn. A missing or broken pipeline is not this surface's
+    finding (the pipeline/config rows own it), so degrade to an empty list.
+
+    Not ``api.roles._read_pipeline_roles``: that one lists WORK POSITIONS
+    (skips ``supervisor`` and every ``skip_if`` entry). Here the question is
+    "which roles does a launch spawn" — the supervisor and the conditional
+    entries spawn too, and the supervisor was exactly the role with no model
+    in the 04.11 incident. Reusing that helper would hide the bug again.
+    """
+    from .. import config as cfg_mod
+    from .._errors import AwfApiError
+    from ..pipeline import load_stages, resolve_pipeline_file
+
+    name = cfg_mod.get(config_data, "default_pipeline", "default") or "default"
+    try:
+        stages = load_stages(
+            resolve_pipeline_file(project_dir, name, config_data)
+        )
+    except (FileNotFoundError, AwfApiError, OSError, ValueError):
+        return []
+
+    roles: list[str] = []
+    for stage in stages:
+        role = getattr(stage, "role", "")
+        if isinstance(role, str) and role and role not in roles:
+            roles.append(role)
+    return roles
+
+
 def check_model_config(project_dir: Path) -> dict[str, Any]:
     """Check that models in config.yaml have valid providers in opencode.json.
 
@@ -100,8 +134,14 @@ def check_model_config(project_dir: Path) -> dict[str, Any]:
     Returns dict with:
     - models: list of {role, model, provider, valid}
     - warnings: list of human-readable warnings
+    - missing_model_roles: roles the engine refuses (no own model and no
+      ``models.worker.model``)
+    - missing_model_warnings: the subset of ``warnings`` that belongs to
+      those roles — doctor drops it from its aggregate row
     - role_files: list of {role, file_model, config_model, match}
     - opencode_path: path to opencode.json used
+    - cli_models_available: False when ``opencode models`` gave no answer
+      (doctor reads "models unknown", not "no providers")
     """
     project_dir = Path(project_dir).resolve()
     require_agentic(project_dir)
@@ -113,6 +153,11 @@ def check_model_config(project_dir: Path) -> dict[str, Any]:
 
     config_data = cfg_mod.load(project_dir)
     models_config = cfg_mod.get(config_data, "models", {}) or {}
+    # A48/CTX10: ``models:`` written as a list (``- worker``) is not a
+    # mapping. The engine degrades to "no model" and refuses; this reader
+    # must not crash on the same config, so it reads that shape as empty.
+    if not isinstance(models_config, dict):
+        models_config = {}
 
     oc_path = xdg.opencode_config_file()
     oc_providers, oc_agents = _load_opencode_config(oc_path)
@@ -128,6 +173,17 @@ def check_model_config(project_dir: Path) -> dict[str, Any]:
 
     results: list[dict[str, Any]] = []
     warnings: list[str] = []
+    # A48: roles with no own model and no ``models.worker.model`` — the
+    # engine refuses them; doctor reads this list instead of parsing the
+    # warning text.
+    missing_model_roles: list[str] = []
+    # A48: the same warnings as a list of their own — doctor drops these
+    # from its aggregate row by membership instead of parsing the text.
+    missing_model_warnings: list[str] = []
+    # A48: one resolver for the whole product — the engine's rule lives in
+    # supervisor.get_role_model (own → models.worker.model), so this check
+    # cannot drift from what the launch will do.
+    from ..supervisor import get_role_model
 
     def _models_keys(val: Any) -> list[str]:
         """Normalize provider.models to list of model IDs.
@@ -142,19 +198,69 @@ def check_model_config(project_dir: Path) -> dict[str, Any]:
             return [str(m) for m in val if isinstance(m, str)]
         return []
 
-    for role, role_cfg in models_config.items():
+    # A48: the checked set is ``models:`` keys ∪ pipeline stage roles. A role
+    # named only by a stage would otherwise pass silently here and be
+    # refused at spawn.
+    checked_roles: list[str] = []
+    for role in list(models_config.keys()) + _pipeline_roles(
+        project_dir, config_data
+    ):
+        role = str(role)
+        if role not in checked_roles:
+            checked_roles.append(role)
+
+    for role in checked_roles:
+        role_cfg = models_config.get(role)
+        # A missing mapping (stage-only role) or a scalar entry is "no
+        # model": the engine's resolver refuses both at spawn.
         if not isinstance(role_cfg, dict):
-            continue
+            role_cfg = {}
         model = role_cfg.get("model", "")
-        if not model:
-            results.append({
-                "role": role,
-                "model": "(none)",
-                "provider": "(none)",
-                "valid": True,
-                "note": "No model specified — worker will use opencode default",
-            })
+        if not isinstance(model, str):
+            model = ""
+        if not model.strip():
+            inherited = get_role_model(config_data, role)
+            if inherited:
+                results.append({
+                    "role": role,
+                    "model": inherited,
+                    "provider": (
+                        inherited.split("/", 1)[0]
+                        if "/" in inherited
+                        else "(direct)"
+                    ),
+                    "valid": True,
+                    "note": (
+                        "No own model — inherits models.worker.model "
+                        f"'{inherited}'"
+                    ),
+                })
+            else:
+                # A48: this used to say "worker will use opencode default",
+                # which is exactly the bug — the default is vllm/llm.
+                missing_model_roles.append(role)
+                results.append({
+                    "role": role,
+                    "model": "(none)",
+                    "provider": "(none)",
+                    "valid": False,
+                    "note": (
+                        "No model and no models.worker.model — the engine "
+                        "refuses to spawn this role"
+                    ),
+                })
+                warnings.append(
+                    f"Role '{role}': no model — "
+                    + (
+                        "add models.worker.model (the project-wide model)"
+                        if role == "worker"
+                        else f"add models.{role}.model "
+                        "(or models.worker.model for the whole project)"
+                    )
+                )
+                missing_model_warnings.append(warnings[-1])
             continue
+        model = model.strip()
 
         if "/" in model:
             provider_name, model_id = model.split("/", 1)
@@ -209,12 +315,14 @@ def check_model_config(project_dir: Path) -> dict[str, Any]:
             if provider_name:
                 note = (
                     f"Provider '{provider_name}' not found in opencode.json. "
-                    f"Worker will silently fallback to opencode default model."
+                    f"The launch passes '{model}' explicitly (A48) — check "
+                    "that opencode resolves this provider."
                 )
                 warnings.append(
                     f"Role '{role}': model '{model}' — provider '{provider_name}' "
                     f"not in opencode.json providers ({list(oc_providers.keys())}). "
-                    f"Worker will use fallback model (may be slow/cloud)."
+                    f"The model is passed via --model; an unknown provider may "
+                    "fail to resolve."
                 )
             else:
                 # AUD06-13: bare model name (no 'provider/' prefix) — the
@@ -274,6 +382,8 @@ def check_model_config(project_dir: Path) -> dict[str, Any]:
     return {
         "models": results,
         "warnings": warnings,
+        "missing_model_roles": missing_model_roles,
+        "missing_model_warnings": missing_model_warnings,
         "role_files": role_files,
         "opencode_path": str(oc_path) if oc_path.exists() else None,
         "providers_available": list(oc_providers.keys()),

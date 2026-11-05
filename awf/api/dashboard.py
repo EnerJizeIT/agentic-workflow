@@ -1032,21 +1032,21 @@ def _active_stage_model(
     The stage's log record (0185) appears only at the handoff, at the
     stage's end — the active card must not wait for it. The source is
     the same one the engine uses to launch the worker (config.yaml
-    ``models.<role>.model``, awf/supervisor.get_role_model). The role is
+    ``models.<role>.model`` → ``models.worker.model``, see
+    awf/supervisor.get_role_model). The role is
     the pipeline stage's role; a stage missing from the displayed
     pipeline falls back to the stage name as slug (custom roles,
     supervisor — by slug). A missing key or a placeholder value (e.g.
-    ``<из сессии>``) → "" — the chip renders an honest «—». F1 QA
-    (REVIEW 10.10): YAML 1.1 may hand a non-string value (``123`` →
-    int, ``on`` → bool, ``1.5`` → float) — the engine tolerates it
-    (prompt interpolation), the chip shows its string form.
+    ``<из сессии>``) → "" — the chip renders an honest «—». A48: the
+    resolver hands back only a non-empty string or ``None`` (a YAML 1.1
+    scalar like ``123``/``on`` is not a model and the spawn refuses it),
+    so the chip shows «—» instead of the scalar's string form.
     """
     from .. import config as cfg_mod
     from .. import supervisor
 
     role = next((s["role"] for s in stages if s["name"] == stage_name), stage_name)
-    model = supervisor.get_role_model(cfg_mod.load(project_dir), role)
-    model = str(model).strip() if model is not None else ""
+    model = supervisor.get_role_model(cfg_mod.load(project_dir), role) or ""
     if not model or re.fullmatch(r"<[^>]+>", model):
         return ""
     return model

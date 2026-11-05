@@ -39,6 +39,12 @@ CONFIG_YAML = (
     "  preflight_timeout_seconds: 0\n"
     "  no_output_timeout_seconds: 0\n"
     "  verify_pack: false\n"
+    # A48: a spawn always passes --model; a project without any model now
+    # refuses to start. One worker model covers every stage role by
+    # inheritance (the stub opencode ignores the value).
+    "models:\n"
+    "  worker:\n"
+    "    model: stub/model\n"
 )
 
 ROLE_FILES = {

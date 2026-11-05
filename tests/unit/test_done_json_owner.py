@@ -140,7 +140,9 @@ def _run_fake_stage(monkeypatch, project: Path, writes):
     monkeypatch.setattr(agent_stage, "_log", lambda *a, **kw: None)
     stage = Stage(name="qa", role="developer", kind="execute", id="agent-qa-review")
     agent_stage.run_agent_stage(
-        stage, "TODO-0001", project, {}, project / ".agentic" / "logs"
+        stage, "TODO-0001", project,
+        {"models": {"developer": {"model": "p/test"}}},
+        project / ".agentic" / "logs",
     )
 
 

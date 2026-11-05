@@ -250,15 +250,34 @@ class TestCheckModelConfigValidationPaths:
         assert test_role["valid"] is False
         assert len(result["warnings"]) > 0
 
-    def test_no_model_specified_is_valid(self, awf_project, mock_model_env):
-        """Role without model → valid (uses opencode default)."""
+    def test_no_model_specified_warns_without_worker_fallback(self, awf_project, mock_model_env):
+        """A48: role without model and no models.worker.model → warning.
+
+        Was "valid, uses opencode default" — that default is the vllm/llm
+        incident, so the check must call it out.
+        """
         _set_models(awf_project, {
             "agent-test": {"agent_name": "worker"},  # no model key
         })
         result = check_model_config(awf_project)
         test_role = [m for m in result["models"] if m["role"] == "agent-test"][0]
+        assert test_role["valid"] is False
+        assert any(
+            "agent-test" in w and "models.agent-test.model" in w
+            for w in result["warnings"]
+        ), result["warnings"]
+
+    def test_no_model_specified_inherits_worker_model(self, awf_project, mock_model_env):
+        """A48: models.worker.model is the project-wide fallback."""
+        _set_models(awf_project, {
+            "agent-test": {"agent_name": "worker"},
+            "worker": {"model": "vllm/llm"},
+        })
+        result = check_model_config(awf_project)
+        test_role = [m for m in result["models"] if m["role"] == "agent-test"][0]
         assert test_role["valid"] is True
-        assert "default" in test_role["note"].lower()
+        assert test_role["model"] == "vllm/llm"
+        assert "worker.model" in test_role["note"]
 
     def test_multiple_roles_mixed_validity(self, awf_project, mock_model_env):
         """Some models valid, some not — correct per-role result."""

@@ -437,6 +437,35 @@ def _find_contract_lines(content: str) -> tuple[list[str] | None, str | None]:
     return lines[open_i + 1 : close_j], None
 
 
+def split_contract_front_matter(content: str) -> tuple[dict | None, str]:
+    """``(contract block, text without it)`` of a TODO, or ``(None, content)``.
+
+    The block is located by :func:`_find_contract_block` — the same locator
+    :func:`parse_todo_contract` uses — so a reader never gets a different
+    answer than the parser that dispatched the unit. A TODO usually opens
+    with a comment and/or a title above ``---``; a second locator that only
+    looks at the first line reads such a unit as having no contract at all.
+
+    Tolerant on purpose: no block, a broken block or a non-mapping YAML body
+    returns ``(None, content)`` instead of raising — a reader must not fail
+    a stage the dispatcher accepted.
+    """
+    open_i, close_j, error = _find_contract_block(content)
+    if error or open_i is None or close_j is None:
+        return None, content
+    lines = content.splitlines()
+    try:
+        data = yaml.safe_load("\n".join(lines[open_i + 1 : close_j]))
+    except yaml.YAMLError:
+        return None, content
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        return None, content
+    body = "\n".join(lines[:open_i] + lines[close_j + 1 :]).lstrip("\n")
+    return data, body
+
+
 _SPEC_PACKAGE_LINE = re.compile(r"^\s*spec_package\s*:")
 
 

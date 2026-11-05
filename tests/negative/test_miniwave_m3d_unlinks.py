@@ -30,6 +30,9 @@ import pytest
 T = "TODO-0001"
 SURFACES = ("inbox", "outbox", "context", "logs", "done", "state")
 
+# A48: run_agent_stage needs an explicit model before it reaches the barrier.
+MODEL_CONFIG = {"models": {"worker": {"model": "p/test"}}}
+
 
 def _project(tmp_path: Path, *, git: bool = False) -> Path:
     project = tmp_path / "proj"
@@ -275,7 +278,7 @@ def test_agent_stage_refuses_symlinked_outbox(tmp_path, monkeypatch):
     stage = Stage(name="worker", role="developer", kind="execute")
     with pytest.raises(ManagedPathError, match="symlink"):
         agent_stage.run_agent_stage(
-            stage, T, project, {}, project / ".agentic" / "logs"
+            stage, T, project, MODEL_CONFIG, project / ".agentic" / "logs"
         )
 
     assert stale_progress.is_file(), "PROGRESS удалён за пределы проекта"
@@ -724,7 +727,7 @@ def test_agent_stage_checks_progress_leaf_before_signal_cleanup(tmp_path, monkey
     stage = Stage(name="worker", role="developer", kind="execute")
     with pytest.raises(ManagedPathError, match="symlink"):
         agent_stage.run_agent_stage(
-            stage, T, project, {}, project / ".agentic" / "logs"
+            stage, T, project, MODEL_CONFIG, project / ".agentic" / "logs"
         )
 
     assert stale_signal.is_file(), "сигнал снесён до отказа на листе PROGRESS"

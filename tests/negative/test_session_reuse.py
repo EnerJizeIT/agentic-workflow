@@ -89,15 +89,17 @@ def _runner(monkeypatch, db=None, *, insert=True, returncode=0):
     return seen
 
 
-def _config(mode="fix-only", model=None):
-    cfg = {"engine": {"reuse_session": mode}}
-    if model:
-        cfg["models"] = {ROLE: {"model": model}}
-    return cfg
+def _config(mode="fix-only", model="p/test"):
+    # A48: every spawn needs an explicit model; the session key carries it.
+    # ``worker`` is the project-wide fallback for the other role in a pair.
+    return {
+        "engine": {"reuse_session": mode},
+        "models": {ROLE: {"model": model}, "worker": {"model": model}},
+    }
 
 
 def _write_pair(proj, *, session_id="s1", attempt=None, ts=None, agent=ROLE,
-                model="", title=None, stage=STAGE):
+                model="p/test", title=None, stage=STAGE):
     data = {
         "session_id": session_id,
         "title": title or f"awf-{agent}-{stage}-{TODO}-a{attempt or 1}",
@@ -190,7 +192,7 @@ def test_capture_by_title_and_time_window(tmp_path):
     try:
         sid = session_store.capture_after_spawn(
             proj, todo_id=TODO, stage=STAGE, title=title, agent=ROLE,
-            model="", attempt=1, spawn_started_ms=now,
+            model="p/test", attempt=1, spawn_started_ms=now,
         )
         assert sid == "a"
         pair = session_store.read_session_file(proj, TODO, STAGE)
@@ -198,7 +200,7 @@ def test_capture_by_title_and_time_window(tmp_path):
 
         sid2 = session_store.capture_after_spawn(
             proj, todo_id=TODO, stage="agent-qa", title=other, agent=ROLE,
-            model="", attempt=1, spawn_started_ms=now,
+            model="p/test", attempt=1, spawn_started_ms=now,
         )
         assert sid2 == "d"
         assert session_store.read_session_file(proj, TODO, "agent-qa")["session_id"] == "d"
@@ -209,14 +211,14 @@ def test_capture_by_title_and_time_window(tmp_path):
         _insert(db, "aaa", title, now + 600, directory=str(proj), table=table)
         sid3 = session_store.capture_after_spawn(
             proj, todo_id="TODO-0002", stage=STAGE, title=title, agent=ROLE,
-            model="", attempt=1, spawn_started_ms=now,
+            model="p/test", attempt=1, spawn_started_ms=now,
         )
         assert sid3 == "aaa"
 
         # Nothing in the window — no id, no file.
         assert session_store.capture_after_spawn(
             proj, todo_id="TODO-0003", stage=STAGE, title="awf-x-y-TODO-0003-a1",
-            agent=ROLE, model="", attempt=1, spawn_started_ms=now + 300_000,
+            agent=ROLE, model="p/test", attempt=1, spawn_started_ms=now + 300_000,
         ) is None
         assert not session_store.session_file(proj, "TODO-0003", STAGE).exists()
     finally:
@@ -271,7 +273,7 @@ def test_v1_base_writes_no_id_and_raises_nothing(tmp_path, monkeypatch):
 
     assert session_store.capture_after_spawn(
         proj, todo_id=TODO, stage=STAGE,
-        title=f"awf-{ROLE}-{STAGE}-{TODO}-a1", agent=ROLE, model="",
+        title=f"awf-{ROLE}-{STAGE}-{TODO}-a1", agent=ROLE, model="p/test",
         attempt=1, spawn_started_ms=int(time.time() * 1000),
     ) is None
     assert not session_store.session_file(proj, TODO, STAGE).exists()
@@ -300,7 +302,7 @@ def test_mixed_base_captures_from_v2(tmp_path, monkeypatch):
     monkeypatch.setattr(session_store, "db_path", lambda: db)
 
     assert session_store.capture_after_spawn(
-        proj, todo_id=TODO, stage=STAGE, title=title, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, title=title, agent=ROLE, model="p/test",
         attempt=1, spawn_started_ms=now,
     ) == "v2-1"
 
@@ -319,7 +321,7 @@ def test_slow_base_respects_one_second_budget(tmp_path, monkeypatch):
         started = time.monotonic()
         result = session_store.capture_after_spawn(
             proj, todo_id=TODO, stage=STAGE,
-            title=f"awf-{ROLE}-{STAGE}-{TODO}-a1", agent=ROLE, model="",
+            title=f"awf-{ROLE}-{STAGE}-{TODO}-a1", agent=ROLE, model="p/test",
             attempt=1, spawn_started_ms=int(time.time() * 1000),
         )
         elapsed = time.monotonic() - started
@@ -339,7 +341,7 @@ def test_continuation_with_dead_base_keeps_previous_file(tmp_path, monkeypatch):
     monkeypatch.setattr(session_store, "db_path", lambda: tmp_path / "gone.db")
 
     decision = session_store.decide(
-        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="p/test",
         attempt=2, config=_config("fix-only"),
     )
     assert decision.reused is False
@@ -379,7 +381,7 @@ def test_fix_only_chooses_by_entry_number(tmp_path, monkeypatch):
     monkeypatch.setattr(session_store, "db_path", lambda: db)
 
     first = session_store.decide(
-        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="p/test",
         attempt=1, config=_config("fix-only"),
     )
     assert first.reused is False and first.reason == "attempt 1"
@@ -389,7 +391,7 @@ def test_fix_only_chooses_by_entry_number(tmp_path, monkeypatch):
         "# TODO\n\n## REVIEW-фикс\n\nfix it\n", encoding="utf-8"
     )
     second = session_store.decide(
-        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="p/test",
         attempt=2, config=_config("fix-only"),
     )
     assert second.reused is True and second.session_id == "s1"
@@ -402,7 +404,7 @@ def test_off_decision_never_touches_base(tmp_path, monkeypatch):
         lambda *a, **kw: pytest.fail("off must not read the base"),
     )
     decision = session_store.decide(
-        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="p/test",
         attempt=1, config=_config("off"),
     )
     assert decision.reused is False
@@ -418,18 +420,18 @@ def test_always_role_gate_and_pair_isolation(tmp_path, monkeypatch):
 
     assert session_store.decide(
         proj, todo_id=TODO, stage=STAGE, role="agent-project-auditor",
-        agent="agent-project-auditor", model="", attempt=2,
+        agent="agent-project-auditor", model="p/test", attempt=2,
         config=_config("always"),
     ).reason == "role not allowed"
 
     # Another stage / another unit is never taken.
     _write_pair(proj, stage=STAGE)
     assert session_store.decide(
-        proj, todo_id=TODO, stage="agent-qa", role=ROLE, agent=ROLE, model="",
+        proj, todo_id=TODO, stage="agent-qa", role=ROLE, agent=ROLE, model="p/test",
         attempt=2, config=_config("always"),
     ).reason == "no session file"
     assert session_store.decide(
-        proj, todo_id="TODO-0009", stage=STAGE, role=ROLE, agent=ROLE, model="",
+        proj, todo_id="TODO-0009", stage=STAGE, role=ROLE, agent=ROLE, model="p/test",
         attempt=2, config=_config("always"),
     ).reason == "no session file"
 
@@ -442,12 +444,12 @@ def test_always_lost_counter_still_reuses(tmp_path, monkeypatch):
     monkeypatch.setattr(session_store, "db_path", lambda: db)
 
     always = session_store.decide(
-        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="p/test",
         attempt=3, config=_config("always"),
     )
     assert always.reused is True
     fix_only = session_store.decide(
-        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="p/test",
         attempt=1, config=_config("fix-only"),
     )
     assert fix_only.reused is False and fix_only.reason == "attempt 1"
@@ -462,27 +464,27 @@ def test_mismatches_and_age_give_fresh(tmp_path, monkeypatch):
 
     _write_pair(proj, session_id="s1", attempt=1, model="other/model")
     assert session_store.decide(
-        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="p/test",
         attempt=2, config=_config("fix-only"),
     ).reason == "role/model mismatch"
 
     old = datetime.now(timezone.utc) - timedelta(minutes=241)
     _write_pair(proj, session_id="s1", attempt=1, ts=old.isoformat())
     assert session_store.decide(
-        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="p/test",
         attempt=2, config=_config("fix-only"),
     ).reason == "session too old"
 
     future = datetime.now(timezone.utc) + timedelta(minutes=10)
     _write_pair(proj, session_id="s1", attempt=1, ts=future.isoformat())
     assert session_store.decide(
-        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="p/test",
         attempt=2, config=_config("fix-only"),
     ).reason == "session too old"
 
     session_store.session_file(proj, TODO, STAGE).write_text("{not json", encoding="utf-8")
     assert session_store.decide(
-        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="p/test",
         attempt=2, config=_config("fix-only"),
     ).reason == "no session file"
 
@@ -490,7 +492,7 @@ def test_mismatches_and_age_give_fresh(tmp_path, monkeypatch):
     # The pair file is retired and the entry starts fresh.
     _write_pair(proj, session_id="missing", attempt=1)
     assert session_store.decide(
-        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="p/test",
         attempt=2, config=_config("fix-only"),
     ).reason == "session dead (opencode restart)"
     retired = session_store.read_session_file(proj, TODO, STAGE)
@@ -499,7 +501,7 @@ def test_mismatches_and_age_give_fresh(tmp_path, monkeypatch):
 
     _write_pair(proj, session_id="s1", attempt=1)
     control = session_store.decide(
-        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="p/test",
         attempt=2, config=_config("fix-only"),
     )
     assert control.reused is True
@@ -555,7 +557,7 @@ def test_pair_keys_are_path_components(tmp_path, monkeypatch):
 
     assert session_store.capture_after_spawn(
         proj, todo_id=TODO, stage="../escape", title="awf-x", agent=ROLE,
-        model="", attempt=1, spawn_started_ms=int(time.time() * 1000),
+        model="p/test", attempt=1, spawn_started_ms=int(time.time() * 1000),
     ) is None
     assert not list((proj / ".agentic").rglob("SESSION-*"))
 
@@ -570,7 +572,7 @@ def test_pair_file_ts_prefers_time_updated(tmp_path, monkeypatch):
     monkeypatch.setattr(session_store, "db_path", lambda: db)
 
     session_store.capture_after_spawn(
-        proj, todo_id=TODO, stage=STAGE, title=title, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, title=title, agent=ROLE, model="p/test",
         attempt=1, spawn_started_ms=now,
     )
     expected = datetime.fromtimestamp((now + 5_000) / 1000, tz=timezone.utc).isoformat()
@@ -581,7 +583,7 @@ def test_pair_file_ts_prefers_time_updated(tmp_path, monkeypatch):
     title2 = f"awf-{ROLE}-{STAGE}-TODO-0004-a1"
     _insert(db, "zero", title2, now, tu=0)
     session_store.capture_after_spawn(
-        proj, todo_id="TODO-0004", stage=STAGE, title=title2, agent=ROLE, model="",
+        proj, todo_id="TODO-0004", stage=STAGE, title=title2, agent=ROLE, model="p/test",
         attempt=1, spawn_started_ms=now,
     )
     zero = session_store.read_session_file(proj, "TODO-0004", STAGE)
@@ -601,7 +603,7 @@ def test_missing_ts_gives_fresh(tmp_path, monkeypatch):
     pair.write_text(json.dumps(data), encoding="utf-8")
 
     decision = session_store.decide(
-        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="p/test",
         attempt=2, config=_config("fix-only"),
     )
     assert decision.reused is False
@@ -624,12 +626,12 @@ def test_on_mode_is_the_spec_policy_not_always(tmp_path, monkeypatch):
     assert session_store.mode(_config("on")) == "fix-only"
     assert session_store.mode(_config("always")) == "always"
     first = session_store.decide(
-        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="p/test",
         attempt=1, config=_config("on"),
     )
     assert first.reused is False and first.reason == "attempt 1"
     retry = session_store.decide(
-        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="p/test",
         attempt=2, config=_config("on"),
     )
     assert retry.reused is True and retry.session_id == "s1"
@@ -645,7 +647,7 @@ def test_always_mode_reuses_the_first_entry(tmp_path, monkeypatch):
     monkeypatch.setattr(session_store, "db_path", lambda: db)
 
     decision = session_store.decide(
-        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="p/test",
         attempt=1, config=_config("always"),
     )
     assert decision.reused is True and decision.session_id == "s1"
@@ -686,7 +688,7 @@ def test_retire_write_failure_never_falls_the_stage(tmp_path, monkeypatch):
     monkeypatch.setattr(session_store, "_write_payload", _boom)
 
     decision = session_store.decide(
-        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="p/test",
         attempt=1, config=_config("on"),
         logs_dir=proj / ".agentic" / "logs",
     )
@@ -706,7 +708,7 @@ def test_unreadable_base_does_not_retire_the_pair(tmp_path, monkeypatch):
     monkeypatch.setattr(session_store, "db_path", lambda: missing_db)
 
     decision = session_store.decide(
-        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, role=ROLE, agent=ROLE, model="p/test",
         attempt=2, config=_config("on"),
         logs_dir=proj / ".agentic" / "logs",
     )
@@ -796,7 +798,7 @@ def test_capture_on_a_copy_of_the_live_schema(tmp_path, monkeypatch):
     logs = proj / ".agentic" / "logs"
 
     sid = session_store.capture_after_spawn(
-        proj, todo_id=TODO, stage=STAGE, title=title, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, title=title, agent=ROLE, model="p/test",
         attempt=1, spawn_started_ms=now, logs_dir=logs,
     )
 
@@ -818,7 +820,7 @@ def test_capture_miss_names_the_search_in_the_reason(tmp_path, monkeypatch):
 
     assert session_store.capture_after_spawn(
         proj, todo_id=TODO, stage=STAGE, title="awf-miss", agent=ROLE,
-        model="", attempt=1, spawn_started_ms=now, logs_dir=logs,
+        model="p/test", attempt=1, spawn_started_ms=now, logs_dir=logs,
     ) is None
 
     text = _log_text(proj)
@@ -844,7 +846,7 @@ def test_capture_miss_reason_names_the_window_the_query_used(
     logs = proj / ".agentic" / "logs"
 
     assert session_store.capture_after_spawn(
-        proj, todo_id=TODO, stage=STAGE, title=title, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, title=title, agent=ROLE, model="p/test",
         attempt=1, spawn_started_ms=now, logs_dir=logs,
     ) is None
 
@@ -878,7 +880,7 @@ def test_capture_write_failure_names_the_reason(tmp_path, monkeypatch):
     logs = proj / ".agentic" / "logs"
 
     assert session_store.capture_after_spawn(
-        proj, todo_id=TODO, stage=STAGE, title=title, agent=ROLE, model="",
+        proj, todo_id=TODO, stage=STAGE, title=title, agent=ROLE, model="p/test",
         attempt=1, spawn_started_ms=now, logs_dir=logs,
     ) is None
     assert "session capture: write failed: disk full" in _log_text(proj)
@@ -898,7 +900,7 @@ def test_confirm_reason_names_the_base_and_the_missing_id(
 
     assert session_store.confirm_and_update(
         proj, todo_id=TODO, stage=STAGE, session_id="s9", title="t",
-        agent=ROLE, model="", attempt=2, logs_dir=logs,
+        agent=ROLE, model="p/test", attempt=2, logs_dir=logs,
     ) is None
     assert f"(base: {missing})" in _log_text(proj)
 
@@ -906,7 +908,7 @@ def test_confirm_reason_names_the_base_and_the_missing_id(
     monkeypatch.setattr(session_store, "db_path", lambda: db)
     assert session_store.confirm_and_update(
         proj, todo_id=TODO, stage=STAGE, session_id="missing-id", title="t",
-        agent=ROLE, model="", attempt=2, logs_dir=logs,
+        agent=ROLE, model="p/test", attempt=2, logs_dir=logs,
     ) is None
     assert "session capture: not found (id=missing-id)" in _log_text(proj)
 
@@ -919,7 +921,7 @@ def test_capture_reason_names_the_base_path(tmp_path, monkeypatch):
 
     assert session_store.capture_after_spawn(
         proj, todo_id=TODO, stage=STAGE, title=f"awf-{ROLE}-{STAGE}-{TODO}-a1",
-        agent=ROLE, model="", attempt=1,
+        agent=ROLE, model="p/test", attempt=1,
         spawn_started_ms=int(time.time() * 1000), logs_dir=logs,
     ) is None
 

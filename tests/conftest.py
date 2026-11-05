@@ -276,6 +276,17 @@ def initialized_project(empty_project: Path, awf_bin: str, awf_env: dict) -> Pat
     # budget. A short window keeps the code path (wait, then apply) exercised
     # instead of switching it off with 0.
     config = empty_project / ".agentic" / "config.yaml"
+    # A48: every spawn passes --model; one worker model covers all roles.
+    text = config.read_text(encoding="utf-8")
+    assert "\nmodels:\n" in text, "init template must carry a models block"
+    config.write_text(
+        text.replace(
+            "\nmodels:\n",
+            "\nmodels:\n  worker:\n    model: stub/model\n",
+            1,
+        ),
+        encoding="utf-8",
+    )
     with config.open("a", encoding="utf-8") as fh:
         fh.write(
             "\nwait:\n"

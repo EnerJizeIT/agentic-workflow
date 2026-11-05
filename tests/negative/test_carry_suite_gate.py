@@ -19,6 +19,9 @@ from awf.agent_stage import collect_handoff
 
 PROJECT_KEY = "verification:\n  test_cmd: npm test\n"
 
+# A48: a spawn needs an explicit model; these tests own the suite gate.
+MODEL_CONFIG = {"models": {"worker": {"model": "p/test"}}}
+
 
 def _repo(tmp_path: Path, config: str | None = PROJECT_KEY) -> Path:
     proj = tmp_path / "proj"
@@ -256,7 +259,7 @@ def test_stage_wires_the_warning_into_the_handoff(tmp_path, monkeypatch):
         warn_log.clear()
         agent_stage.run_agent_stage(
             Stage(name="agent-dev", role="developer", kind="execute"),
-            "TODO-0001", proj, {}, proj / ".agentic" / "logs",
+            "TODO-0001", proj, MODEL_CONFIG, proj / ".agentic" / "logs",
         )
 
     monkeypatch.setattr(
@@ -834,7 +837,7 @@ def test_a_crashing_gate_leaves_the_stage_alive(tmp_path, monkeypatch):
 
     agent_stage.run_agent_stage(
         Stage(name="agent-dev", role="developer", kind="execute"),
-        "TODO-0001", proj, {}, proj / ".agentic" / "logs",
+        "TODO-0001", proj, MODEL_CONFIG, proj / ".agentic" / "logs",
     )
 
     assert captured.get("engine_facts") == []

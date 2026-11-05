@@ -43,6 +43,7 @@ from ._proc import (
     snapshot_rows,
     stat_row,
 )
+from .redact import SECRET_NAME_KEYWORDS
 
 # Stage-exit facade: callers (stage, supervisor, status) import the reap
 # names from here; the kill rounds themselves live in ``worker_reap``.
@@ -59,9 +60,10 @@ ANCHOR_ENV = "AWF_STAGE_ANCHOR"
 
 # cmdline may carry credentials (``--token=…``, ``--secret value``, cookies
 # passed as args). Both the ``name=value`` and the ``name value`` spelling
-# are masked — a log line is shared, the secret is not.
+# are masked — a log line is shared, the secret is not. The words come from
+# ``redact``'s list; the marker stays ``***`` (a cmdline has no room for more).
 _REDACT = re.compile(
-    r"(?i)\b([\w-]*(?:token|key|secret|password|auth|cookie)[\w-]*)"
+    r"(?i)\b([\w-]*(?:" + "|".join(SECRET_NAME_KEYWORDS) + r")[\w-]*)"
     r"(=|\s+)(\S+)"
 )
 

@@ -29,7 +29,7 @@ from .supervisor import (
     argv_agent_flag,
     build_prompt,
     get_agent_name,
-    get_role_model,
+    require_role_model,
     resolve_role_file,
 )
 
@@ -106,6 +106,9 @@ def run_agent_stage(
     role = stage.role
     kind = stage.kind
     agent_name = get_agent_name(config, role)
+    # A48: refuse before any file cleanup or spawn — no --model means the
+    # subprocess silently takes opencode's default model.
+    role_model = require_role_model(config, role)
 
     print()
     print("=" * 41)
@@ -219,7 +222,6 @@ def run_agent_stage(
     # QA. The key names the pair file, the title and the shared attempt
     # counter; empty keeps the stage address (old behavior).
     session_key = stage.session_key or stage_key
-    role_model = get_role_model(config, role)
     reuse_mode = session_store.mode(config)
     if reuse_mode != "off":
         attempt_entry = bump_stage_attempt(
@@ -227,7 +229,7 @@ def run_agent_stage(
         )
         session_decision = session_store.decide(
             project_dir, todo_id=todo_id, stage=session_key, role=role,
-            agent=agent_name, model=role_model or "", attempt=attempt_entry,
+            agent=agent_name, model=role_model, attempt=attempt_entry,
             config=config, logs_dir=logs_dir,
         )
         title = session_store.session_title(
@@ -257,8 +259,9 @@ def run_agent_stage(
         print(f"Doctrine in:  {doctrine_file}")
         _log(logs_dir, f"U9: doctrine section injected: {doctrine_file}")
     cmd += ["--file", str(todo_file)]
-    if role_model:
-        cmd += ["--model", role_model]
+    # A48: always explicit — the model came from require_role_model above,
+    # and a spawn without this flag would use opencode's default instead.
+    cmd += ["--model", role_model]
     # R7/K5: --session after --model; every earlier --file is kept (AC28).
     if session_decision.reused:
         cmd += ["--session", session_decision.session_id]
@@ -396,13 +399,13 @@ def run_agent_stage(
             session_store.confirm_and_update(
                 project_dir, todo_id=todo_id, stage=session_key,
                 session_id=session_decision.session_id, title=title,
-                agent=agent_name, model=role_model or "", attempt=attempt_entry,
+                agent=agent_name, model=role_model, attempt=attempt_entry,
                 logs_dir=logs_dir,
             )
         else:
             session_store.capture_after_spawn(
                 project_dir, todo_id=todo_id, stage=session_key, title=title,
-                agent=agent_name, model=role_model or "", attempt=attempt_entry,
+                agent=agent_name, model=role_model, attempt=attempt_entry,
                 spawn_started_ms=spawn_started_ms, logs_dir=logs_dir,
             )
     # CARRY IMP1: the real return code of THIS attempt — the engine reads it

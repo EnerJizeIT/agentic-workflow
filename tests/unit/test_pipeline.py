@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from awf.pipeline import Stage, _compute_kind, load_stages, resolve_pipeline_file
+from awf.pipeline import Stage, load_stages, resolve_pipeline_file
 
 
 class TestLoadStages:
@@ -255,34 +255,6 @@ class TestResolvePipelineFile:
         assert "default" in msg and "simple" in msg and "full" in msg
 
 
-
-
-class TestComputeKind:
-    """BD-29: _compute_kind edge cases."""
-
-    def test_single_stage(self) -> None:
-        assert _compute_kind(0, 1) == "plan"
-
-    def test_two_stages_first(self) -> None:
-        assert _compute_kind(0, 2) == "plan"
-
-    def test_two_stages_last(self) -> None:
-        assert _compute_kind(1, 2) == "verify"
-
-    def test_three_stages(self) -> None:
-        assert _compute_kind(0, 3) == "plan"
-        assert _compute_kind(1, 3) == "execute"
-        assert _compute_kind(2, 3) == "verify"
-
-    def test_four_stages(self) -> None:
-        assert _compute_kind(0, 4) == "plan"
-        assert _compute_kind(1, 4) == "execute"
-        assert _compute_kind(2, 4) == "execute"
-        assert _compute_kind(3, 4) == "verify"
-
-    def test_total_zero(self) -> None:
-        """Degenerate: empty pipeline."""
-        assert _compute_kind(0, 0) == "plan"
 
 
 class TestLoadStagesWithNonDict:

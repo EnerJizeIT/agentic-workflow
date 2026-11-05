@@ -272,22 +272,24 @@ class TestCompletedUntouched:
 
 class TestNonStringModel:
     """F1 QA (REVIEW 10.10): YAML 1.1 reads ``model: 123`` as int,
-    ``on``/``off`` as bool, ``1.5`` as float. The engine tolerates such
-    config (the value is just interpolated into the worker prompt), but
-    the dashboard used to feed it straight into ``re.fullmatch`` —
-    ``TypeError`` in ``generate_state_dict`` → ``/api/state`` 500 on
-    every poll (the live dashboard goes blind). The chip must get the
-    value's string form instead; a placeholder ``<...>`` / absent key
-    stays an honest «—»."""
+    ``on``/``off`` as bool, ``1.5`` as float. The dashboard used to feed
+    such a value straight into ``re.fullmatch`` — ``TypeError`` in
+    ``generate_state_dict`` → ``/api/state`` 500 on every poll (the live
+    dashboard goes blind).
 
-    @pytest.mark.parametrize(
-        ("value", "chip"),
-        [(123, "123"), (True, "True"), (1.5, "1.5")],
-    )
-    def test_non_string_model_shows_string_form(self, dash_project, value, chip):
+    A48 (04.11) changed the contract for these values: a model must be a
+    non-empty string to be used, so ``int``/``bool``/``float`` count as
+    "no model" — the spawn refuses, ``check_model_config`` reports the
+    role as missing, and the chip shows an honest «—». The old
+    expectation (show ``"123"``) described a value the engine would have
+    passed to ``--model`` unvalidated."""
+
+    @pytest.mark.parametrize("value", [123, True, 1.5])
+    def test_non_string_model_is_not_a_model(self, dash_project, value):
         _set_role_model(dash_project, "agent-implementer", value)
         _impl_active(dash_project, "TODO-0001")
 
+        # The point of F1 QA stays: the dashboard must not go blind.
         d = generate_state_dict(dash_project)
         active = next(c for c in d["handoffs"] if c["active"])
-        assert active["model"] == chip
+        assert active["model"] == ""

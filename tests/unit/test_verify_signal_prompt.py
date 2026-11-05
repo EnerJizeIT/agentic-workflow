@@ -112,10 +112,16 @@ def test_only_verify_spawns_with_a_grace_window(tmp_path, monkeypatch):
     phases = str(proj / ".agentic" / "phases" / "plan.md")
     logs = proj / ".agentic" / "logs"
 
-    supervisor.run_supervisor_via_subprocess("plan", "", proj, {}, phases, logs)
+    supervisor.run_supervisor_via_subprocess(
+        "plan", "", proj, {"models": {"supervisor": {"model": "p/test"}}},
+        phases, logs,
+    )
     supervisor.run_supervisor_via_subprocess(
         "verify", "TODO-0001", proj,
-        {"wait": {"verify_grace_seconds": 7}}, phases, logs,
+        {
+            "wait": {"verify_grace_seconds": 7},
+            "models": {"supervisor": {"model": "p/test"}},
+        }, phases, logs,
     )
 
     assert [(kind, grace) for kind, grace, _cmd in captured] == [

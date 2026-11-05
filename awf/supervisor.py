@@ -71,13 +71,61 @@ def argv_agent_flag(config: dict, role: str) -> list[str]:
     return ["--agent", name.strip()]
 
 
-def get_role_model(config: dict, role: str) -> str | None:
-    """BD-24: get the model override for a role from config.yaml.
+class RoleModelMissingError(RuntimeError):
+    """A48: a stage with no explicit model would silently take opencode's
+    default (``vllm/llm``, VPN-only) — the engine refuses before the spawn."""
 
-    Returns the model string (e.g. "vllm/llm") if set, else None.
+
+def get_role_model(config: dict, role: str) -> str | None:
+    """A48: the effective model for a role.
+
+    Priority: ``models.<role>.model`` → ``models.worker.model`` (the
+    project-wide model) → None. None is not "use the opencode default":
+    every spawn path calls :func:`require_role_model` and refuses.
     """
-    val = cfg_mod.get(config, f"models.{role}.model", "")
-    return val if val else None
+    for key in (f"models.{role}.model", "models.worker.model"):
+        val = cfg_mod.get(config, key, "")
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return None
+
+
+def role_model_hint(role: str) -> str:
+    """A48: the ONE operator instruction for a role with no model.
+
+    The instruction part of :func:`missing_model_message`; kept separate so
+    a caller that already names the role («у роли {role} …») can append it
+    verbatim instead of rebuilding the key names.
+    """
+    if role == "worker":
+        return "добавьте models.worker.model (общая модель проекта)"
+    return (
+        f"добавьте models.{role}.model "
+        "(или models.worker.model с общей моделью проекта)"
+    )
+
+
+def missing_model_message(role: str) -> str:
+    """A48: the ONE sentence for a role with no model.
+
+    The spawn refusal (``require_role_model``) and the ``awf doctor`` WARN
+    both print this; a second hand-written copy would sooner or later name
+    a different key than the engine reads.
+    """
+    return f"у роли {role} нет модели, {role_model_hint(role)}"
+
+
+def require_role_model(config: dict, role: str) -> str:
+    """A48: the model a spawn MUST pass explicitly via ``--model``.
+
+    Raises :class:`RoleModelMissingError` with the role's name before any
+    process exists, so a missing model is a visible refusal, not a silent
+    fallback to the opencode default.
+    """
+    model = get_role_model(config, role)
+    if model is None:
+        raise RoleModelMissingError(missing_model_message(role))
+    return model
 
 
 def _snapshot_stage_names(project_dir: Path, todo_id: str) -> list[str] | None:
@@ -1588,6 +1636,11 @@ def run_supervisor_via_subprocess(
             )
         return ""
     extra_files, prompt = prepared
+    # A48: refuse before the spawn — a command without --model takes
+    # opencode's default model instead of the one this project chose. The
+    # check sits AFTER the skip decision: a stage that spawns nothing
+    # (salvage, unknown kind, missing TODO) stays a skip, not a refusal.
+    role_model = require_role_model(config, "supervisor")
 
     inbox = paths.inbox(project_dir)
     outbox = paths.outbox(project_dir)
@@ -1602,9 +1655,7 @@ def run_supervisor_via_subprocess(
     cmd += [
         "--title", f"awf-supervisor-{kind}",
     ]
-    role_model = get_role_model(config, "supervisor")
-    if role_model:
-        cmd += ["--model", role_model]
+    cmd += ["--model", role_model]
     cmd += ["--file", str(role_file)]
     # U9: doctrine section after the role's instructions and before the
     # stage's task context (extra_files) — the same position for every role.

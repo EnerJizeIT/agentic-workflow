@@ -22,6 +22,9 @@ from awf._worker_exit import (
 from awf.pipeline import Stage
 from awf.signal_watch import _late_signal_done, run_subprocess_until_signal
 
+# A48: a spawn needs an explicit model; these tests own the tail/signal logic.
+MODEL_CONFIG = {"models": {"worker": {"model": "p/test"}}}
+
 # ── T1: lazy tail, one signal text, 64 KiB ───────────────────────────────
 
 
@@ -170,7 +173,7 @@ def test_agent_stage_wiring_is_lazy_with_a_signal(tmp_path, monkeypatch):
 
     agent_stage.run_agent_stage(
         Stage(name="agent-dev", role="developer", kind="execute"),
-        "TODO-0001", proj, {}, proj / ".agentic" / "logs",
+        "TODO-0001", proj, MODEL_CONFIG, proj / ".agentic" / "logs",
     )
 
     assert any("U6b: signal present (DONE-TODO-0001)" in m for m in lines), lines
@@ -218,12 +221,12 @@ def test_retry_attempt_does_not_inherit_the_previous_log_tail(tmp_path, monkeypa
     monkeypatch.setattr(agent_stage, "_log", lambda *a, **kw: None)
 
     stage = Stage(name="agent-dev", role="developer", kind="execute")
-    agent_stage.run_agent_stage(stage, "TODO-0001", proj, {}, logs, log_holder=holder)
+    agent_stage.run_agent_stage(stage, "TODO-0001", proj, MODEL_CONFIG, logs, log_holder=holder)
     assert holder.get("log_path") == str(log), "attempt 1's own log must be recorded"
     assert holder.get("exit_code") == "0", "attempt 1's own exit code must be recorded"
 
     with pytest.raises(TimeoutError):
-        agent_stage.run_agent_stage(stage, "TODO-0001", proj, {}, logs, log_holder=holder)
+        agent_stage.run_agent_stage(stage, "TODO-0001", proj, MODEL_CONFIG, logs, log_holder=holder)
 
     assert "log_path" not in holder, "the dead attempt kept the previous tail"
     assert "exit_code" not in holder, "the dead attempt kept the previous exit code"

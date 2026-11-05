@@ -306,6 +306,7 @@ win32-ветки `_lock.py` (`mkdir` и файл блокировки).
 | `awf/cmd_blocked_draft.py` · `--out` внутри `.agentic`: отказ | `.agentic/**` (симлинки разрешаются) | `tests/negative/test_miniwave_m5_sourceref.py::test_c_blocked_draft_out_inside_agentic_refused` | `test_c_blocked_draft_out_inside_agentic_refused` | `barrier` |
 | `awf/cmd_blocked_draft.py` · `--out`: `write_text` | `--out <файл>` (вне `.agentic`) | `grep -n "write_text(result.review_text" awf/cmd_blocked_draft.py` | `write_text(result.review_text` | `exception+outside-surface: пишет только в явно переданный --out; путь внутри .agentic отвергается` |
 | `awf/context_pack.py` · пакет стадии | `.agentic/context/STAGE-<todo>-<stage>.md` | `grep -n "atomic_write_text(path, rendered)" awf/context_pack.py` | `atomic_write_text(path, rendered)` | `unit-0239` |
+| `awf/stage_context.py` · файл контекста стадии (K7) | `.agentic/context/STAGE-<todo>-<stage>.md` | `grep -n "atomic_write_text(target" awf/stage_context.py` | `atomic_write_text(target` | `unit-0239` |
 | `awf/cmd_context_pack.py` · `--out`: запись в названный файл | `--out <файл>` (вне `.agentic`) | `grep -n "atomic_write_text(target" awf/cmd_context_pack.py` | `atomic_write_text(target` | `exception+outside-surface: пишет только в явный --out; путь K2 пишет api.build_context_pack` |
 
 ## Формат пробы
