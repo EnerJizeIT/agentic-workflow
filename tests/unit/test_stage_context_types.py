@@ -25,7 +25,8 @@ from awf.stage_context_types import (
 )
 
 REPO = Path(__file__).resolve().parents[2]
-PIPELINES = REPO / ".agentic" / "pipelines"
+#: A60: shipped pipeline templates are in git; ``.agentic/`` is runtime only.
+PIPELINES = REPO / "awf" / "templates" / "pipelines"
 
 #: R14/AC33: the 16 stage names of the project's pipeline set.
 EXPECTED_NAMES = {
@@ -47,6 +48,17 @@ EXPECTED_NAMES = {
     "checklist-check": "reviewer/checklist",
 }
 
+#: A60: the shipped spec template ends at ``spec-readiness``; a project
+#: pipeline adds ``spec-finalize``. The fixture carries that stage in its own
+#: temp copy so the 16-pair check still covers the project-wide name set
+#: (AC33) without reading the runtime ``.agentic/`` of the checkout.
+SPEC_FINALIZE = """\
+name: spec-finalize
+stages:
+  - name: spec-finalize
+    role: agent-system-analyst
+"""
+
 TWO_STAGES = """\
 name: two
 stages:
@@ -62,6 +74,9 @@ def _project(tmp_path: Path, config_text: str = "project:\n  name: T\n") -> Path
     (proj / ".agentic" / "pipelines").mkdir(parents=True)
     (proj / ".agentic" / "context").mkdir(parents=True)
     shutil.copytree(PIPELINES, proj / ".agentic" / "pipelines", dirs_exist_ok=True)
+    (proj / ".agentic" / "pipelines" / "spec-finalize.yaml").write_text(
+        SPEC_FINALIZE, encoding="utf-8"
+    )
     (proj / ".agentic" / "config.yaml").write_text(config_text, encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(proj)], check=True)
     return proj
