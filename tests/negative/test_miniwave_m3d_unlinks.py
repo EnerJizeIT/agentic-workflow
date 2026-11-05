@@ -24,6 +24,7 @@ import os
 import shutil
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -202,7 +203,6 @@ def _silence_engine(monkeypatch):
     from awf import commit_plan, pipeline_engine, verify
 
     monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **k: None)
-    monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **k: [])
     monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", lambda *a, **k: "")
     monkeypatch.setattr(
         pipeline_engine,
@@ -265,8 +265,13 @@ def test_agent_stage_refuses_symlinked_outbox(tmp_path, monkeypatch):
     stale_signal.write_text("", encoding="utf-8")
     _replace_with_symlink(project / ".agentic" / "outbox", outside)
 
-    monkeypatch.setattr(agent_stage, "build_prompt", lambda *a, **k: "prompt")
-    monkeypatch.setattr(agent_stage, "materialize_doctrine", lambda *a, **k: None)
+    monkeypatch.setattr(
+        agent_stage, "build_stage_context",
+        lambda *a, **k: SimpleNamespace(
+            text="prompt", file=project / ".agentic" / "context" / "stage.md"
+        ),
+        raising=True,
+    )
 
     def _must_not_spawn(*_a, **_kw):
         raise AssertionError("стадия запущена на небезопасной поверхности")
@@ -717,8 +722,13 @@ def test_agent_stage_checks_progress_leaf_before_signal_cleanup(tmp_path, monkey
 
     import awf.signal_watch as signal_watch
 
-    monkeypatch.setattr(agent_stage, "build_prompt", lambda *a, **k: "prompt")
-    monkeypatch.setattr(agent_stage, "materialize_doctrine", lambda *a, **k: None)
+    monkeypatch.setattr(
+        agent_stage, "build_stage_context",
+        lambda *a, **k: SimpleNamespace(
+            text="prompt", file=project / ".agentic" / "context" / "stage.md"
+        ),
+        raising=True,
+    )
     monkeypatch.setattr(
         signal_watch, "run_subprocess_until_signal",
         lambda *a, **k: pytest.fail("стадия запущена после отказа барьера"),

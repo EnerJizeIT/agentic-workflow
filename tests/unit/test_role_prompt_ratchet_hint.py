@@ -34,8 +34,11 @@ def _flat(text: str) -> str:
 
 def _project(tmp_path: Path) -> Path:
     project = tmp_path / "proj"
-    for sub in ("inbox", "outbox", "logs"):
+    for sub in ("inbox", "outbox", "logs", "context"):
         (project / ".agentic" / sub).mkdir(parents=True)
+    (project / ".agentic" / "config.yaml").write_text(
+        "stage_types:\n  qa: execute\n", encoding="utf-8"
+    )
     (project / ".agentic" / "inbox" / "TODO-0001.md").write_text(
         "# TODO — the unit\n\nGoal: keep the file small.\n", encoding="utf-8"
     )

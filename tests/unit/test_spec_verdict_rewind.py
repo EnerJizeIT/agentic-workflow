@@ -97,7 +97,6 @@ def test_stale_fail_report_is_not_the_stages_verdict(
 
     monkeypatch.setattr(pipeline_engine, "_run_agent_stage", mock_agent)
     monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
-    monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
     monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: None)
     monkeypatch.setattr(pipeline_engine, "_handle_direct_rollback", _no_direct_rollback)
     monkeypatch.setattr(pipeline_engine, "_handle_escalate", fake_escalate)

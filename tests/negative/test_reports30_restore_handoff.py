@@ -8,7 +8,7 @@
 
 - возобновление с поздней стадии (``--from-stage`` / ``stage_name`` из
   state) передавало handoff прошлой попытки следующему воркеру как свежий
-  (``resolve_prev_handoffs``);
+  (``PREV``/``PREVLINK`` блоки сборщика);
 - salvage-промпт указывал на файл прошлой попытки для стадии, которая
   умерла, не написав свой;
 - голый move тихо перезаписывал живую копию того же имени (у правила
@@ -24,9 +24,9 @@
 - test_restore_never_overwrites_live_handoff — restore не перезаписывает
   ни живого файла, ни архивного.
 - test_rerun_does_not_forward_archive_tail — сразу после restore (до
-  любой стадии новой попытки) ``resolve_prev_handoffs`` для следующей
-  стадии не возвращает существующего файла: следующий воркер видит ровно
-  свои хендоффы — пока их нет.
+  любой стадии новой попытки) блок ``PREV`` для следующей стадии не
+  содержит текста прошлой попытки: следующий воркер видит ровно свои
+  хендоффы — пока их нет.
 - test_rearchive_after_restore_versions_both_attempts — повторный прогон →
   повторная архивация: новый handoff занимает каноническое имя, хвост
   первой попытки цел под уникальным суффиксом — обе улики сохранены.
@@ -36,8 +36,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from awf import api, paths
-from awf.agent_stage import resolve_prev_handoffs
 from awf.pipeline import Stage
+from awf.stage_context import build_stage_context
 from awf.todos import archive_todo
 
 TODO_ID = "TODO-0191"
@@ -117,15 +117,13 @@ def test_rerun_does_not_forward_archive_tail(tmp_git_repo):
 
     api.restore_todo(tmp_git_repo, TODO_ID)
 
-    # what the qa stage would be forwarded, engine-style (is_file filter
-    # from run_agent_stage) — before any stage of the new attempt ran
-    forwarded = [
-        p
-        for p in resolve_prev_handoffs(_stages_up_to_qa(), 2, tmp_git_repo, TODO_ID)
-        if p.is_file()
-    ]
-    assert forwarded == [], (
-        f"the previous attempt's tail must not be forwarded as fresh: {forwarded}"
+    # what the qa stage reads now (PREV/PREVLINK blocks) — before any
+    # stage of the new attempt ran
+    text = build_stage_context(
+        tmp_git_repo, TODO_ID, "qa", "agent-qa-review"
+    ).text
+    assert "FIRST attempt" not in text, (
+        "the previous attempt's tail must not reach the next stage as fresh"
     )
 
 

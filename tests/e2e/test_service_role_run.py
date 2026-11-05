@@ -58,6 +58,9 @@ CONFIG_YAML = (
     "models:\n"
     "  worker:\n"
     "    model: stub/model\n"
+    "stage_types:\n"
+    "  plan: plan\n  agent-implementer: execute\n"
+    "  agent-qa-review: reviewer\n  verify: supervisor\n"
 )
 
 # 4-стадийный состав. verify = "next" (без коммита): в run-контексте коммит

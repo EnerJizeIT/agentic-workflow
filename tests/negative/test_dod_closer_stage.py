@@ -419,7 +419,6 @@ def test_static_block_defect_blocks_without_spawn_or_budget(tmp_git_repo, monkey
     monkeypatch.setattr(checklist_gate, "run", spy_gate)
     monkeypatch.setattr(pipeline_engine, "_run_agent_stage", mock_agent)
     monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
-    monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
     monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: "")
     monkeypatch.setattr(pipeline_engine, "wait_for_signal", lambda *a, **kw: None)
     monkeypatch.setattr(
@@ -592,7 +591,6 @@ def test_service_candidate_stage_with_skip_if_still_spawns(
     monkeypatch.setattr(checklist_gate, "run", spy_gate)
     monkeypatch.setattr(pipeline_engine, "_run_agent_stage", mock_agent)
     monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
-    monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
     monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: "")
     monkeypatch.setattr(pipeline_engine, "wait_for_signal", lambda *a, **kw: None)
     monkeypatch.setattr(pipeline_engine, "_log", lambda *a, **kw: None)
@@ -886,7 +884,6 @@ def _run_closer(proj: Path, todo_id: str, stage: Stage, stages: list, config=Non
 def _patch_engine(monkeypatch, spawn) -> None:
     monkeypatch.setattr(pipeline_engine, "_run_agent_stage", spawn)
     monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
-    monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
     monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: "")
     monkeypatch.setattr(pipeline_engine, "wait_for_signal", lambda *a, **kw: None)
     monkeypatch.setattr(pipeline_engine, "_log", lambda *a, **kw: None)

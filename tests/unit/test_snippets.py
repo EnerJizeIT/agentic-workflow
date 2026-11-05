@@ -1,4 +1,4 @@
-"""Tests for stage-specific snippet injection in build_prompt.
+"""Tests for stage-specific snippet injection in the supervisor prompt.
 
 Validates that:
 - Each stage kind (plan/verify/salvage) gets its focused snippet
@@ -20,7 +20,6 @@ from awf.supervisor import (
     _SNIPPET_SALVAGE,
     _SNIPPET_VERIFY,
     _stage_snippet,
-    build_prompt,
 )
 
 
@@ -109,89 +108,6 @@ class TestStageSnippetLoader:
         assert "TODO-0042" in result
 
 
-class TestBuildPromptInjection:
-    """build_prompt appends snippets for supervisor stages."""
-
-    def test_plan_prompt_has_always_snippet(self):
-        prompt = build_prompt("plan", "TODO-0001")
-        assert "Critical rules" in prompt
-        assert "DO NOT edit" in prompt
-
-    def test_plan_prompt_has_plan_snippet(self):
-        prompt = build_prompt("plan", "TODO-0001")
-        assert "Plan stage" in prompt
-
-    def test_verify_prompt_has_verify_snippet(self):
-        prompt = build_prompt("verify", "TODO-0001")
-        assert "Verify stage" in prompt
-        assert "DECIDE" in prompt or "decide" in prompt.lower()
-
-    def test_verify_prompt_has_todo_id(self):
-        prompt = build_prompt("verify", "TODO-0042")
-        assert "TODO-0042" in prompt
-
-    def test_salvage_prompt_has_salvage_snippet(self):
-        prompt = build_prompt("salvage", "TODO-0001")
-        assert "Salvage" in prompt
-
-    def test_salvage_prompt_differs_from_verify(self):
-        """Salvage and verify are different contexts — prompts must differ."""
-        salvage = build_prompt("salvage", "TODO-0001")
-        verify = build_prompt("verify", "TODO-0001")
-        assert salvage != verify
-        assert "SALVAGE" in salvage
-        assert "SALVAGE" not in verify
-
-    def test_execute_prompt_no_supervisor_snippet(self):
-        """Execute stages get signal contract, NOT supervisor snippets."""
-        prompt = build_prompt("execute", "TODO-0001")
-        assert "Plan stage" not in prompt
-        assert "Verify stage" not in prompt
-        assert "Critical rules" not in prompt
-        # But signal contract IS there (DF5-1)
-        assert "DONE-TODO-0001.ready" in prompt
-
-    def test_execute_prompt_has_output_discipline(self):
-        """dogfood-11: every worker prompt teaches incremental file writes."""
-        prompt = build_prompt("execute", "TODO-0001")
-        assert "OUTPUT DISCIPLINE" in prompt
-        assert "write/edit tools" in prompt
-        assert "skeleton first" in prompt
-        assert "STOP, save what you have" in prompt
-
-    def test_execute_prompt_done_json_example(self):
-        """FU-21 D4: the completion contract shows the DONE.json schema
-        inline — a worker that wrote tests_run as strings got the file
-        rejected by the U3 schema and had no example at hand."""
-        prompt = build_prompt("execute", "TODO-0001")
-        assert "DONE-TODO-0001.json" in prompt
-        # The example must show tests_run as objects, not strings.
-        assert '{"cmd": "python3 -m pytest tests/unit/test_x.py -q", "result": "12 passed"}' in prompt
-        assert "OBJECTS {cmd, result}, not strings" in prompt
-        assert "docs/unit-contract.md" in prompt
-
-    def test_snippet_at_end_of_prompt(self):
-        """Stage-specific snippet should be towards the END of the prompt (recency bias)."""
-        prompt = build_prompt("verify", "TODO-0001")
-        verify_pos = prompt.rfind("Verify stage")
-        # Stage-specific snippet should be in the last half
-        half = len(prompt) / 2
-        assert verify_pos > half, (
-            f"Verify snippet at pos {verify_pos}, prompt len {len(prompt)}, "
-            f"should be in last half (> {half:.0f})"
-        )
-
-
-class TestWorkspaceDiscipline:
-    """SPEC-2: temp-path canon and live-run policy in every worker prompt."""
-
-    def test_execute_prompt_has_workspace_discipline(self):
-        prompt = build_prompt("execute", "TODO-0001")
-        assert "WORKSPACE DISCIPLINE" in prompt
-        assert "/tmp/opencode" in prompt
-        assert "Live runs of external processes" in prompt
-
-
 # ─── B (run2 report): supervisor authority phrase in the shipped copy ──────
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -222,3 +138,17 @@ class TestSupervisorAuthorityPhrase:
         assert "standard option" in text
         assert "owner approval" in text
         assert "stop-list" in text
+
+
+def test_supervisor_prompt_carries_always_and_kind_snippet(tmp_path):
+    """IMP2b: the snippets are the tail of the built stage text."""
+    from awf import supervisor
+    from tests.unit._signal_fakes import make_project
+
+    proj = make_project(tmp_path)
+    prompt = supervisor._prepare_supervisor_stage(
+        "verify", "TODO-0001", proj, proj / ".agentic" / "logs"
+    )
+    assert prompt is not None
+    assert "Critical rules" in prompt
+    assert "Verify stage" in prompt

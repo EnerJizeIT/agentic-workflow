@@ -11,7 +11,7 @@ import yaml
 
 from awf import api
 from awf.pipeline_state import write_state
-from awf.supervisor import _build_pipeline_context, build_prompt
+from awf.supervisor import _build_pipeline_context
 
 LIVE_PIPELINE = """\
 stages:
@@ -73,7 +73,7 @@ class TestFrozenPipelineContext:
             encoding="utf-8",
         )
 
-        prompt = build_prompt("execute", "TODO-0001", project_dir=project)
+        prompt = _build_pipeline_context(project, "TODO-0001")
 
         assert "stage 2 of 3" in prompt
         assert "agent-added-mid-run" not in prompt

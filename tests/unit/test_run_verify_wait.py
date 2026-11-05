@@ -32,17 +32,14 @@ TODO = "TODO-0001"
 def test_decision_arriving_during_the_wait_ends_it(tmp_path, monkeypatch):
     """The incident: the subprocess left no verdict; the approve comes later."""
     proj = make_project(tmp_path)
-    clock = Clock()
     ticks = {"n": 0}
 
-    def fake_sleep(dt):
-        clock.t += dt
+    def on_sleep():
         ticks["n"] += 1
         if ticks["n"] == 2:
             approve(proj, TODO)
 
-    monkeypatch.setattr("time.monotonic", clock.monotonic)
-    monkeypatch.setattr("time.sleep", fake_sleep)
+    install_fake_time(monkeypatch, Clock(), on_sleep)
 
     signal = run_verify(proj, monkeypatch, TODO, wait_timeout=60)
 
@@ -81,16 +78,13 @@ def test_no_decision_keeps_waiting_and_status_shows_verify_waiting(
 ):
     """No approve → the run stays in the wait; rc=1 only at the deadline."""
     proj = make_project(tmp_path)
-    clock = Clock(5000.0)
     seen: dict = {}
 
-    def fake_sleep(dt):
-        clock.t += dt
+    def on_sleep():
         if "vw" not in seen:
             seen["vw"] = api.get_status(project_dir=proj).verify_waiting
 
-    monkeypatch.setattr("time.monotonic", clock.monotonic)
-    monkeypatch.setattr("time.sleep", fake_sleep)
+    install_fake_time(monkeypatch, Clock(5000.0), on_sleep)
 
     with pytest.raises(TimeoutError):
         run_verify(proj, monkeypatch, TODO, wait_timeout=12)
@@ -163,19 +157,16 @@ def test_wait_refreshes_the_log_and_status_every_minute(tmp_path, monkeypatch):
     guessing whether the engine is alive.
     """
     proj = make_project(tmp_path)
-    clock = Clock()
     ticks = {"n": 0}
     seen: list = []
 
-    def fake_sleep(dt):
-        clock.t += dt
+    def on_sleep():
         ticks["n"] += 1
         if ticks["n"] == 25:  # 75s into a 180s deadline — past one tick
             seen.append(api.get_status(project_dir=proj).verify_waiting)
             approve(proj, TODO)
 
-    monkeypatch.setattr("time.monotonic", clock.monotonic)
-    monkeypatch.setattr("time.sleep", fake_sleep)
+    install_fake_time(monkeypatch, Clock(), on_sleep)
 
     signal = run_verify(proj, monkeypatch, TODO, wait_timeout=180)
 
@@ -197,19 +188,16 @@ def test_review_during_the_wait_ends_it_and_clears_the_event(
     REVIEW written mid-wait must end the wait immediately.
     """
     proj = make_project(tmp_path)
-    clock = Clock()
     ticks = {"n": 0}
 
-    def fake_sleep(dt):
-        clock.t += dt
+    def on_sleep():
         ticks["n"] += 1
         if ticks["n"] == 2:
             (proj / ".agentic" / "outbox" / f"REVIEW-{TODO}.md").write_text(
                 "# Review\nMissing evidence\n", encoding="utf-8"
             )
 
-    monkeypatch.setattr("time.monotonic", clock.monotonic)
-    monkeypatch.setattr("time.sleep", fake_sleep)
+    install_fake_time(monkeypatch, Clock(), on_sleep)
 
     signal = run_verify(proj, monkeypatch, TODO, wait_timeout=60)
 
@@ -217,3 +205,25 @@ def test_review_during_the_wait_ends_it_and_clears_the_event(
     assert api.get_status(project_dir=proj).verify_waiting is None, (
         "the event must not outlive the decision"
     )
+
+
+def test_the_fake_clock_leaves_the_real_time_module_alone(monkeypatch):
+    """A61: only the engine's own ``time`` name is replaced.
+
+    The flake came from a global patch of ``time.sleep``: the poll loop of a
+    real ``subprocess`` child (the STATE block reads ``git``) ticked the test
+    clock, so under ``-n 8`` a "second tick" fired during the spawn instead
+    of inside the wait. A regression to a global patch turns this red while
+    the rest of the file stays green.
+    """
+    real_sleep = time.sleep
+    real_monotonic = time.monotonic
+    clock = Clock()
+
+    install_fake_time(monkeypatch, clock)
+
+    # ``subprocess`` holds this very module object; it must stay real.
+    assert time.sleep is real_sleep
+    assert time.monotonic is real_monotonic
+    # The engine reads the fake: the wait still ticks on each sleep.
+    assert supervisor.time.monotonic() == clock.t

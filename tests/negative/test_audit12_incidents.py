@@ -96,7 +96,6 @@ class TestOnBlockedStop:
 
         monkeypatch.setattr(engine, "_run_agent_stage", fake_agent)
         monkeypatch.setattr(engine, "_ensure_baseline_sha", lambda *a, **kw: None)
-        monkeypatch.setattr(engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
         monkeypatch.setattr(engine, "_read_baseline_sha", lambda *a, **kw: "")
         monkeypatch.setattr(engine, "wait_for_signal", lambda *a, **kw: None)
 

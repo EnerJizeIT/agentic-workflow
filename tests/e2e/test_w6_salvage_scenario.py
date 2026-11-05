@@ -54,6 +54,8 @@ CONFIG_YAML = (
     "models:\n"
     "  worker:\n"
     "    model: stub/model\n"
+    "stage_types:\n"
+    "  plan: plan\n  implement: execute\n  verify: supervisor\n"
 )
 
 

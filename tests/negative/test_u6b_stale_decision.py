@@ -29,8 +29,11 @@ from awf.pipeline_state import read_state
 
 def _bare_project(tmp_path: Path) -> Path:
     proj = tmp_path / "proj"
-    for d in ("inbox", "outbox", "logs", "roles"):
+    for d in ("inbox", "outbox", "logs", "roles", "context"):
         (proj / ".agentic" / d).mkdir(parents=True)
+    (proj / ".agentic" / "config.yaml").write_text(
+        "stage_types:\n  verify: supervisor\n  plan: plan\n", encoding="utf-8"
+    )
     (proj / ".agentic" / "roles" / "supervisor.md").write_text(
         "# Supervisor\n", encoding="utf-8"
     )

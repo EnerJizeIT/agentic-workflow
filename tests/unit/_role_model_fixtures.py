@@ -83,6 +83,13 @@ def make_project(tmp_path: Path, config: dict) -> Path:
     )
     (agentic / "inbox" / "TODO-0001.md").write_text("task", encoding="utf-8")
     (agentic / "phases" / "plan.md").write_text("# Plan\n", encoding="utf-8")
+    config = {
+        **config,
+        "stage_types": {
+            "plan": "plan", "verify": "supervisor", "execute": "execute",
+            "agent-dev": "execute", "agent-implementer": "execute",
+        },
+    }
     (agentic / "config.yaml").write_text(
         yaml.safe_dump(config), encoding="utf-8"
     )

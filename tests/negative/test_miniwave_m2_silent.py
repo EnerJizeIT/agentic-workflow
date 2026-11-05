@@ -32,6 +32,9 @@ def _project(tmp_path: Path) -> Path:
     project = tmp_path / "proj"
     for name in ("outbox", "context", "logs", "inbox", "roles"):
         (project / ".agentic" / name).mkdir(parents=True)
+    (project / ".agentic" / "config.yaml").write_text(
+        "stage_types:\n  qa: execute\n", encoding="utf-8"
+    )
     (project / ".agentic" / "roles" / "worker.md").write_text(
         "# worker\n", encoding="utf-8"
     )
@@ -138,7 +141,6 @@ def _mock_worker(monkeypatch, behavior, baseline_sha: str | None = None):
 
     monkeypatch.setattr(pipeline_engine, "_run_agent_stage", mock_agent)
     monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
-    monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
     monkeypatch.setattr(pipeline_engine, "_run_supervisor_stage", lambda *a, **kw: "")
     monkeypatch.setattr(
         pipeline_engine, "_maybe_commit",

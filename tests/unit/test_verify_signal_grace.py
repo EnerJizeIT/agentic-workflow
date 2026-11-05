@@ -41,9 +41,22 @@ def test_hung_supervisor_is_termed_after_grace_and_signal_returned(
 
         def __init__(self, cmd, cwd=None, **kwargs):
             self.cmd = cmd
+            self.args = cmd
             self.pid = 999999999  # never a real group — killpg must not run
             self.returncode = None
-            signal_file.write_text("", encoding="utf-8")
+            self.stdout = b""
+            self.stderr = b""
+            if not (cmd and str(cmd[0]).split("/")[-1] == "git"):
+                signal_file.write_text("", encoding="utf-8")
+
+        def communicate(self, input=None, timeout=None):
+            return (self.stdout, self.stderr)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
 
         def poll(self):
             return None
@@ -96,10 +109,23 @@ def test_supervisor_exits_within_grace_is_not_termed(tmp_path, monkeypatch):
 
         def __init__(self, cmd, cwd=None, **kwargs):
             self.cmd = cmd
+            self.args = cmd
             self.pid = 999999999
             self.returncode = None
             self.polls = 0
-            signal_file.write_text("", encoding="utf-8")
+            self.stdout = b""
+            self.stderr = b""
+            if not (cmd and str(cmd[0]).split("/")[-1] == "git"):
+                signal_file.write_text("", encoding="utf-8")
+
+        def communicate(self, input=None, timeout=None):
+            return (self.stdout, self.stderr)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
 
         def poll(self):
             self.polls += 1

@@ -46,6 +46,10 @@ CONFIG_YAML = (
     "models:\n"
     "  worker:\n"
     "    model: stub/model\n"
+    "stage_types:\n"
+    "  plan: plan\n  draft: execute\n  revise: execute\n  editor: execute\n"
+    "  qa: execute\n  implementer: execute\n  tester: execute\n"
+    "  verify: supervisor\n"
 )
 
 ROLE_FILES = {

@@ -14,7 +14,14 @@ from awf import done_owner
 
 def _project(tmp_path: Path) -> Path:
     project = tmp_path / "proj"
-    (project / ".agentic" / "outbox").mkdir(parents=True)
+    for name in ("outbox", "inbox", "logs", "context", "roles"):
+        (project / ".agentic" / name).mkdir(parents=True, exist_ok=True)
+    (project / ".agentic" / "config.yaml").write_text(
+        "stage_types:\n  agent-implementer: execute\n", encoding="utf-8"
+    )
+    (project / ".agentic" / "roles" / "agent-implementer.md").write_text(
+        "# Role\n", encoding="utf-8"
+    )
     return project
 
 
@@ -119,7 +126,7 @@ def test_an_old_file_without_a_stage_block_is_left_alone(tmp_path):
 def _stage_project(tmp_path: Path) -> Path:
     project = _project(tmp_path)
     for name in ("inbox", "logs", "roles"):
-        (project / ".agentic" / name).mkdir(parents=True)
+        (project / ".agentic" / name).mkdir(parents=True, exist_ok=True)
     (project / ".agentic" / "roles" / "developer.md").write_text("# dev\n", encoding="utf-8")
     (project / ".agentic" / "inbox" / "TODO-0001.md").write_text("# task\n", encoding="utf-8")
     return project

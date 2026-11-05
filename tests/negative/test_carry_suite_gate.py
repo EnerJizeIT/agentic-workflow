@@ -29,8 +29,11 @@ def _repo(tmp_path: Path, config: str | None = PROJECT_KEY) -> Path:
     # AUD12-08: the git boilerplate has one home — conftest._git_init.
     _git_init(proj)
     (proj / ".agentic").mkdir()
-    if config is not None:
-        (proj / ".agentic" / "config.yaml").write_text(config, encoding="utf-8")
+    (proj / ".agentic" / "context").mkdir()
+    stage_types = "stage_types:\n  agent-dev: execute\n  verify: supervisor\n"
+    (proj / ".agentic" / "config.yaml").write_text(
+        (config or "") + stage_types, encoding="utf-8"
+    )
     exclude = proj / ".git" / "info" / "exclude"
     exclude.write_text(".agentic/context/\n", encoding="utf-8")
     return proj

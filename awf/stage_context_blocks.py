@@ -41,6 +41,43 @@ _REVIEW_ROUNDS = re.compile(r"(?ms)^##\s+REVIEW-фикс[^\n]*\n.*?(?=^##\s|\Z)"
 #: marker of an empty-but-present artifact (AC25).
 EMPTY_REASON = "блок пуст"
 
+#: The sections ``CRIT`` owns: ``UNIT`` carries the task and the borders
+#: (D5), ``CRIT`` the acceptance criteria and the check commands (R2). The
+#: contract walker returns the whole TODO contract, so each block drops what
+#: the other one owns — two copies of the acceptance criteria cost 1 100
+#: characters on TODO-0383 and squeezed ``ROLE`` down to its marker.
+_UNIT_DROPS = ("Приёмка",)
+
+
+def _drop_sections(lines: list[str], names: tuple[str, ...]) -> list[str]:
+    """The contract lines without the ``##`` sections named in *names*."""
+    kept: list[str] = []
+    skipping = False
+    for line in lines:
+        if line.startswith("## "):
+            skipping = any(line[3:].strip().startswith(name) for name in names)
+        if not skipping:
+            kept.append(line)
+    while kept and not kept[-1].strip():
+        kept.pop()
+    return kept
+
+
+def _unit_header(lines: list[str]) -> list[str]:
+    """The TODO title, without the front matter ``STAGE`` already carries.
+
+    ``contract_section`` keeps the whole head of the file: on TODO-0383 the
+    ``files:`` allowlist alone is 1 600 characters and it repeats the STAGE
+    block. The unit block keeps the title and starts at the first section.
+    """
+    title: list[str] = []
+    for index, line in enumerate(lines):
+        if line.startswith("## "):
+            return title + lines[index:]
+        if line.startswith("# "):
+            title = [line]
+    return lines
+
 
 def _artifact(block_id: str, ctx: StageInput, path: Path, reason: str, header: str = "") -> Block:
     """A file block: absent, empty and present are three different answers."""
@@ -70,6 +107,10 @@ def render_STAGE(ctx: StageInput) -> Block:
     task = stage.get("task") or stage.get("description") or "нет в снимке"
     files = split_front_matter(todo_text(ctx))[0].get("files") or []
     allow = ", ".join(str(f) for f in files) if isinstance(files, list) else str(files)
+    # A unit's allowlist can grow past the block's 400-char share (0383 has
+    # 40 files): STAGE is P0 and is never cut, so it trims its own list.
+    if len(allow) > 280:
+        allow = allow[:279].rstrip(", ") + " …"
     text = (
         "## Стадия\n"
         f"- задача: {task}\n"
@@ -89,8 +130,8 @@ def render_UNIT(ctx: StageInput) -> Block:
     ``CRIT``/``RULES``/``OUTPUT`` and returned ``CTX-FAIL`` on the very units
     AC3 names. The contract block has one owner already —
     :func:`awf.context_pack_sections.contract_section`, the same walker the
-    pack shows as section 2; the review rounds stay with ``REVIEW`` (one
-    fact, one owner).
+    pack shows as section 2; the review rounds stay with ``REVIEW`` and the
+    acceptance criteria with ``CRIT`` (one fact, one owner).
     """
     text = todo_text(ctx)
     if not text:
@@ -99,11 +140,13 @@ def render_UNIT(ctx: StageInput) -> Block:
 
     lines, found = contract_section(text, str(todo_file(ctx)))
     if found:
+        lines = _unit_header(_drop_sections(lines, _UNIT_DROPS))
         return _present("UNIT", ctx, "\n".join(lines), todo_file(ctx))
     # No contract at all: the unit still needs its task, so the TODO goes in
     # without the rounds REVIEW owns.
     body = _REVIEW_ROUNDS.sub("", text).strip() or text
-    return _present("UNIT", ctx, body, todo_file(ctx))
+    lines = _unit_header(body.split("\n"))
+    return _present("UNIT", ctx, "\n".join(lines), todo_file(ctx))
 
 
 def render_CRIT(ctx: StageInput) -> Block:
@@ -111,14 +154,11 @@ def render_CRIT(ctx: StageInput) -> Block:
     meta, body = split_front_matter(text)
     verify = meta.get("verify") or []
     acceptance = read_section(body, "Приёмка (факты)") or read_section(body, "Приёмка")
-    borders = read_section(body, "Границы")
     parts = ["## Критерии приёмки и команды"]
     if isinstance(verify, list) and verify:
         parts.append("Команды проверки:\n" + "\n".join(f"- {v}" for v in verify))
     if acceptance:
         parts.append(acceptance)
-    if borders:
-        parts.append(borders)
     if len(parts) == 1:
         return _missing("CRIT", ctx, "в TODO нет блока приёмки", todo_file(ctx))
     return _present("CRIT", ctx, "\n\n".join(parts), todo_file(ctx))
@@ -177,10 +217,10 @@ def render_STATE(ctx: StageInput) -> Block:
     sha = _read(sha_file).strip().split("\n")[0]
     lines = ["## Состояние", f"- baseline: {sha or 'снят не был'}"]
     try:
-        from .infra.git_model import GitModelError, GitRepository
+        from .infra.git_model import GitRepository
 
         changes = GitRepository(ctx.project_dir).changes()
-    except (GitModelError, OSError, RuntimeError):
+    except Exception:  # noqa: BLE001 - a git read never kills the stage
         lines.append("- git status: не читается")
     else:
         if not changes:
@@ -214,7 +254,7 @@ def render_DIFF(ctx: StageInput) -> Block:
 
     try:
         stat = diff_stat_for_todo(ctx.project_dir, ctx.todo_id).strip()
-    except (OSError, RuntimeError):
+    except Exception:  # noqa: BLE001 - a git read never kills the stage
         stat = ""
     if not stat:
         return _missing("DIFF", ctx, "изменений против baseline нет", sha_file)

@@ -44,6 +44,12 @@ CONFIG_YAML = (
     "models:\n"
     "  worker:\n"
     "    model: shim/model\n"
+    "stage_types:\n"
+    "  plan: plan\n"
+    "  implement: execute\n"
+    "  intruder: execute\n"
+    "  extra: execute\n"
+    "  verify: supervisor\n"
 )
 
 # The unit's own definition: plan -> implement (worker) -> verify.

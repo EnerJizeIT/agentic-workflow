@@ -35,9 +35,14 @@ SID = "impl"
 
 def _project(tmp_path: Path) -> Path:
     proj = tmp_path / "proj"
-    (proj / ".agentic" / "outbox").mkdir(parents=True)
-    (proj / ".agentic" / "context").mkdir(parents=True)
-    (proj / ".agentic" / "logs").mkdir(parents=True)
+    for name in ("outbox", "context", "logs", "inbox", "roles"):
+        (proj / ".agentic" / name).mkdir(parents=True, exist_ok=True)
+    (proj / ".agentic" / "config.yaml").write_text(
+        f"stage_types:\n  {ROLE}: execute\n", encoding="utf-8"
+    )
+    (proj / ".agentic" / "roles" / f"{ROLE}.md").write_text(
+        "# Role\n", encoding="utf-8"
+    )
     return proj
 
 
@@ -315,7 +320,7 @@ def test_prompt_carries_stage_identity_line(tmp_path, monkeypatch):
     captured = _capture_run(monkeypatch, tmp_path)
     proj = _project(tmp_path)
     roles = proj / ".agentic" / "roles"
-    roles.mkdir(parents=True)
+    roles.mkdir(parents=True, exist_ok=True)
     (roles / f"{ROLE}.md").write_text("# role\n", encoding="utf-8")
     stage = Stage(name=SID, id=SID, role=ROLE, kind="execute")
 

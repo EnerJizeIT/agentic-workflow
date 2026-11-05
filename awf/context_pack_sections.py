@@ -66,7 +66,7 @@ def rel_path(project_dir: Path, path: Path) -> str:
 def handoff_path(project_dir: Path, todo_id: str, stage: Stage | None) -> Path | None:
     """The previous stage's handoff: stage name first, its role as legacy.
 
-    ``resolve_prev_handoffs`` (the spawner) reads the same pair: a unit that
+    the stage builder's ``PREV`` block reads the same pair: a unit that
     started before the stage/role rename has only the role-named file, and
     the pack must show the handoff the stage will actually receive.
     """

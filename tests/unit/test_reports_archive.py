@@ -14,8 +14,14 @@ from awf import reports_archive
 
 def _project(tmp_path: Path) -> Path:
     project = tmp_path / "proj"
-    (project / ".agentic" / "outbox").mkdir(parents=True)
-    (project / ".agentic" / "context").mkdir(parents=True)
+    for name in ("outbox", "context", "inbox", "logs", "roles"):
+        (project / ".agentic" / name).mkdir(parents=True)
+    (project / ".agentic" / "config.yaml").write_text(
+        "stage_types:\n  agent-dev: execute\n", encoding="utf-8"
+    )
+    (project / ".agentic" / "roles" / "developer.md").write_text(
+        "# Role\n", encoding="utf-8"
+    )
     return project
 
 
@@ -80,7 +86,9 @@ def test_stage_entry_archives_the_previous_report(tmp_path, monkeypatch):
     (project / ".agentic" / "roles" / "worker.md").write_text("# w\n")
     (project / ".agentic" / "inbox").mkdir(exist_ok=True)
     (project / ".agentic" / "inbox" / "TODO-0001.md").write_text("# TODO\n")
-    (project / ".agentic" / "config.yaml").write_text("project:\n  name: x\n")
+    (project / ".agentic" / "config.yaml").write_text(
+        "project:\n  name: x\nstage_types:\n  qa: execute\n"
+    )
 
     from awf.pipeline import Stage
 

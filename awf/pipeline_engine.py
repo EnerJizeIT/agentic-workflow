@@ -27,7 +27,6 @@ from . import unit_contract as _unit_contract
 from ._errors import AwfApiError as _AwfApiError
 from ._log import log as _log
 from ._worker_exit import worker_log_tail
-from .agent_stage import resolve_prev_handoffs as _resolve_prev_handoffs
 from .agent_stage import run_agent_stage as _run_agent_stage
 from .commit_gate import maybe_commit as _maybe_commit
 from .infra import managed_fs
@@ -391,6 +390,19 @@ def _read_baseline_sha(project_dir: Path, todo_id: str) -> str:
     return sha_file.read_text(encoding="utf-8").strip().split("\n")[0]
 
 
+def _write_baseline_sha(sha_file: Path, sha: str) -> None:
+    """Write ``BASELINE-<id>.sha``: ONE writer for the file's format.
+
+    The contract is a single sha plus a newline (TODO A64 forbids changing
+    it), so the create path and the advance path share this call instead of
+    spelling the format twice. Managed write: the no-follow primitive, same
+    as the rest of the baseline artefacts.
+    """
+    from ._atomic import atomic_write_text
+
+    atomic_write_text(sha_file, sha + "\n")
+
+
 def _write_verify_pack_error_note(
     project_dir: Path, todo_id: str, error: Exception,
 ) -> None:
@@ -456,8 +468,28 @@ def _maybe_run_verify_pack(
     )
 
 
+def _is_first_unit_pass(
+    stages: list, stage_idx: int, retry_counts: list[int],
+) -> bool:
+    """A64: is this stage entry the unit's first pass?
+
+    Only the first pass may move the baseline (see ``_ensure_baseline_sha``).
+    A resume from the middle starts at a later stage — the tree may already
+    hold the unit's work, so its baseline must stay put. The first pass is
+    the first non-supervisor stage (the plan stage runs before it) on its
+    first attempt.
+    """
+    first_agent = next(
+        (i for i, s in enumerate(stages) if getattr(s, "role", "") != "supervisor"),
+        None,
+    )
+    if first_agent is None or stage_idx != first_agent:
+        return False
+    return retry_counts[stage_idx] == 0
+
+
 def _ensure_baseline_sha(
-    project_dir: Path, todo_id: str, logs_dir: Path,
+    project_dir: Path, todo_id: str, logs_dir: Path, *, first_pass: bool = False,
 ) -> None:
     """П3: auto-create baseline SHA file if missing.
 
@@ -465,16 +497,44 @@ def _ensure_baseline_sha(
     creating TODO.md (boilerplate). Now orchestrator ensures baseline
     exists right before agent stage starts. If user/supervisor already
     created one via `awf baseline` (richer status, tests log, etc.) —
-    we leave it alone.
+    we leave it alone, except for the A64 advance described below.
+
+    A64: `awf dispatch` snapshots the baseline at dispatch time. When the
+    unit starts after a previous unit's commit, that snapshot is behind
+    HEAD and the unit's diff swallows other units' files. On the unit's
+    first pass only, a CLEAN tree and a recorded ancestor of HEAD move the
+    baseline to HEAD. A dirty tree keeps it — the extra changes are then
+    the owner's call, not silence.
     """
-    from . import git_utils
-    from ._atomic import atomic_write_text
+    from . import git_utils, head_guard
 
     if not todo_id:
         return
     sha_file = paths.context_dir(project_dir) / f"BASELINE-{todo_id}.sha"
+
     if sha_file.exists():
-        return  # already created by `awf baseline` or previous run
+        if not first_pass:
+            return  # resumed mid-pipeline: the tree may hold unit work
+        if not git_utils.is_git_repo(project_dir):
+            return  # a "(not a git repo)" baseline has no HEAD to move to
+        try:
+            old_sha = _read_baseline_sha(project_dir, todo_id)
+            head = git_utils.current_sha(project_dir)
+            if not old_sha or old_sha == head:
+                return
+            if git_utils.status_porcelain(project_dir).strip():
+                return  # dirty tree — advancing would hide someone's edits
+            if not head_guard._is_ancestor(project_dir, old_sha, head):
+                return
+            _write_baseline_sha(sha_file, head)
+            _log(
+                logs_dir,
+                f"П3: baseline advanced {todo_id} {old_sha[:8]} -> "
+                f"{head[:8]} (tree clean)",
+            )
+        except Exception as e:
+            _log(logs_dir, f"П3: baseline advance failed for {todo_id}: {e}")
+        return
 
     if not git_utils.is_git_repo(project_dir):
         _log(logs_dir, f"П3: skip baseline for {todo_id} — not a git repo")
@@ -482,7 +542,7 @@ def _ensure_baseline_sha(
 
     try:
         sha = git_utils.current_sha(project_dir)
-        atomic_write_text(sha_file, sha + "\n")
+        _write_baseline_sha(sha_file, sha)
         _log(logs_dir, f"П3: auto-created baseline {sha[:8]} for {todo_id}")
     except Exception as e:
         _log(logs_dir, f"П3: baseline creation failed for {todo_id}: {e}")
@@ -2665,10 +2725,11 @@ def execute_agent_stage(
                 "raise timeout or split the unit",
             )
 
-    _ensure_baseline_sha(project_dir, current_todo, logs_dir)
+    _ensure_baseline_sha(
+        project_dir, current_todo, logs_dir,
+        first_pass=_is_first_unit_pass(stages, stage_idx, retry_counts),
+    )
     _write_state(project_dir, todo_id=current_todo, logs_dir=logs_dir, phase="run")
-
-    prev_handoffs = _resolve_prev_handoffs(stages, stage_idx, project_dir, todo_id=current_todo)
 
     # NEG-4 (day-2 B1): stage-scoped work evidence. A pre-existing diff from an
     # earlier stage must not count as THIS stage's work — otherwise
@@ -2775,9 +2836,10 @@ def execute_agent_stage(
             worker_run += 1
             try:
                 _run_agent_stage(stage, current_todo, project_dir, config, logs_dir,
-                                 prev_handoffs=prev_handoffs, hard_timeout=stage_cap.seconds,
+                                 hard_timeout=stage_cap.seconds,
                                  retry_note=retry_note, attempt=worker_run,
-                                 log_holder=log_holder)
+                                 log_holder=log_holder,
+                                 pipeline_name=pipeline_name)
             except managed_fs.ManagedPathError as e:
                 # TODO-0235 (REVIEW N1): a barrier refusal stops the stage
                 # with a record and a salvage note — never a raw escape.

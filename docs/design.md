@@ -123,7 +123,7 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `orchestrator.py` | Pipeline dispatch loop (thin entry: setup → stage loop → complete) |
 | `pipeline_engine.py` | Stage handlers + transition logic |
 | `head_guard.py` | A31/A39: сверка HEAD до/после стадии, запись коммита гейта; форма сдвига решает исход — FOREIGN COMMIT (ран стоп) или UPSTREAM SYNC (ран идёт), строка в лог и `awf status` |
-| `rejection.py` | A32/A34: решения отказа — остаться в юните или отдать replan, куда возвращать (политика, владелец отчёта, ближайший автор), ограниченный контекст и бюджет replan-промпта, заметка о снятом юните и `PROGRESS` |
+| `rejection.py` | A32/A34: решения отказа — остаться в юните или отдать replan, куда возвращать (политика, владелец отчёта, ближайший автор), заметка о снятом юните и `PROGRESS`; текст replan собирает `stage_context` (IMP2b) |
 | `arbiter.py` | A29: один арбитр на юнит — метка источника в сигнале (human vs auto), готовый человеческий вердикт отменяет спавн verify-субпроцесса, а пришедший во время прогона выигрывает у авто-вердикта; перебитый авто-вердикт снимается с диска, чтобы не уехать в replan |
 | `spec_package.py` | Пакет спецификации (K1/K2): шапки, матрица покрытия, отпечаток, предикат готовности |
 | `stage_manifest.py` | Границы записи стадии (K5): снимок дерева до/после, запись нарушений allowlist; чтение и классификацию держит `violations.py` |
@@ -134,15 +134,15 @@ SMO распространяет pipeline-state-machine на setup-фазы: awf
 | `suite_command.py` | Каноническая команда сьюта и артефакт (R13/K13); `awf suite-command` |
 | `qa_suite_policy.py` | A5: когда QA платит за полный сьют (A5/TODO-0366) — `reuse` при актуальном артефакте дерева, `select` на внутренней итерации, `full` перед вердиктом; счётчик прогонов `RunJournal` и строка `qa: full-suite runs=N, selected runs=M, total=Ns` |
 | `unit_history.py` | Неключевая история юнита (CTX2): `forget_unit_history` снимает `CLOSER-<id>.json` и `CHECKLIST-<id>.json` на service-rollback, main-rollback и `restore_todo`; все перечисленные пути идут через один помощник |
-| `supervisor.py` | Supervisor prompts (`build_prompt`), signal wait, run-гейты |
-| `verify_context.py` | A42: промпт verify — вердикт пака встроенным текстом, диффстат, короткие TODO/DONE/PROGRESS вместо handoff-истории; бюджет и строка замера стадии в `orchestrator.log` |
-| `bounded_prompt.py` | A42/IMP2: одно правило бюджета и приоритетов P0–P5 — урезание промпта verify/replan (необязательные секции первыми, резка по ИМЕНИ) и `fit_blocks` для блоков контекста стадии |
-| `stage_context.py` | K7/K8 (IMP2): сборщик контекста стадии — тип из `stage_types`, таблица `FAMILIES` и `LIMITS` (6 строк), порядок, проверка P0, рез P5→P1, файл `context/STAGE-<todo>-<stage>.md`, строка `CTX`; поведение движка не меняет (включение — IMP2b) |
+| `supervisor.py` | Supervisor stages (`plan`/`verify`/`replan`) через сборщик контекста (IMP2b), signal wait, run-гейты |
+| `verify_context.py` | A42/IMP2b: строка замера verify-стадии (размер промпта, длительность, команды) в `orchestrator.log`; сам промпт собирает `stage_context` |
+| `bounded_prompt.py` | A42/IMP2: одно правило бюджета и приоритетов P0–P5 — `fit_blocks` для блоков контекста стадии и `fit_prompt` для оставшихся bounded-промптов |
+| `stage_context.py` | K7/K8 (IMP2): единственный сборщик контекста стадии — тип из `stage_types`, таблица `FAMILIES` и `LIMITS` (6 строк), порядок, проверка P0, рез P5→P1, файл `context/STAGE-<todo>-<stage>.md`, строка `CTX`; включён в спавн стадии (IMP2b) |
 | `stage_context_blocks.py` | K5: рендеры 19 блоков, у каждого один владелец-артефакт; нет артефакта — строка «нет данных: причина — путь», пустой — «блок пуст» |
 | `stage_context_review.py` | K5/AC12: находки фикс-круга — секции `## REVIEW-фикс` из TODO (`hygiene.review_append`), отчёт outbox — запасной источник; прошлые витки закрыты (одна строка `закрыто: N (id)`), `BLOCKER` последним |
 | `stage_context_roles.py` | K6: выборка ядра роли по маркерам `##` (пять приоритетов), остаток — оглавление, покрытие `floor(taken×100/total)`, ниже 70 % — `CTX-ROLE-LOW` |
 | `redact.py` | K12: единое правило секретов — значение под именем `token|key|secret|password|auth|cookie` → `<redacted: имя>`, патч файла-секрета снят целиком с сохранением имени; список слов один, `worker_tree` берёт его отсюда и держит только свою пометку `***` |
-| `agent_stage.py` | Worker spawn (`opencode run`), `collect_handoff()` |
+| `agent_stage.py` | Worker spawn (`opencode run`): один текст сборщика без `--file`, `collect_handoff()` |
 | `done_owner.py` | A27: `DONE-<id>.json` принадлежит стадии, чей отчёт он описывает — снимок до стадии и возврат байтов автора после чужой перезаписи; пробы читателя живут в `PROBES-<id>.json` |
 | `session_store.py` | R6/R7 (CTX8–CTX9): файл пары `SESSION-<todo>-<stage>.json`, захват id из sqlite opencode по точному `title` и окну `time_created` (`directory` — тай-брейк) под бюджетом 1 с, решение reused/fresh по `engine.reuse_session` |
 | `phase.py` | SMO: `detect_phase`, `get_phase_prompt`, `advance_phase` |

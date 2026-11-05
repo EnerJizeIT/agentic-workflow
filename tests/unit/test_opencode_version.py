@@ -219,8 +219,11 @@ def test_apply_standalone_inserts_after_subcommand():
 
 def _worker_project(tmp_path: Path) -> Path:
     proj = tmp_path / "proj"
-    for name in ("inbox", "outbox", "logs", "roles"):
+    for name in ("inbox", "outbox", "logs", "roles", "context"):
         (proj / ".agentic" / name).mkdir(parents=True)
+    (proj / ".agentic" / "config.yaml").write_text(
+        "stage_types:\n  dev: execute\n", encoding="utf-8"
+    )
     (proj / ".agentic" / "roles" / "developer.md").write_text("# Dev\n")
     return proj
 
@@ -269,8 +272,6 @@ def test_worker_argv_always_has_the_flag(tmp_path, monkeypatch, cfg):
     assert cmd[3:] == [
         "--auto", "--print-logs",
         "--title", "awf-developer-TODO-0001",
-        "--file", str(proj / ".agentic" / "roles" / "developer.md"),
-        "--file", str(proj / ".agentic" / "inbox" / "TODO-0001.md"),
         "--model", "p/test",
         "--", cmd[-1],
     ]
@@ -316,8 +317,11 @@ def test_supervisor_argv_v2_has_flag(tmp_path, monkeypatch):
         "awf.signal_watch.run_subprocess_until_signal", fake_run, raising=True
     )
     proj = tmp_path / "sup"
-    for d in ("inbox", "outbox", "logs", "roles"):
+    for d in ("inbox", "outbox", "logs", "roles", "context"):
         (proj / ".agentic" / d).mkdir(parents=True)
+    (proj / ".agentic" / "config.yaml").write_text(
+        "stage_types:\n  plan: plan\n", encoding="utf-8"
+    )
     (proj / ".agentic" / "roles" / "supervisor.md").write_text("# Sup\n")
     (proj / ".agentic" / "phases").mkdir()
     phases = proj / ".agentic" / "phases" / "plan.md"

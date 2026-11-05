@@ -69,9 +69,15 @@ def _owner(ctx: StageInput) -> tuple[Path | None, list[str]]:
     if rounds:
         return todo_file(ctx), rounds
     for candidate in signals.iter_review_reports(paths.outbox(ctx.project_dir), ctx.todo_id):
-        rounds = _rounds(_read(candidate))
+        text = _read(candidate).strip()
+        rounds = _rounds(text)
         if rounds:
             return candidate, rounds
+        # A plain REVIEW-REJECTED-<id>.md has no ``## REVIEW-фикс`` heading
+        # (the engine only appends one on a fix round): its body is still
+        # the reviewer's findings the replan stage must see (QA-2).
+        if text:
+            return candidate, [text]
     return None, []
 
 

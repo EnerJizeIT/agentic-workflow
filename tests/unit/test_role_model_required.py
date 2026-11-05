@@ -153,7 +153,6 @@ def test_engine_reports_missing_model_as_named_refusal(
 
     monkeypatch.setattr(pipeline_engine, "_run_agent_stage", refuse)
     monkeypatch.setattr(pipeline_engine, "_ensure_baseline_sha", lambda *a, **kw: None)
-    monkeypatch.setattr(pipeline_engine, "_resolve_prev_handoffs", lambda *a, **kw: [])
     monkeypatch.setattr(pipeline_engine, "_read_baseline_sha", lambda *a, **kw: None)
     monkeypatch.setattr(pipeline_engine, "wait_for_signal", lambda *a, **kw: None)
     monkeypatch.setattr(pipeline_engine, "_log", lambda *a, **kw: None)

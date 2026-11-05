@@ -50,6 +50,10 @@ CONFIG_YAML = (
     "models:\n"
     "  worker:\n"
     "    model: shim/model\n"
+    "stage_types:\n"
+    "  agent-implementer: execute\n"
+    "  verify: supervisor\n"
+    "  plan: plan\n"
 )
 
 # Stage declares task + input + output; the declared output IS the file

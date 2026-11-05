@@ -126,41 +126,34 @@ def test_stage_scoped_filename(tmp_path, monkeypatch):
     assert out.name == "agent-qa-review-final-TODO-0002.md"
 
 
-def test_resolve_prev_handoffs_prefers_stage_name(tmp_path):
-    from awf.agent_stage import resolve_prev_handoffs
-    from awf.pipeline import Stage
+def test_prev_block_carries_the_newest_handoff_and_links_the_older(tmp_path):
+    """IMP2b: the handoff surface is PREV/PREVLINK, not a spawn attachment."""
+    import os
 
-    proj = _project(tmp_path)
-    h = proj / ".agentic" / "handoff"
-    h.mkdir(parents=True, exist_ok=True)
-    (h / "agent-qa-review-final-TODO-0002.md").write_text("new\n", encoding="utf-8")
-    (h / "agent-qa-review-TODO-0002.md").write_text("legacy\n", encoding="utf-8")
+    from awf.stage_context import build_stage_context
 
-    stages = [
-        Stage(name="agent-qa-review-final", role="agent-qa-review", kind="execute"),
-        Stage(name="agent-implementer", role="agent-implementer", kind="execute"),
-    ]
+    proj = tmp_path / "proj"
+    for name in ("inbox", "outbox", "logs", "context", "handoff", "roles"):
+        (proj / ".agentic" / name).mkdir(parents=True)
+    (proj / ".agentic" / "config.yaml").write_text(
+        "stage_types:\n  qa: execute\n", encoding="utf-8"
+    )
+    (proj / ".agentic" / "inbox" / "TODO-0002.md").write_text(
+        "# TODO-0002\n", encoding="utf-8"
+    )
+    (proj / ".agentic" / "roles" / "agent-qa-review.md").write_text(
+        "# QA\n", encoding="utf-8"
+    )
+    older = proj / ".agentic" / "handoff" / "agent-implementer-TODO-0002.md"
+    newer = proj / ".agentic" / "handoff" / "agent-architect-review-TODO-0002.md"
+    older.write_text("OLDER-BODY\n", encoding="utf-8")
+    newer.write_text("NEWER-BODY\n", encoding="utf-8")
+    os.utime(older, (1_000_000, 1_000_000))
+    os.utime(newer, (2_000_000, 2_000_000))
 
-    got = resolve_prev_handoffs(stages, 1, proj, todo_id="TODO-0002")
+    text = build_stage_context(
+        proj, "TODO-0002", "qa", "agent-qa-review"
+    ).text
 
-    assert [p.name for p in got] == ["agent-qa-review-final-TODO-0002.md"]
-
-
-def test_resolve_prev_handoffs_legacy_fallback(tmp_path):
-    """In-flight runs from before the rename still forward their handoff."""
-    from awf.agent_stage import resolve_prev_handoffs
-    from awf.pipeline import Stage
-
-    proj = _project(tmp_path)
-    h = proj / ".agentic" / "handoff"
-    h.mkdir(parents=True, exist_ok=True)
-    (h / "agent-qa-review-TODO-0002.md").write_text("legacy\n", encoding="utf-8")
-
-    stages = [
-        Stage(name="agent-qa-review-final", role="agent-qa-review", kind="execute"),
-        Stage(name="agent-implementer", role="agent-implementer", kind="execute"),
-    ]
-
-    got = resolve_prev_handoffs(stages, 1, proj, todo_id="TODO-0002")
-
-    assert [p.name for p in got] == ["agent-qa-review-TODO-0002.md"]
+    assert "NEWER-BODY" in text
+    assert "agent-implementer-TODO-0002.md" in text

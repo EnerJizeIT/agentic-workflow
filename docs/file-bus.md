@@ -146,7 +146,7 @@ archive_todo → done/{todo_id}/ (inbox + outbox очищены)
 
 ## Stage prompt injection
 
-`build_prompt(kind, todo_id)` конструирует prompt для каждой стадии:
+`build_stage_context(...)` конструирует prompt для каждой стадии (один текст, без `--file`):
 
 - **execute:** signal contract + pipeline context
 - **plan:** plan snippet + vision injection
