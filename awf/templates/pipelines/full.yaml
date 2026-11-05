@@ -13,17 +13,20 @@ stages:
   max_retries: 3
 - name: agent-architect-review
   role: agent-architect-review
+  write_check: readonly
   task: Review the diff for design drift, dead code and 'written next to' instead
-    of correctly; fix within the unit's scope by refactoring (no new functionality);
-    findings with verdicts in DONE.
+    of correctly; findings with verdicts in DONE; findings only — do NOT edit
+    code in this stage (the fix round applies the approved refactor).
   on_blocked: escalate
   on_rejected: escalate
   on_failed: escalate
   max_retries: 3
 - name: agent-qa-review
   role: agent-qa-review
-  task: Hunt behavioral bugs in the unit's change; add or adjust tests at the right
-    level; evidence required.
+  write_check: readonly
+  task: Hunt behavioral bugs in the unit's change; findings with evidence in
+    DONE; findings only — do NOT add or edit code or tests in this stage (the
+    fix round writes them).
   on_blocked: escalate
   on_rejected: escalate
   on_failed: escalate
@@ -36,16 +39,19 @@ stages:
     `manual` вне scope, блок не править; не меняй скоуп и контракт; запусти
     `awf checklist check <todo>`; отчитайся пунктами.'
   skip_if: checklist_green
+  # A67: НЕ readonly — closer правит TODO и дерево, а `skip_if` требует off.
   write_check: 'off'
 - name: checklist-check
   id: checklist-check
   role: agent-qa-review
   session_key: agent-qa-review
+  write_check: readonly
   task: 'Проверь ТОЛЬКО дифф checklist-close: изменённые им файлы и целевые
     тесты, без полного круга; находки — обычным `## REVIEW-фикс`.'
   skip_if: checklist_close_skipped
 - name: agent-project-auditor
   role: agent-project-auditor
+  write_check: readonly
   task: 'Wide project slice around the change: portability, cross-unit inconsistencies,
     rough edges; findings list required (empty is allowed with justification).'
   on_blocked: escalate
@@ -54,6 +60,7 @@ stages:
   max_retries: 3
 - name: verify
   role: supervisor
+  write_check: readonly
   description: Supervisor verifies the result
   on_approved: commit_and_next
   on_rejected: replan

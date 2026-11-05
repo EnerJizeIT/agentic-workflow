@@ -106,6 +106,17 @@ KNOWN_GATES: frozenset[str] = frozenset(
     {"contracts", "ratchet", "instructions", "tests", "lint", "mutations"}
 )
 
+#: A67: the closed severity table of a structural finding (DONE.json
+#: ``findings: [{id, severity, file, claim}]``). The order is the ranking —
+#: ``blocker`` outranks ``major``, ``major`` outranks ``minor``. An unknown
+#: spelling is NOT a fourth value: the reader treats it as ``blocker``
+#: (closed table — unknown means stop), so a typo can never hide a finding.
+FINDING_SEVERITIES: tuple[str, ...] = ("blocker", "major", "minor")
+_SEVERITY_RANK: dict[str, int] = {
+    severity: len(FINDING_SEVERITIES) - index
+    for index, severity in enumerate(FINDING_SEVERITIES)
+}
+
 #: ``files`` is the declared touch-list: verify-pack cross-checks the git
 #: diff against it (changed-but-undeclared files are reported). FU-21 D2:
 #: it was read by verify_pack but missing here, so declaring it produced
@@ -843,6 +854,29 @@ def _json_type_name(value: object) -> str:
     return type(value).__name__
 
 
+def _findings_shape_error(value: object) -> str | None:
+    """Why *value* cannot be a findings list — or None when it can.
+
+    One rule for the DONE schema (:func:`_done_json_data_error`) and the
+    verdict reader (:func:`collect_findings`): a second copy would drift on
+    what "malformed" means, and then a file the schema accepts could reject
+    a stage (or the other way round).
+    """
+    shape = "{id, severity, file, claim}"
+    if not isinstance(value, list):
+        return (
+            f"'findings' must be a list of objects {shape}, got "
+            f"{_json_type_name(value)}"
+        )
+    for item in value:
+        if not isinstance(item, dict):
+            return (
+                f"'findings' entries must be objects {shape}, got "
+                f"{_json_type_name(item)}"
+            )
+    return None
+
+
 def _done_json_data_error(data: object) -> str | None:
     """Return the schema-violation reason for parsed data, or None when valid."""
     if not isinstance(data, dict):
@@ -883,6 +917,15 @@ def _done_json_data_error(data: object) -> str | None:
                         f"'tests_run[{key}]' must be a string, got "
                         f"{_json_type_name(item.get(key))}"
                     )
+    # A67: structural findings. The list/object shape is a schema matter; the
+    # severity VALUE is not — an unknown spelling is normalized to
+    # ``blocker`` (:func:`finding_severity`), never rejected, so a typo
+    # cannot silently downgrade a finding.
+    findings = data.get("findings")
+    if findings is not None:
+        problem = _findings_shape_error(findings)
+        if problem:
+            return problem
     notes = data.get("notes")
     if notes is not None and not isinstance(notes, str):
         return f"'notes' must be a string, got {_json_type_name(notes)}"
@@ -937,10 +980,214 @@ def parse_done_json(text: str) -> dict | None:
 
     Schema (all keys optional): ``files_changed: [str]``,
     ``tests_run: [{cmd: str, result: str}]``, ``gates: [str]``,
-    ``notes: str``, ``stage: {stage_id: str, attempt: int, role: str,
-    model: str}`` (ORCH M4.3, block and keys optional).
+    ``findings: [{id, severity, file, claim}]`` (A67 — the severity VALUE is
+    normalized by :func:`finding_severity`, an unknown spelling is
+    ``blocker``), ``notes: str``, ``stage: {stage_id: str, attempt: int,
+    role: str, model: str}`` (ORCH M4.3, block and keys optional).
     """
     return _load_done_json(text)[0]
+
+
+def finding_severity(value: object) -> str:
+    """A67: normalize a declared severity onto the closed table.
+
+    Known spellings map to themselves (case/space tolerant); everything else
+    — a typo, a missing key, a non-string — is ``blocker``. The table is
+    closed on purpose: an unknown severity must stop the stage, never slip
+    under the threshold because the reviewer used the wrong word.
+    """
+    if isinstance(value, str):
+        candidate = value.strip().lower()
+        if candidate in FINDING_SEVERITIES:
+            return candidate
+    return "blocker"
+
+
+def findings_worst(findings: object) -> str:
+    """The highest severity among *findings* (``""`` when there are none)."""
+    worst = ""
+    if not isinstance(findings, list):
+        return worst
+    for item in findings:
+        if not isinstance(item, dict):
+            continue
+        severity = finding_severity(item.get("severity"))
+        if not worst or _SEVERITY_RANK[severity] > _SEVERITY_RANK[worst]:
+            worst = severity
+    return worst
+
+
+def severity_rank(value: object) -> int:
+    """Rank of a severity spelling; unknown spellings rank as ``blocker``."""
+    return _SEVERITY_RANK[finding_severity(value)]
+
+
+def finding_line(item: dict) -> str:
+    """A67: one finding as one line — id, severity, address, claim.
+
+    The ONE spelling for the handoff's machine facts and the fix round: a
+    reviewer's finding must reach the next implementer with its address, not
+    as a count.
+    """
+    fid = str(item.get("id") or "?").strip() or "?"
+    severity = finding_severity(item.get("severity"))
+    where = str(item.get("file") or "").strip()
+    claim = " ".join(str(item.get("claim") or "").split())
+    head = f"{fid} [{severity}]"
+    if where:
+        head += f" `{where}`"
+    return f"{head} — {claim}" if claim else head
+
+
+def findings_lines(findings: list) -> list[str]:
+    """A67: *findings* as markdown bullets (the fix-round work list)."""
+    return [
+        f"- {finding_line(item)}"
+        for item in findings
+        if isinstance(item, dict)
+    ]
+
+
+def mtime_is_fresh(mtime: float, since: float | None) -> bool:
+    """Is *mtime* at or after *since*? Whole-second resolution (AUD04-04).
+
+    The convention named once, so the declared-output check and the
+    claims-file reader cannot drift on what "fresh" means: mtime granularity
+    can be one second, so a file written in the stage's start second is this
+    stage's work. ``since=None`` means "no freshness rule".
+    """
+    return since is None or int(mtime) >= int(since)
+
+
+def claims_file_is_fresh(path: Path, since: float | None) -> bool:
+    """Was *path* written at or after *since*? Whole-second resolution.
+
+    ``since=None`` means "no freshness rule" — a caller without a stage
+    start takes every file, and does not even need it to exist.
+    """
+    if since is None:
+        return True
+    try:
+        return mtime_is_fresh(path.stat().st_mtime, since)
+    except OSError:
+        return False
+
+
+def merge_findings(*groups: list) -> list[dict]:
+    """A67: union of findings by ``id``; a duplicate keeps the HIGHER severity.
+
+    The reviewer may report into both its ``DONE`` report and its ``PROBES``
+    claims file. Neither may overwrite the other: findings are merged, and a
+    finding repeated under the same id is counted once — at the stronger
+    severity (a typo must not downgrade it). Findings without an id cannot be
+    matched, so they are all kept.
+    """
+    merged: list[dict] = []
+    by_id: dict[str, int] = {}
+    for group in groups:
+        if not isinstance(group, list):
+            continue
+        for item in group:
+            if not isinstance(item, dict):
+                continue
+            fid = str(item.get("id") or "").strip()
+            if fid and fid in by_id:
+                index = by_id[fid]
+                if severity_rank(item.get("severity")) > severity_rank(
+                    merged[index].get("severity")
+                ):
+                    merged[index] = item
+                continue
+            if fid:
+                by_id[fid] = len(merged)
+            merged.append(item)
+    return merged
+
+
+def _claims_data(
+    outbox: Path, todo_id: str, prefix: str, since: float | None
+) -> dict | None:
+    """One claims file as parsed data, or ``None`` when it is not usable."""
+    path = find_signal_file(outbox, prefix, todo_id, ".json")
+    if path is None or not claims_file_is_fresh(path, since):
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError):
+        # A broken claims file is not a finding: the handoff already reports
+        # DONE-json=invalid and the stage keeps its own signal.
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def findings_of(data: dict | None) -> list[dict]:
+    """The findings of one claims file (malformed block → one blocker).
+
+    The ONE reader of a ``findings`` block: the verdict and A27's
+    ``done_owner.restore`` both use it, so a file the schema rejects cannot
+    lose its finding on one path and keep it on the other.
+    """
+    if not isinstance(data, dict):
+        return []
+    found = data.get("findings")
+    if found is None:
+        return []
+    if _findings_shape_error(found):
+        # Closed table: a malformed findings block is "unknown", and unknown
+        # stops. Silently passing it would let a typo hide a finding the
+        # reviewer did report.
+        return [{"severity": "blocker", "claim": "malformed findings block"}]
+    return list(found)
+
+
+def stage_owner(data: dict | None) -> str:
+    """``stage.stage_id`` of a claims file, or ``""`` when it proves nothing.
+
+    The ONE reader of "who wrote this file": the verdict (DONE ∪ PROBES) and
+    ``done_owner.restore`` both ask here, so the ownership rule cannot drift
+    between the file that is put back and the file that is judged.
+    """
+    if not isinstance(data, dict):
+        return ""
+    stage = data.get("stage")
+    if not isinstance(stage, dict):
+        return ""
+    return str(stage.get("stage_id") or "").strip()
+
+
+def collect_findings(
+    outbox: Path, todo_id: str, *, since: float | None = None
+) -> list[dict]:
+    """A67: findings of the stage that just ran — DONE ∪ PROBES.
+
+    Both files are merged, never "last one wins": a reviewer that writes its
+    findings into ``DONE`` and its facts into ``PROBES`` (A27 sends the
+    reader's facts there) must not lose the findings, and an empty PROBES
+    must not zero out a DONE report.
+
+    The one exception is ownership. A27 restores the AUTHOR's ``DONE`` after
+    a reader rewrote it, and the restore stamps the reader's stage id onto
+    PROBES. When both files carry an owner and the owners differ, DONE is the
+    author's restored file — its findings are not this stage's verdict (a
+    restored file has a fresh mtime, so freshness alone cannot tell them
+    apart). A legacy file without a stage block keeps the old behaviour.
+
+    A missing, unreadable or stale file contributes nothing; a malformed
+    ``findings`` block counts as one ``blocker`` (the closed-table "unknown
+    stops" rule). An absent or explicitly ``null`` field means "no findings".
+
+    ``since`` (a wall-clock start) drops files older than the current stage —
+    a previous stage's claims must not decide this stage's verdict.
+    """
+    probes = _claims_data(outbox, todo_id, "PROBES", since)
+    done = _claims_data(outbox, todo_id, "DONE", since)
+    probes_owner = stage_owner(probes)
+    done_owner_id = stage_owner(done)
+    done_findings = findings_of(done)
+    if probes_owner and done_owner_id and probes_owner != done_owner_id:
+        # DONE is the restored author's file, not this stage's report.
+        done_findings = []
+    return merge_findings(findings_of(probes), done_findings)
 
 
 def render_done_json(data: dict) -> list[str]:
@@ -956,6 +1203,17 @@ def render_done_json(data: dict) -> list[str]:
         lines.append("- tests_run:")
         for item in tests_run:
             lines.append(f"  - `{item['cmd']}` → {item['result']}")
+    findings = data.get("findings")
+    if findings:
+        worst = findings_worst(findings)
+        lines.append(
+            f"- findings: {len(findings)} (worst: {worst or 'unknown'})"
+        )
+        # A2: the fix round reads this block — one line per finding with the
+        # address and the claim, so the next implementer fixes a fact, not a
+        # summary count.
+        for item in findings:
+            lines.append(f"  - {finding_line(item)}")
     gates = data.get("gates")
     if gates:
         lines.append(f"- gates: {', '.join(gates)}")
@@ -1066,6 +1324,7 @@ def collect_done_facts(
 
 __all__ = [
     "KNOWN_GATES",
+    "FINDING_SEVERITIES",
     "parse_todo_contract",
     "check_pipeline_name",
     "check_replan_for",
@@ -1074,6 +1333,17 @@ __all__ = [
     "inject_replan_for",
     "replan_for_of",
     "parse_done_json",
+    "finding_severity",
+    "findings_of",
+    "findings_worst",
+    "severity_rank",
+    "stage_owner",
+    "finding_line",
+    "findings_lines",
+    "merge_findings",
+    "mtime_is_fresh",
+    "claims_file_is_fresh",
+    "collect_findings",
     "render_done_json",
     "render_stage_facts",
     "collect_done_facts",

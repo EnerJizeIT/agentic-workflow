@@ -334,6 +334,7 @@ _RULES_TEXT = """## Правила
 
 _OUTPUT_TEXT = """## Контракт вывода
 - DONE: `.agentic/outbox/DONE-<todo>.md` + пустой `.ready`; `.json` — files_changed, tests_run, gates;
+- findings (ревью) в `DONE-<todo>.json` или `PROBES-<todo>.json`: `[{id, severity: blocker|major|minor, file, claim}]`; нет поля — находок нет; severity вне трёх значений = blocker;
 - BLOCKED: `.agentic/outbox/BLOCKED-<todo>.md` с причиной + `.ready`;
 - REVIEW: секция `## REVIEW-фикс` с находками;
 - молчание: провал."""

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -880,14 +881,46 @@ def _rollback_budget_allow(
 FIX_ROUND_MAX_CHARS = 6000
 
 
-def _fix_round_text(project_dir: Path, todo_id: str, source_stage: str) -> str:
+def _findings_text(
+    project_dir: Path, todo_id: str, since: float | None = None
+) -> str:
+    """A67 (A2): the structured findings as the fix round's work list.
+
+    The reviewer reports into ``DONE`` and/or its own ``PROBES`` (A27); the
+    verdict reader unions both, so this is exactly what the stage reported —
+    id, severity, address and claim, one line each. ``since`` is the review
+    stage's start: the author's restored DONE (A27) is older and must not
+    become the reviewer's work list (A5). An empty result is an honest "no
+    structural findings".
+    """
+    findings = _unit_contract.collect_findings(
+        paths.outbox(project_dir), todo_id, since=since
+    )
+    if not findings:
+        return ""
+    return "\n".join([
+        # A27: the claims file may be PROBES (the reader's own) — naming
+        # DONE.json here would point the implementer at the author's file.
+        "## Находки ревью (`findings`)",
+        *_unit_contract.findings_lines(findings),
+    ])
+
+
+def _fix_round_text(
+    project_dir: Path, todo_id: str, source_stage: str,
+    since: float | None = None,
+) -> str:
     """The findings that become the next fix round — reviewer's own words.
 
     Order: the stage's REVIEW-<todo>.md (the worker's verdict artifact), then
-    the stage handoff (engine facts + the role's report). A missing pair is
-    an honest empty body: the caller then declines the round instead of
-    rewinding a worker with no instruction.
+    the stage handoff (engine facts + the role's report). The structured
+    ``findings`` block goes FIRST (A67/A2): without it a reviewer that
+    reported only in ``DONE.json`` handed the implementer a summary count.
+
+    A missing pair is an honest empty body: the caller then declines the
+    round instead of rewinding a worker with no instruction.
     """
+    findings_block = _findings_text(project_dir, todo_id, since=since)
     candidates = []
     review = find_review_report(paths.outbox(project_dir), todo_id)
     if review is not None:
@@ -901,8 +934,9 @@ def _fix_round_text(project_dir: Path, todo_id: str, source_stage: str) -> str:
         except OSError:
             continue
         if text:
-            return text[:FIX_ROUND_MAX_CHARS]
-    return ""
+            body = f"{findings_block}\n\n{text}" if findings_block else text
+            return body[:FIX_ROUND_MAX_CHARS]
+    return findings_block[:FIX_ROUND_MAX_CHARS]
 
 
 def _handle_fix_round(
@@ -912,6 +946,7 @@ def _handle_fix_round(
     current_todo: str,
     target: str,
     source: str = "",
+    since: float | None = None,
 ) -> tuple[int, str, int]:
     """A7: reviewer's findings → an appended section → the same unit again.
 
@@ -938,7 +973,7 @@ def _handle_fix_round(
     # budget still runs before the append on purpose — a refusal after it
     # would leave the section in the TODO with no rewind (the half-loop the
     # docstring forbids).
-    findings = _fix_round_text(project_dir, current_todo, source)
+    findings = _fix_round_text(project_dir, current_todo, source, since=since)
     if not findings:
         print(
             "ERROR: fix_round has no findings to hand back — the stage "
@@ -996,6 +1031,7 @@ def _handle_rejected(
     stage_idx: int,
     target: str = "",
     allow_escalate: bool = False,
+    since: float | None = None,
 ) -> tuple[int, str, int] | None:
     """A32: a rejected stage inside a live unit never creates a unit.
 
@@ -1036,7 +1072,7 @@ def _handle_rejected(
         return -1, current_todo, 1
     new_idx, new_todo, exit_code = _handle_fix_round(
         project_dir, logs_dir, stages, current_todo, fix_target,
-        source=stage.name,
+        source=stage.name, since=since,
     )
     return new_idx, new_todo, exit_code
 
@@ -1051,6 +1087,7 @@ def _maybe_rewind_rejection(
     sig_type: str,
     target: str = "",
     allow_escalate: bool = False,
+    since: float | None = None,
 ) -> tuple[int, str, int] | None:
     """A32: the ONE decision "a refusal rewinds the same unit".
 
@@ -1066,6 +1103,90 @@ def _maybe_rewind_rejection(
     return _handle_rejected(
         project_dir, logs_dir, stages, current_todo,
         stage, stage_idx, target=target, allow_escalate=allow_escalate,
+        since=since,
+    )
+
+
+# ─── review findings verdict (A67) ──────────────────────────────────────
+
+
+def review_family(stage: Stage, config: dict) -> str:
+    """A67: the stage's family (``reviewer``/``supervisor``/…).
+
+    ``stage_types`` wins when the project declares it; a bare test config or
+    a broken table falls back to the role rule — a review stage must not stop
+    being a review stage because the table is missing.
+    """
+    from .stage_context_types import StageTypeError, family_for_stage, resolve
+
+    try:
+        family, _row = resolve(config, stage.name, stage.role, warn=False)
+        return family
+    except StageTypeError:
+        return family_for_stage(stage.name, stage.role)
+
+
+def review_findings_rejected(
+    findings: list,
+    *,
+    threshold: str = cfg_mod.DEFAULT_FINDINGS_THRESHOLD,
+    review_present: bool = False,
+) -> bool:
+    """A67: does the review stage reject the unit?
+
+    The verdict is the worst of two inputs: a ``REVIEW-<todo>.md`` file
+    exists (the current behavior), or the worst structural finding reaches
+    the configured threshold. No findings and no report — the stage passes.
+    """
+    if review_present:
+        return True
+    worst = _unit_contract.findings_worst(findings)
+    if not worst:
+        return False
+    return (
+        _unit_contract.severity_rank(worst)
+        >= _unit_contract.severity_rank(threshold)
+    )
+
+
+def _review_stage_rejects(
+    project_dir: Path, todo_id: str, config: dict, since: float | None = None
+) -> bool:
+    """A67: the findings/REVIEW verdict for the current unit.
+
+    ``since`` (the stage's wall-clock start) keeps a previous stage's claims
+    out of this verdict: a stale PROBES/DONE or a leftover REVIEW report is
+    not this stage's word. Freshness follows the AUD04-04 whole-second
+    convention (:func:`unit_contract.claims_file_is_fresh`), the same one the
+    declared-output check uses.
+    """
+    outbox = paths.outbox(project_dir)
+    report = find_review_report(outbox, todo_id)
+    fresh_report = (
+        report is not None
+        and _unit_contract.claims_file_is_fresh(report, since)
+    )
+    return review_findings_rejected(
+        _unit_contract.collect_findings(outbox, todo_id, since=since),
+        threshold=cfg_mod.findings_threshold(config),
+        review_present=fresh_report,
+    )
+
+
+def _findings_reject(
+    project_dir: Path, todo_id: str, config: dict, since: float | None = None
+) -> bool:
+    """A67: findings only — the review-report check belongs to the caller.
+
+    The supervisor stage has its own REVIEW detection
+    (``supervisor._detect_supervisor_signal``); re-reading the file here
+    would turn an ignored stale report into a rejection.
+    """
+    return review_findings_rejected(
+        _unit_contract.collect_findings(
+            paths.outbox(project_dir), todo_id, since=since
+        ),
+        threshold=cfg_mod.findings_threshold(config),
     )
 
 
@@ -1520,10 +1641,10 @@ def _declared_output_problem(
     if not p.is_file():
         return f"declared output '{output}' does not exist"
     try:
-        mtime = int(p.stat().st_mtime)
+        mtime = p.stat().st_mtime
     except OSError:
         return f"declared output '{output}' is not readable"
-    if mtime < int(stage_start_wall):
+    if not _unit_contract.mtime_is_fresh(mtime, stage_start_wall):
         return (
             f"declared output '{output}' is stale "
             f"(last modified before this stage started)"
@@ -1628,6 +1749,8 @@ def execute_supervisor_stage(
     """
     s_name = stage.name
     s_kind = stage.kind
+    # A67: the start of THIS stage — the freshness anchor for its findings.
+    stage_start_wall = time.time()
 
     # TODO-0262: a unit that used up its review-pass budget does not enter
     # verify at all — the BUDGET note goes to the owner and the pipeline
@@ -1742,16 +1865,50 @@ def execute_supervisor_stage(
             _log(logs_dir, "verify: empty supervisor signal — pipeline aborted")
             return current_todo, 0, 1
 
+        # A67: structured findings are a verdict too. Above the configured
+        # threshold the verify stage takes its own rejection path — the same
+        # REVIEW branch below, no new route.
+        findings_rejection = False
+        if not sup_signal.startswith("REVIEW-") and _findings_reject(
+            project_dir, current_todo, config, since=stage_start_wall
+        ):
+            findings_rejection = True
+            print(
+                "verify: findings reach the review threshold — rejecting.",
+                file=sys.stderr,
+            )
+            _log(logs_dir, "A67: verify rejected by findings verdict")
+
         # U6b: record the acceptance BEFORE the cycle acts on it — the commit
         # gate and the replan live inside the kill window, so the record must
         # already be in state when they start. A kill before the consumption
         # below then leaves a file the next verify can recognize as stale.
         _record_verify_decision(project_dir, current_todo, sup_signal, logs_dir)
 
-        if sup_signal.startswith("REVIEW-"):
+        if findings_rejection:
+            # A4: keep the "rejected" marker the next supervisor context
+            # reads, but record and consume the REAL decision file (ACK/
+            # APPROVE) that the findings verdict replaced — a live approval
+            # must not survive into a retry, where stale findings would let
+            # it commit.
+            _write_state(
+                project_dir,
+                last_signal=f"REVIEW-{current_todo}",
+                logs_dir=logs_dir,
+            )
+
+        if sup_signal.startswith("REVIEW-") or findings_rejection:
             rejected_todo = current_todo  # AUD04-04: the REVIEW belongs to THIS todo
-            print(f"Supervisor REJECTED work on {current_todo} (REVIEW signal).", file=sys.stderr)
-            _log(logs_dir, f"C1: verify rejected via REVIEW-{current_todo} — replanning")
+            reason = (
+                "REVIEW signal"
+                if sup_signal.startswith("REVIEW-")
+                else "findings verdict"
+            )
+            print(
+                f"Supervisor REJECTED work on {current_todo} ({reason}).",
+                file=sys.stderr,
+            )
+            _log(logs_dir, f"C1: verify rejected via {reason} — replanning")
             # RUN5 #1 (leak-gate): the REVIEW-signal path rejects without
             # api.reject_commit — snapshot the attempt's untracked files
             # here too (best-effort, never fails the cycle).
@@ -1896,8 +2053,6 @@ def _handle_net_death(
     way — scheduled means the next net round, exhausted means the
     failure path.
     """
-    import time as _time
-
     from . import _net
     from .pipeline_state import write_state as _ws
 
@@ -1936,11 +2091,11 @@ def _handle_net_death(
         )
         # B2: the backoff pause is downtime — the endpoint is down, no work
         # can happen until it recovers.
-        backoff_start = _time.monotonic()
-        _time.sleep(backoff)
+        backoff_start = time.monotonic()
+        time.sleep(backoff)
         from . import run_state as _run_state
         _run_state.add_downtime(
-            project_dir, _time.monotonic() - backoff_start,
+            project_dir, time.monotonic() - backoff_start,
             reason=f"net-backoff:{todo_id}:{s_name}", logs_dir=logs_dir,
             # ORCH M5.2: land in the run that owns this stage — a service
             # run's backoff must not rewrite the main run.yaml.
@@ -2079,9 +2234,20 @@ def _stage_allowlist(stage: Stage) -> tuple[str, ...]:
     ``write_check: off`` — carried by the awf-generated service run, whose
     worker writes the role candidate AND project files (see
     ``_write_service_pipeline``). There is no implicit bypass.
+
+    A67: ``write_check: readonly`` fences a review stage to its own reports:
+    the allowlist is exactly ``.agentic/outbox/`` + ``.agentic/context/``.
+    A write anywhere else is the usual BLOCKED stage, no commit.
+
+    The allowlist is consulted by the execute-stage loop only. A supervisor
+    stage (``verify``) has no manifest — it writes its decision into
+    ``inbox/`` — so ``readonly`` there is declarative, not enforced.
     """
-    if str(stage.write_check or "").strip().lower() == "off":
+    mode = str(stage.write_check or "").strip().lower()
+    if mode == "off":
         return ()
+    if mode == "readonly":
+        return (".agentic/outbox/", ".agentic/context/")
     if not stage.output and not stage.write_allow:
         return ()
     allowed: list[str] = []
@@ -2633,8 +2799,6 @@ def execute_agent_stage(
     - new_stage_idx: next stage index (may jump for rollback/escalate)
     - exit_code: 0 = success, 1 = stop pipeline
     """
-    import time as _time
-
     from .pipeline_state import write_state as _ws
 
     s_name = stage.name
@@ -2643,7 +2807,7 @@ def execute_agent_stage(
     # ORCH M3.2: this stage entry's wall-clock start — the freshness
     # reference for the declared-output check (a leftover from a previous
     # stage/run is older and does not count as this stage's work).
-    stage_start_wall = _time.time()
+    stage_start_wall = time.time()
 
     if not current_todo:
         current_todo = _find_active_todo(project_dir)
@@ -2829,8 +2993,7 @@ def execute_agent_stage(
     for _net_round in net_rounds:
         net_retry_scheduled = False
         for attempt_no in range(MAX_SILENT_RETRIES + 1):
-            import time as _time
-            agent_start = _time.monotonic()
+            agent_start = time.monotonic()
             retry_note = pending_note
             pending_note = None
             worker_run += 1
@@ -2928,7 +3091,7 @@ def execute_agent_stage(
                     _log(logs_dir, f"Agent stage {s_name} failure reason: {reason}")
                 _log(logs_dir, f"Pipeline stopped at stage {s_name}: {e}")
                 return current_todo, stage_idx, 1
-            agent_elapsed = _time.monotonic() - agent_start
+            agent_elapsed = time.monotonic() - agent_start
 
             signal = read_signal_for_todo(outbox, current_todo, *prefixes)
 
@@ -3083,8 +3246,7 @@ def execute_agent_stage(
         # prompt is the measurable part of the salvage handling (log
         # classification, git diff collection, prompt write). The worker's
         # own run above was real work time and is NOT counted.
-        import time as _time
-        salvage_detect = _time.monotonic()
+        salvage_detect = time.monotonic()
         print(f"WARNING: No signal after agent stage '{s_name}'.", file=sys.stderr)
         # A12 (BD-31): the retry budget is spent, but the question is the
         # same one the retry line answers — name the signal the engine
@@ -3108,7 +3270,7 @@ def execute_agent_stage(
         # B2: the salvage window is over — the prompt is written.
         from . import run_state as _run_state
         _run_state.add_downtime(
-            project_dir, _time.monotonic() - salvage_detect,
+            project_dir, time.monotonic() - salvage_detect,
             reason=f"salvage:{current_todo}:{s_name}", logs_dir=logs_dir,
             # ORCH M5.2: land in the run that owns this stage — a service
             # run's salvage window must not rewrite the main run.yaml.
@@ -3325,6 +3487,28 @@ def execute_agent_stage(
             sig_type = verdict
             auto_rollback = True
 
+    # A67: a review stage's structured findings are its verdict — above the
+    # configured threshold the stage is rejected through its own
+    # ``on_rejected`` policy (usually ``fix_round:<author>``). No new route:
+    # the verdict only picks the signal type; the resolver owns the policy.
+    if (
+        not auto_rollback
+        and sig_type in ("done", "approved")
+        and review_family(stage, config) in ("reviewer", "supervisor")
+        and _review_stage_rejects(
+            project_dir, current_todo, config, since=stage_start_wall
+        )
+    ):
+        print(
+            f"Stage '{s_name}': findings reach the review threshold — "
+            "routing as rejected (stage on_rejected)."
+        )
+        _log(
+            logs_dir,
+            f"A67: stage {s_name} rejected by findings/REVIEW verdict",
+        )
+        sig_type = "rejected"
+
     action, target = resolve_transition(stage, sig_type)
     # S14: a BLOCKED readiness report is an automatic rewind to the AUTHOR
     # who owns the finding (requirements or architecture) — the policy
@@ -3369,6 +3553,7 @@ def execute_agent_stage(
         rewind = _maybe_rewind_rejection(
             project_dir, logs_dir, stages, current_todo,
             stage, stage_idx, sig_type, target=target,
+            since=stage_start_wall,
         )
         if rewind is not None:
             new_idx, new_todo, exit_code = rewind
@@ -3382,7 +3567,7 @@ def execute_agent_stage(
     elif action == "fix_round":
         new_idx, new_todo, exit_code = _handle_fix_round(
             project_dir, logs_dir, stages, current_todo, target,
-            source=s_name,
+            source=s_name, since=stage_start_wall,
         )
         return new_todo, new_idx, exit_code
 
@@ -3411,6 +3596,7 @@ def execute_agent_stage(
             # A declared but missing target is a broken pipeline, not a
             # refusal rule — NEG-2 keeps the supervisor fallback for it.
             allow_escalate=bool(target) and not target_exists,
+            since=stage_start_wall,
         )
         if rewind is not None:
             new_idx, new_todo, exit_code = rewind
