@@ -550,8 +550,22 @@ def awf_subprocess_env(
     as ``AWF_STAGE_ANCHOR`` so the stage-exit reap can recognize the whole
     tree, including children that ``setsid`` out of the worker's group. No
     anchor → the env is unchanged.
+
+    A69 (TODO-0396): opencode derives the session directory from ``PWD``, not
+    from the spawn's cwd — an inherited ``PWD`` put every stage in the
+    directory the engine was started from (usually ``$HOME``). With a
+    project, ``PWD`` and ``OLDPWD`` are that project; without one they are
+    left as inherited (callers that spawn no project keep the old env).
     """
     env = os.environ.copy()
+
+    # A69: PWD is the one key opencode reads for the session directory.
+    # Both keys come from one string: opencode chdir's to PWD and reports
+    # it as the session directory, so PWD and OLDPWD must never drift apart.
+    if project_dir is not None:
+        project = str(project_dir)
+        env["PWD"] = project
+        env["OLDPWD"] = project
 
     # KAUD-5: Start from user's config, then merge our overrides
     user_config: dict = {}
