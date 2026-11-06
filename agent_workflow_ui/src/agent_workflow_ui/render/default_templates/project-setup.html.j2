@@ -832,6 +832,12 @@ optional_data_keys: []
           '  role: supervisor',
           '  description: Supervisor studies the plan and creates a TODO'
         ];
+        // Mirror — held by the test
+        // (test_setup_preview_closer_matches_build_pipeline_stages). The
+        // server writes these stages from awf.api.setup._closer_stage /
+        // _check_stage; the browser has no stage data to build from, so the
+        // literal below is the one manual copy. Any field added to either
+        // builder must land here too.
         var closerLines = [
           '- name: checklist-close',
           '  role: agent-implementer',
@@ -848,7 +854,8 @@ optional_data_keys: []
           "  task: 'Проверь ТОЛЬКО дифф checklist-close: изменённые им файлы и целевые тесты,",
           "    без полного круга; находки — обычным `## REVIEW-фикс`.'",
           '  session_key: agent-qa-review',
-          '  skip_if: checklist_close_skipped'
+          '  skip_if: checklist_close_skipped',
+          '  write_check: readonly'
         ];
         // The closer goes after the last writing stage: trailing
         // findings-only roles (``_POST_CLOSER_ROLES`` in awf.api.setup)
