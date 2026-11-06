@@ -50,6 +50,14 @@ from .pipeline import create_baseline
 #: (the rest as "…N more") — the same cap convention as the untracked one.
 _DIRTY_WARNING_CAP = 10
 
+#: A70: the hard ceiling on a unit's declared touch-list (``files:`` in the
+#: TODO contract). More than that is not a unit but a stage: the dispatch is
+#: refused BEFORE anything is written (no journal, no TODO, no baseline, no
+#: ``.ready``). Deliberately a constant, not a config key — this is
+#: discipline, not a setting, and it must not be relaxed by a flag. The split
+#: axis is the module: each unit ≤12 paths and one meaning.
+MAX_UNIT_FILES = 12
+
 #: TODO-0261 (RB-4): the dispatch-time baseline is a SMOKE snapshot, not a
 #: gate. It gets its own timeout so a hanging test command cannot hold the
 #: dispatch (the incident: a second dispatch hung on baseline tests, was
@@ -853,7 +861,11 @@ def _insert_after_title(content: str, block: str) -> str:
 
 
 _SIZE_REQUIREMENTS_LIMIT = 6
-_SIZE_FILES_LIMIT = 12
+#: The soft warning below shares the NUMBER with the hard guard, not the
+#: surface: it counts backticked paths in the «Границы» block (a heuristic),
+#: while the guard counts ``files:`` ∪ adopted paths. One number for the
+#: discipline, two deliberately different measurements.
+_SIZE_FILES_LIMIT = MAX_UNIT_FILES
 
 
 def unit_size_warning(content: str) -> str:
@@ -892,6 +904,89 @@ def unit_size_warning(content: str) -> str:
             f"block (>{_SIZE_FILES_LIMIT}) — split it before dispatch"
         )
     return ""
+
+
+def _unique_paths(raw_paths) -> list[str]:
+    """The paths of a contract/adopted list, first-seen, duplicates dropped."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in raw_paths or []:
+        path = str(raw).strip()
+        if path and path not in seen:
+            seen.add(path)
+            out.append(path)
+    return out
+
+
+def _unit_volume(
+    contract: dict | None,
+    adopted: set[str],
+    *,
+    carry_over_files: list[str],
+    include_files: list[str],
+    claimed_files: list[str],
+    carry_over_from: str | None = None,
+    claim_from: str | None = None,
+) -> tuple[int, int, str]:
+    """A70: the unit's work surface — declared ``files:`` ∪ the adopted paths.
+
+    ``adopted`` is the SAME set the dirty-tree policy already owns (the code
+    and finding transfer channels): a new transfer channel joins it once and
+    the gate sees it without a second union to keep in sync. The three lists
+    are read ONLY for the message's per-channel breakdown, never for the
+    count. Returns ``(total, declared, sources)``.
+    """
+    declared = _unique_paths((contract or {}).get("files"))
+    seen = set(declared)
+    notes: list[str] = []
+
+    def _adopt(paths: list[str], label: str) -> None:
+        fresh = [p for p in _unique_paths(paths) if p not in seen]
+        seen.update(fresh)
+        if fresh:
+            notes.append(f"{len(fresh)} {label}")
+
+    _adopt(carry_over_files, f"перенесено из {carry_over_from}")
+    _adopt(include_files, "включено из untracked")
+    _adopt(claimed_files, f"принято из {claim_from}")
+    total = set(declared) | set(adopted)
+    unattributed = len(total) - len(seen)
+    if unattributed > 0:
+        # A future channel added to ``adopted`` but not to the breakdown
+        # above: the count is right, the text says how much is unaccounted.
+        notes.append(f"{unattributed} из других принятых путей")
+    return len(total), len(declared), ", ".join(notes)
+
+
+def _refuse_oversized_unit(
+    todo_id: str, total: int, declared: int, sources: str
+) -> None:
+    """A70: refuse a unit whose work surface exceeds ``MAX_UNIT_FILES``.
+
+    Raises BEFORE any side effect. The message prints the numbers and the
+    split axis — never a vague "too many files". A unit whose volume comes
+    only from the declared list shows the TODO's canonical one-liner; a unit
+    that also adopted paths says so instead of calling carried paths
+    "declared".
+    """
+    if total == declared:
+        head = (
+            f"dispatch refused: {todo_id} declares {declared} files "
+            f"(limit {MAX_UNIT_FILES})."
+        )
+    else:
+        head = (
+            f"dispatch refused: {todo_id} declares {declared} files; adopted "
+            f"paths bring the unit to {total} (limit {MAX_UNIT_FILES})."
+        )
+    lines = [head]
+    if sources:
+        lines.append(f"Дополнительно: {sources}.")
+    lines.append(
+        f"Разбей на юниты по модулям: каждый ≤{MAX_UNIT_FILES} путей и один смысл."
+    )
+    lines.append("Объём виден заранее — это защита от стадии длиной в 358 минут.")
+    raise AwfApiError("\n".join(lines))
 
 
 def _next_todo_id(project_dir: Path) -> str:
@@ -1095,7 +1190,10 @@ def dispatch_todo(
             not exist or is closed as done (TODO-0213), the dirty-source-tree
             policy is ``require_clean`` and the tree is dirty (R2.2), or
             ``claim_from`` has no applied claim / its confirmed plan is
-            invalidated by a later tree change (R2.2).
+            invalidated by a later tree change (R2.2), or the unit's work
+            surface (the contract's ``files:`` plus every adopted path:
+            ``carry_over_from`` / ``include_untracked`` / ``claim_from``)
+            exceeds ``MAX_UNIT_FILES`` (A70).
     """
     if not content or not content.strip():
         raise AwfApiError("content is required (non-empty TODO body)")
@@ -1359,6 +1457,28 @@ def dispatch_todo(
     elif not is_valid_todo_id(todo_id):
         raise AwfApiError(
             f"invalid todo_id '{todo_id}' — expected format 'TODO-NNNN' (4+ digits)"
+        )
+
+    # A70: the volume ceiling. A unit that declares more than MAX_UNIT_FILES
+    # paths is a stage, not a unit — refuse BEFORE any side effect (no
+    # journal, no TODO, no baseline, no ``.ready``; no half-dispatch). The
+    # id is resolved already only because the message names the unit; that
+    # resolution is read-only, so a refusal leaves the counter untouched.
+    # The surface is the declared ``files:`` ∪ ``adopted`` — the SAME set the
+    # dirty-tree policy already uses, so a transfer channel joins it in one
+    # place and the gate cannot miss it.
+    unit_volume, declared_files, volume_sources = _unit_volume(
+        _contract,
+        adopted,
+        carry_over_files=carry_over_files,
+        include_files=include_files,
+        claimed_files=claimed,
+        carry_over_from=(str(carry_over_from).strip() if carry_over_from else None),
+        claim_from=(str(claim_from).strip() if claim_from else None),
+    )
+    if unit_volume > MAX_UNIT_FILES:
+        _refuse_oversized_unit(
+            todo_id, unit_volume, declared_files, volume_sources
         )
 
     # REPORTS26 F5: an explicit id + a foreign number in the title heading
