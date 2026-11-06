@@ -155,12 +155,12 @@ def test_recommended_waiting_is_wait_not_sleep(tmp_path):
     assert "--status" not in role
 
 
-def test_wait_force_reruns_instead_of_serving_the_cache(tmp_path):
-    """``--force --wait`` means rerun: the old verdict must not answer it.
+def test_wait_force_refuses_a_second_run_on_an_unchanged_tree(tmp_path):
+    """A75: ``--force`` больше не обход кэша на том же дереве.
 
-    Without this, a caller that asked for a fresh run reads yesterday's exit
-    code as if the rerun had produced it — the silent-wrong-answer shape of
-    the bug.
+    Раньше ``--force --wait`` молча перезапускал сьют; теперь это отказ 2 с
+    путём готового артефакта, а перезапуск — только после удаления артефакта
+    (или изменения дерева). Иначе один прогон на дерево не докажешь.
     """
     ticks = tmp_path / "ticks"
     project = _project(tmp_path, f"echo tick >> {ticks}; echo hello")
@@ -174,9 +174,15 @@ def test_wait_force_reruns_instead_of_serving_the_cache(tmp_path):
     assert ticks.read_text(encoding="utf-8").count("tick") == 1
 
     forced = _run(project, "--force", "--wait")
-    assert forced.returncode == 0, forced.stdout + forced.stderr
-    assert "started" in forced.stdout
-    assert "cached" not in forced.stdout
+    assert forced.returncode == 2, forced.stdout + forced.stderr
+    assert "полный прогон на это дерево уже есть" in forced.stderr
+    assert ticks.read_text(encoding="utf-8").count("tick") == 1
+
+    artifact = next(_context(project).glob("SUITE-*.json"))
+    artifact.unlink()
+    rerun = _run(project, "--force", "--wait")
+    assert rerun.returncode == 0, rerun.stdout + rerun.stderr
+    assert "started" in rerun.stdout
     assert ticks.read_text(encoding="utf-8").count("tick") == 2
 
 
