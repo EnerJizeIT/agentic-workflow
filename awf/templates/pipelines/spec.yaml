@@ -74,6 +74,7 @@ stages:
   max_retries: 3
 - name: verify
   role: supervisor
+  write_check: readonly
   description: Supervisor verifies the spec package and approves it
   on_approved: commit_and_next
   on_rejected: replan

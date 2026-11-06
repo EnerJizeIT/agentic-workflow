@@ -10,6 +10,9 @@ Owns the unit's acceptance facts:
 - an old snapshot starts with ``CTX-TYPE-DEFAULT`` and is not rewritten;
 - the prompt path never calls the old builders;
 - every role keeps its phrases and a ``role_pct``.
+
+The execute 9 000 measurement and the read-hint delivery live in
+``test_role_read_hint.py`` — this pack keeps the builder's own contract.
 """
 from __future__ import annotations
 
@@ -125,42 +128,6 @@ def test_ctx_line_has_type_cap_file_role(tmp_path):
     for field in ("type=execute", f"cap={CAP}", "total=", "file=", "role=", "role_pct=",
                   "cut=", "missing="):
         assert field in ctx, ctx
-
-
-def test_execute_fits_9000_on_the_real_todo(tmp_path):
-    """The project's own unit is the fixture — TODO and role, tail included.
-
-    Building without the execute suffix hid the blocker: on TODO-0383 the
-    contract block alone rendered 5 288 characters against its 1 800 share,
-    and the real stage refused with ``CTX-FAIL`` before the spawn. The
-    suffix, the real unit and the real role file enter one measurement.
-    """
-    todo = REPO / ".agentic" / "inbox" / "TODO-0383.md"
-    if not todo.is_file():
-        pytest.skip("real TODO-0383 is not in the inbox")
-    root = _project(tmp_path, todo=todo.read_text(encoding="utf-8"))
-    role = REPO / ".agentic" / "roles" / "agent-implementer.md"
-    if role.is_file():
-        _write(root / ".agentic" / "roles" / "agent-implementer.md",
-               role.read_text(encoding="utf-8"))
-
-    stage = Stage(name="agent-implementer", role="agent-implementer", kind="execute")
-    suffix = "\n\n".join(
-        part
-        for part in (
-            agent_stage._execute_contract(TODO_ID),
-            agent_stage._stage_assignment_block(stage),
-            agent_stage._build_pipeline_context(root, TODO_ID, None),
-            '## Stage identity\nstage_id="agent-implementer", attempt=1',
-        )
-        if part
-    )
-    result = build_stage_context(
-        root, TODO_ID, "agent-implementer", "agent-implementer", suffix=suffix,
-    )
-
-    assert len(result.text) <= CAP
-    assert result.role_taken > 300
 
 
 def test_unit_and_crit_do_not_repeat_the_same_section(tmp_path):

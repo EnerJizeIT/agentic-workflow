@@ -9,6 +9,7 @@ stages:
   on_failed: escalate
   on_rejected: escalate
   role: agent-architect-review
+  write_check: readonly
   task: 'Read the WHOLE codebase (not a diff): design drift, dead code, god-files,
     duplicated ownership; produce a findings list with verdicts and a proposed refactor
     plan; findings only - do NOT edit code in this stage.'
@@ -28,11 +29,13 @@ stages:
     `manual` вне scope, блок не править; не меняй скоуп и контракт; запусти
     `awf checklist check <todo>`; отчитайся пунктами.'
   skip_if: checklist_green
+  # A67: НЕ readonly — closer правит TODO и дерево, а `skip_if` требует off.
   write_check: 'off'
 - name: checklist-check
   id: checklist-check
   role: agent-qa-review
   session_key: agent-qa-review
+  write_check: readonly
   task: 'Проверь ТОЛЬКО дифф checklist-close: изменённые им файлы и целевые
     тесты, без полного круга; находки — обычным `## REVIEW-фикс`.'
   skip_if: checklist_close_skipped
@@ -40,4 +43,5 @@ stages:
   on_approved: commit_and_next
   on_rejected: replan
   role: supervisor
+  write_check: readonly
   description: Supervisor verifies the health run result

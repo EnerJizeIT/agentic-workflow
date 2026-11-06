@@ -73,6 +73,9 @@ READ_KEYS: frozenset[str] = frozenset({
     # ── limits / checklist ───────────────────────────────────────────────
     "limits.max_review_passes",
     "checklist.closer_attempts",
+    # TODO-0398 (A67): how a reviewer's structural findings become a verdict
+    # (``major`` default, ``blocker`` = collect every finding).
+    "review.findings_threshold",
     # ── retry / wait / run ───────────────────────────────────────────────
     # retry.max_attempts and retry.backoff_seconds are deliberately absent:
     # nothing reads them (that is what doctor reports).

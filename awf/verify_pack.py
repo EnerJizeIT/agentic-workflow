@@ -1206,6 +1206,10 @@ class ClaimsReport:
     probes_checked: int = 0
     probes_unverified: list[str] = field(default_factory=list)
     probes_skipped: dict[str, int] = field(default_factory=dict)
+    # A65: a claim that cannot be reproduced from the project root needs a
+    # next step, not a tally. The notes below are that next step; a skip or
+    # a contradiction with no such shape leaves the old wording alone.
+    hints: list[str] = field(default_factory=list)
 
     def skip(self, reason: str, *, probes: bool = False) -> None:
         """Count one unchecked claim; ``reason`` must have a wording above."""
@@ -1213,6 +1217,11 @@ class ClaimsReport:
             raise KeyError(f"no wording for the skip reason {reason!r}")
         bucket = self.probes_skipped if probes else self.skipped
         bucket[reason] = bucket.get(reason, 0) + 1
+
+    def hint(self, line: str) -> None:
+        """A65: name one actionable note once — five clones are one advice."""
+        if line not in self.hints:
+            self.hints.append(line)
 
     def summary(self) -> str:
         parts = [f"checked {self.checked}"]
@@ -1272,6 +1281,13 @@ class ClaimsReport:
                     f"{_counted(demonstrations, 'entry', 'entries')} "
                     "not rerun (demonstrations)"
                 )
+        if self.hints:
+            # A65: the skip counts above are a tally; these lines are the
+            # action that keeps the demonstration out of `tests_run`. The
+            # heading says "demonstration", not "cannot be rerun": a pytest
+            # run with nothing collected DID run — it just proves nothing.
+            out.append("A8: claims that are demonstrations, not checks:")
+            out.extend(f"  - {line}" for line in self.hints)
         return out
 
 
@@ -1362,6 +1378,17 @@ def _claims_entries(path: Path | None) -> list | None:
     return entries
 
 
+def _anchored(token: str, project: Path) -> Path:
+    """``token`` as a path: a relative one is anchored to the project root.
+
+    One rule for every token the claim check reads — a program, a probe's
+    ``cwd``, a declared working directory — so "inside the project" means
+    the same thing in all of them.
+    """
+    candidate = Path(token).expanduser()
+    return candidate if candidate.is_absolute() else project / candidate
+
+
 def _is_command(token: str, project: Path) -> bool:
     """Is the first token a program, or a word from a sentence?
 
@@ -1371,13 +1398,11 @@ def _is_command(token: str, project: Path) -> bool:
     """
     looks_like_path = "/" in token or token.startswith((".", "~"))
     if looks_like_path:
-        candidate = Path(token).expanduser()
-        resolved = candidate if candidate.is_absolute() else project / candidate
         # A folder is not a program: `exists()` let a prose line naming a
         # directory reach `subprocess.run`, and the PermissionError became a
         # contradiction the rerun never made. Same predicate as the shell
         # gates' interpreter check (`-f`), for the same reason.
-        return resolved.is_file()
+        return _anchored(token, project).is_file()
     return shutil.which(token) is not None
 
 
@@ -1393,10 +1418,149 @@ def _probe_cwd(entry: dict, project: Path) -> Path | None:
     cwd = entry.get("cwd")
     if not isinstance(cwd, str) or not cwd.strip():
         return None
-    candidate = Path(cwd).expanduser()
-    if not candidate.is_absolute():
-        candidate = project / candidate
+    candidate = _anchored(cwd, project)
     return candidate if candidate.is_dir() else None
+
+
+#: The forms that name their own working directory. Only the operand of
+#: these is read; every other path in a command is data (an XML report, a
+#: copy target, a log) and does not make the run a demonstration.
+_CWD_FLAGS: dict[str, tuple[str, ...]] = {
+    "env": ("-C", "--chdir"),
+    "uv": ("--directory",),
+    "make": ("-C",),
+}
+
+#: Options of the named forms whose NEXT word is a value and not the program.
+_FORM_VALUE_OPTIONS = frozenset({"-u", "--unset", "-S", "--split-string"})
+
+
+def _declared_dirs(argv: list[str]) -> list[str]:
+    """Directory operands of ``cd``, ``env -C``, ``uv run --directory``, ``make -C``.
+
+    Only the position after the named form is read (TODO-0394, round 3):
+    the rule answers "did this line say where to run", not "does it contain
+    a foreign path". A token that merely looks like a path is data.
+    """
+    out: list[str] = []
+    for index, token in enumerate(argv):
+        name = Path(token).name
+        if name == "cd":
+            if index + 1 < len(argv):
+                out.append(argv[index + 1])
+            continue
+        flags = _CWD_FLAGS.get(name)
+        if flags is None:
+            continue
+        if name == "uv":
+            if index + 1 >= len(argv) or argv[index + 1] != "run":
+                continue
+            position = index + 2
+        else:
+            position = index + 1
+        while position < len(argv):
+            word = argv[position]
+            if not word.startswith("-"):
+                break
+            if word in flags and position + 1 < len(argv):
+                out.append(argv[position + 1])
+                position += 2
+                continue
+            position += 2 if word in _FORM_VALUE_OPTIONS else 1
+    return out
+
+
+def _dir_outside(token: str, project: Path) -> bool:
+    """Is a declared working directory outside the project?
+
+    Never raises: a symlink loop (``ELOOP``) cannot be a working directory
+    for anyone, so it counts as outside and the check keeps going.
+    """
+    try:
+        candidate = _anchored(token, project)
+        try:
+            resolved = candidate.resolve()
+        except (OSError, RuntimeError):
+            return True
+        root = Path(os.path.normpath(project))
+        if Path(os.path.normpath(candidate)).is_relative_to(root):
+            return False
+        return not resolved.is_relative_to(root.resolve())
+    except (OSError, RuntimeError):  # pragma: no cover - defensive
+        return True
+
+
+def _claim_hint(cmd: str, rc: int | None, project: Path) -> str:
+    """A65: the next step for a claim that cannot be repeated from the root.
+
+    Two exact conditions, no guessing about what a line "looks like":
+
+    1. ``rc=5`` — pytest collected nothing; the command proves nothing.
+       Nothing else about the command is read.
+    2. One of the named forms declared a working directory outside the
+       project: ``cd <dir>``, ``env -C <dir>``, ``uv run --directory <dir>``,
+       ``make -C <dir>``.
+
+    Any other path (``--junitxml /tmp/x.xml``, ``cp x /tmp``, a log after
+    ``>``) is data: the run is still repeatable from the project root. The
+    gate keeps its FAIL — the hint only says where such evidence belongs.
+
+    Never raises: a hint is cosmetics next to the verdict, and no branch
+    inside it may break the rerun that produces that verdict.
+    """
+    note = (
+        "это демонстрация → PROBES-<todo>.json; в tests_run — только "
+        "команды, повторяемые из корня проекта"
+    )
+    try:
+        if rc == 5:
+            return note
+        argv = command_parse.split_argv(cmd)
+        if any(_dir_outside(d, project) for d in _declared_dirs(argv)):
+            return note
+    except Exception:  # a hint never breaks the check
+        return ""
+    return ""
+
+
+def _hint_suffix(
+    cmd: str,
+    rc: int | None,
+    project: Path,
+    *,
+    probes: bool,
+) -> str:
+    """``" — <next step>"`` for a claim that cannot be repeated, else ``""``.
+
+    One owner for both halves of the rule: the shapes live in
+    ``_claim_hint``, the suppression lives here — a probe already lives in
+    PROBES-<todo>.json, so the advice would tell the auditor to move a file
+    into itself.
+    """
+    if probes:
+        return ""
+    hint = _claim_hint(cmd, rc, project)
+    return f" — {hint}" if hint else ""
+
+
+def _skip_claim(
+    report: ClaimsReport,
+    project: Path,
+    cmd: str,
+    reason: str,
+    *,
+    probes: bool,
+) -> None:
+    """Count one skipped claim, keeping the hint when there is one.
+
+    ``skip`` names what happened; A65 adds what to do instead — but only
+    for the demonstration shapes, so an ordinary shell line or a red claim
+    keeps its old wordless tally.
+    """
+    report.skip(reason, probes=probes)
+    suffix = _hint_suffix(cmd, None, project, probes=probes)
+    if suffix:
+        report.hint(f"{cmd}{suffix}")
 
 
 def _rerun_claims(
@@ -1424,10 +1588,12 @@ def _rerun_claims(
             report.skip("empty", probes=probes)
             continue
         if claimed is not True:
-            report.skip("claim", probes=probes)
+            _skip_claim(report, project, cmd, "claim", probes=probes)
             continue
         try:
-            argv = shlex.split(cmd)
+            # A66: the shared parser owns the rule — a trailing `` # note``
+            # is prose, not argv. The rerun stays a rerun; nothing is excused.
+            argv = command_parse.split_argv(cmd)
         except ValueError:
             report.skip("malformed", probes=probes)
             continue
@@ -1439,13 +1605,13 @@ def _rerun_claims(
         # prose would misname it; rerunning the raw argv fails with
         # FileNotFoundError and looks like a contradiction.
         if command_parse.is_assignment(argv[0]):
-            report.skip("shell", probes=probes)
+            _skip_claim(report, project, cmd, "shell", probes=probes)
             continue
         # argv only: a bare operator TOKEN means a shell line. A `;` inside
         # quotes (`python3 -c 'import sys; sys.exit(1)'`) is one argument,
         # not a pipeline — the split already removed the quotes.
         if any(token in _SHELL_OPERATORS for token in argv):
-            report.skip("shell", probes=probes)
+            _skip_claim(report, project, cmd, "shell", probes=probes)
             continue
         # REVIEW-0337: an auditor probe runs in its own directory when it
         # names one. Without an existing `cwd` it is a demonstration — the
@@ -1454,17 +1620,17 @@ def _rerun_claims(
         if probes:
             probe_dir = _probe_cwd(entry, project)
             if probe_dir is None:
-                report.skip("probe", probes=True)
+                _skip_claim(report, project, cmd, "probe", probes=True)
                 continue
             cwd = probe_dir
         # A27: prose is not a command. A line like "reused canonical suite
         # artifact …" names a fact, not an argv — it is skipped, not rerun.
         if not _is_command(argv[0], cwd):
-            report.skip("prose", probes=probes)
+            _skip_claim(report, project, cmd, "prose", probes=probes)
             continue
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            report.skip("budget", probes=probes)
+            _skip_claim(report, project, cmd, "budget", probes=probes)
             continue
         # The smaller of the two: one claim may not eat the whole check.
         budget = min(timeout, remaining)
@@ -1487,6 +1653,12 @@ def _rerun_claims(
                 report.unverified.append(f"not verified in {budget:g}s: {cmd}")
             continue
         except (OSError, subprocess.SubprocessError) as e:
+            # A65: no hint here. The rule reads ``rc`` and a declared
+            # working directory; a command that never started has no rc,
+            # and the forms that declare a cwd (``env``, ``make``, ``uv``)
+            # are programs that do start. A foreign *program* is prose by
+            # this point (``_is_command``), so it never lands in this
+            # branch either.
             _record_mismatch(
                 report, probes,
                 f"claimed {entry.get('result')!r} but the command could not "
@@ -1500,6 +1672,7 @@ def _rerun_claims(
         if rc != 0:
             tail = (done.stderr or done.stdout or "").strip().splitlines()
             extra = f" — {tail[-1][:160]}" if tail else ""
+            extra += _hint_suffix(cmd, rc, project, probes=probes)
             _record_mismatch(
                 report, probes,
                 f"claimed {entry.get('result')!r} but rc={rc}: {cmd}{extra}",

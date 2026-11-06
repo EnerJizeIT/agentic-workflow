@@ -74,7 +74,11 @@ class Stage:
     # stage allowlist is ``output`` plus this list; a stage with an
     # ``output`` only is fenced too (TODO-0256). ``write_check: off`` is
     # the ONE explicit opt-out — it must be named in the pipeline, never
-    # implied (the awf-generated service run uses it).
+    # implied (the awf-generated service run uses it). A67: ``readonly``
+    # fences a review stage to the engine's report directories
+    # (``.agentic/outbox/`` + ``.agentic/context/``) — reports only, no code;
+    # under it a declared ``output``/``write_allow`` is ignored (the fence is
+    # the whole allowlist, not an addition).
     write_allow: tuple[str, ...] = ()
     write_check: str = "on"
     # IMP1 (R1): the ONE conditional-run mechanism. Empty means "always
@@ -446,14 +450,16 @@ def validate_pipeline_stages(stages: Any, source: str) -> list[dict[str, Any]]:
         # boundary at all.
         if "write_check" in stage and stage["write_check"] is not None:
             value = stage["write_check"]
-            if isinstance(value, bool) or value not in ("on", "off"):
+            if isinstance(value, bool) or value not in ("on", "off", "readonly"):
                 # YAML 1.1 reads bare off/on as booleans — accept neither
                 # silently: a quoted "off" is the only spelling of the
                 # opt-out, so a typo cannot disable the fence by accident.
+                # A67: ``readonly`` is the third value — reports only
+                # (``.agentic/outbox/`` + ``.agentic/context/``).
                 raise AwfApiError(
                     f"Pipeline {source}: stage '{label}' has an invalid "
-                    f"'write_check' (must be the string 'on' or 'off'), "
-                    f"got {value!r}."
+                    f"'write_check' (must be the string 'on', 'off' or "
+                    f"'readonly'), got {value!r}."
                 )
         # IMP1 (R1): ``skip_if`` names a gate verdict; absent/null means
         # "always run". An empty string, a number or a bool is refused too

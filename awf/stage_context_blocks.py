@@ -332,15 +332,29 @@ _RULES_TEXT = """## Правила
 - прошлая сессия не источник фактов: факты — только в артефактах этого витка;
 - секреты не печатать: значение заменяется пометкой."""
 
+#: A83: the review families never write code, so the "edits only inside the
+#: unit" line does not apply. It is replaced by the read-only rule, not added:
+#: RULES keeps its 350-character budget.
+_REVIEW_RULES_TEXT = """## Правила
+- не коммить, не stash, не add, не reset: коммитит движок после verify и одобрения;
+- ревью не правит код: находки — в findings[] (severity, file, claim) или в DONE; правки вносит implementer, запись — стоп;
+- прошлая сессия не источник фактов: факты — только в артефактах этого витка;
+- секреты не печатать: значение заменяется пометкой."""
+
+#: The families that must be told the review does not edit code (A83).
+_REVIEW_FAMILIES = ("reviewer", "supervisor")
+
 _OUTPUT_TEXT = """## Контракт вывода
 - DONE: `.agentic/outbox/DONE-<todo>.md` + пустой `.ready`; `.json` — files_changed, tests_run, gates;
+- findings (ревью) в `DONE-<todo>.json` или `PROBES-<todo>.json`: `[{id, severity: blocker|major|minor, file, claim}]`; нет поля — находок нет; severity вне трёх значений = blocker;
 - BLOCKED: `.agentic/outbox/BLOCKED-<todo>.md` с причиной + `.ready`;
 - REVIEW: секция `## REVIEW-фикс` с находками;
 - молчание: провал."""
 
 
 def render_RULES(ctx: StageInput) -> Block:
-    return _present("RULES", ctx, _RULES_TEXT, "правила стадии")
+    text = _REVIEW_RULES_TEXT if ctx.family in _REVIEW_FAMILIES else _RULES_TEXT
+    return _present("RULES", ctx, text, "правила стадии")
 
 
 def render_OUTPUT(ctx: StageInput) -> Block:

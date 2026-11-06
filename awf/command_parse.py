@@ -79,6 +79,59 @@ def unquote(word: str) -> str:
     return word.strip("'\"")
 
 
+def strip_comment(line: str) -> str:
+    """Drop a trailing shell comment: `` #`` outside quotes starts one (A66).
+
+    A note a worker appended to a command (``pytest tests/  # under load``)
+    is prose, not arguments — rerunning it fed the words to pytest as paths
+    and turned an honest green claim into a contradiction. A hash glued to
+    a word (``a#b``) and a hash inside quotes are data, not a comment.
+
+    A backslash escapes the next character, exactly as ``shlex`` reads it:
+    in ``python -c "print(\\"a # b\\")"`` the escaped quote does not close
+    the argument, so the hash is still inside quotes. Cutting there instead
+    left a quote open, the argv came back malformed, and the claim was
+    skipped — the same quiet loss of a rerun this rule exists to remove.
+    """
+    quote = ""
+    escaped = False
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if ch == "\\" and quote != "'":
+            # The escaped character is data: neither a quote nor a comment.
+            i += 2
+            escaped = True
+            continue
+        if quote:
+            if ch == quote:
+                quote = ""
+        elif ch in ("'", '"'):
+            quote = ch
+        elif ch == "#" and i > 0 and line[i - 1].isspace() and not escaped:
+            # The cut is not trimmed: ``echo a\  # c`` keeps an escaped
+            # space in ``a\ `` and an rstrip leaves a dangling backslash,
+            # which ``shlex`` refuses — the claim is skipped instead of
+            # rerun. Trailing blanks are harmless to every splitter here.
+            return line[:i]
+        escaped = False
+        i += 1
+    return line
+
+
+def split_argv(command: str) -> list[str]:
+    """One CLAIMED command line → argv, trailing comment removed (A66).
+
+    The lexical half of the rule, for the rerun of ``DONE``/``PROBES``
+    ``tests_run`` entries: shell operators stay as tokens, and the caller
+    skips the lines it cannot rerun without a shell. The policy half for
+    configured commands (``verify:``, ``verification.*``, candidate) stays
+    :func:`awf.verify.parse_argv`, which refuses an operator instead of
+    skipping a line; comment removal is lexical and lives here only.
+    """
+    return shlex.split(strip_comment(command))
+
+
 def is_assignment(word: str) -> bool:
     return bool(_ASSIGNMENT.match(word))
 
@@ -108,6 +161,7 @@ def split_segments(line: str, *, split_single_amp: bool = False) -> list[str]:
     and its flake probe must see the pytest run (CTX3). Quote-aware, so
     ``"a|b"`` is one word.
     """
+    line = strip_comment(line)
     parts: list[str] = []
     buf: list[str] = []
     quote = ""
@@ -143,6 +197,7 @@ def split_segments(line: str, *, split_single_amp: bool = False) -> list[str]:
 
 def split_words(segment: str) -> list[str]:
     """Split a segment into words, keeping a quoted value together."""
+    segment = strip_comment(segment)
     words: list[str] = []
     buf: list[str] = []
     quote = ""
@@ -411,7 +466,7 @@ def duplicate_option_values(command: str) -> dict[str, list[str]]:
     the doctor is a report, not a gate.
     """
     try:
-        words = shlex.split(command)
+        words = split_argv(command)
     except ValueError:
         return {}
     seen: dict[str, list[str]] = {}
@@ -445,8 +500,10 @@ __all__ = [
     "duplicate_option_values",
     "parse_words",
     "shell_command_index",
+    "split_argv",
     "split_segments",
     "split_words",
+    "strip_comment",
     "unquote",
     "unwrap_prefix",
 ]

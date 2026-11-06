@@ -71,8 +71,14 @@ def _runs(counter: Path) -> int:
     return counter.read_text(encoding="utf-8").count("run")
 
 
-def test_same_tree_sha_is_cached_and_force_reruns(tmp_git_repo: Path, tmp_path: Path):
-    """(a) второй вызов на том же дереве — из артефакта; --force — прогон."""
+def test_same_tree_sha_is_cached_and_force_refuses_a_second_run(
+    tmp_git_repo: Path, tmp_path: Path
+):
+    """(a) второй вызов на том же дереве — из артефакта; ``--force`` — отказ.
+
+    A75: перезапуск на неизменном дереве не нужен — дерево то же, вердикт
+    уже есть. Обход один: удалить артефакт (или изменить дерево).
+    """
     cmd, counter = _stub_command(tmp_path)
 
     first = _run_script(tmp_git_repo, cmd)
@@ -87,7 +93,13 @@ def test_same_tree_sha_is_cached_and_force_reruns(tmp_git_repo: Path, tmp_path: 
     assert _runs(counter) == 1, "повторный вызов на том же tree-sha не должен гонять тесты"
 
     forced = _run_script(tmp_git_repo, cmd, "--force")
-    assert forced.returncode == 0, forced.stderr
+    assert forced.returncode == 2, forced.stdout + forced.stderr
+    assert artifacts[0].name in forced.stderr
+    assert _runs(counter) == 1, "--force не должен запускать второй прогон"
+
+    artifacts[0].unlink()
+    rerun = _run_script(tmp_git_repo, cmd, "--force")
+    assert rerun.returncode == 0, rerun.stderr
     assert _runs(counter) == 2
 
 

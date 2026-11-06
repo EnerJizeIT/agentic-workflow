@@ -4,8 +4,9 @@
 # Зачем: роли гоняли полный pytest много раз за один attempt (R2 — около 66
 # прогонов, доминирующая цена витка). Здесь прогон привязан к tree-sha:
 # повторный вызов на том же дереве с той же командой возвращает готовый
-# артефакт и НЕ запускает тесты заново. Перезапуск — только с `--force`,
-# после изменения дерева или смены `AWF_SUITE_CMD`.
+# артефакт и НЕ запускает тесты заново. Перезапуск — после изменения дерева
+# или смены `AWF_SUITE_CMD` (другая команда — другой `cmd8`); готовый артефакт
+# на том же дереве `--force` не обходит — правила ниже (A75).
 #
 # Артефакт: `.agentic/context/SUITE-<tree-sha>-<cmd8>.json` — sha, команда,
 # старт/конец, exit, счётчики и хвост вывода. `cmd8` — первые 8 hex от
@@ -21,13 +22,34 @@
 #
 # A57 (TODO-0380): `--wait` блокируется до конца прогона (опрос раз в 10 с,
 # переопределяется `AWF_SUITE_WAIT_INTERVAL`), печатает итог как `--status` и
-# возвращает код прогона. Прогон не запущен — `--wait` стартует его сам;
-# `--force --wait` перезапускает и дожидается нового прогона (кэш не отвечает).
+# возвращает код прогона. Прогон не запущен — `--wait` стартует его сам.
 # Таймаут ожидания (`--timeout`, по умолчанию 1800 с) — отдельный код 124.
+#
+# A75 (TODO-0399): один полный прогон на дерево и на пайплайн. Владение —
+# `flock` на `<project>/.agentic/context/SUITE.lock` (не pid: pid может
+# переиспользоваться), внутри — pid, tree-sha, команда и время старта.
+# Замок держится весь прогон, включая отсоединённый: дочерний процесс
+# наследует его файловый дескриптор. В саму команду сьюта дескриптор не
+# передаётся (`9>&-`): оставленный тестом демон не должен держать замок после
+# конца прогона. Живость прогона на всех поверхностях решает замок, не pid.
+# Занятый живым прогоном замок:
+# `--background` → 3; `--wait` ждёт освобождения и продолжает; `--force`
+# (в том числе с `--wait`) → 2 с pid владельца. Замок мёртвого процесса
+# ядро снимает само.
+#
+# `--force` больше не обходит готовый артефакт: если на текущий tree-sha
+# есть `SUITE-<sha>-*.json` с `exit`, ответ — 2 с путём артефакта. Обход —
+# изменить дерево или удалить артефакт.
+#
+# `runs` в артефакте и в `--status` — сколько раз ЭТА команда стартовала на
+# этот tree-sha (счётчик `<context>/SUITE-<sha>-<cmd8>.runs`): узкий прогон
+# через `AWF_SUITE_CMD` полным не считается и счётчик канонической команды не
+# двигает. Нужно, чтобы вердикт видел цифру, а не верил на слово.
 #
 # Код возврата: код сьюта (0 — зелёный). 2 — не удалось посчитать tree-sha,
 # неверные аргументы, пустой verification.test_cmd или битый config.yaml
-# («сьют не настроен»; битый файл называется отдельным текстом). 3 — идёт
+# («сьют не настроен»; битый файл называется отдельным текстом), `--force`
+# при живом прогоне или при готовом артефакте на это дерево. 3 — идёт
 # (только `--background`/`--status`), 4 — не запущен (`--status`),
 # 124 — истёк `--timeout` у `--wait`.
 set -u
@@ -164,6 +186,17 @@ context=".agentic/context"
 artifact="$context/SUITE-$sha-$cmd8.json"
 mkdir -p "$context" || exit 2
 
+# A75: замок один на проект, не на артефакт: полный прогон — один на дерево,
+# даже если команда прогона названа иначе. `runs` считает старты этой команды
+# на этом sha: у узкого прогона свой счётчик, иначе `runs` в каноническом
+# артефакте врал бы про «два полных прогона» после одного узкого.
+if ! command -v flock >/dev/null 2>&1; then
+  echo "suite-canonical: flock is required (one run per tree is enforced by a file lock)" >&2
+  exit 2
+fi
+lock_file="$context/SUITE.lock"
+runs_file="$context/SUITE-$sha-$cmd8.runs"
+
 # Артефакт — runtime. Если context не покрыт .gitignore, добавляем правило
 # только в локальный exclude (.git/info/exclude), иначе сам артефакт меняет
 # tree-sha и следующий вызов никогда не попадёт в кэш.
@@ -181,41 +214,191 @@ if ! git check-ignore -q -- "$context/SUITE-probe.json" 2>/dev/null; then
   fi
 fi
 
+# pid-файл — подсказка человеку и тестам (кого убивать), а не источник истины:
+# «идёт / не идёт» решает только замок (A75), pid переиспользуется.
 pid_file="$artifact.pid"
 run_log="$artifact.log"
 
-# Artifact exit code (empty when absent, unreadable or made by another
-# command — the same cache rule as the foreground path below).
-artifact_exit() {
-  [ -f "$artifact" ] || return 1
-  "$pybin" - "$artifact" "$cmd" <<'PYCODE'
+# Exit из готового артефакта: $1 — файл, $2 — нужная команда (пусто — любая).
+# Печатает код и возвращает 0 только для ПОЛНОЙ записи: файл есть, JSON
+# читается, `exit` — целое. Один разбор JSON на всех читателей (кэш,
+# «прогон на дерево уже есть») — то же правило, что у
+# `awf/suite_guard.artifact_for`, чтобы две поверхности не отвечали по-разному.
+artifact_exit_of() {
+  local out
+  [ -f "$1" ] || return 1
+  out=$("$pybin" - "$1" "${2:-}" <<'PYCODE'
 import json
 import sys
 
+path, wanted = sys.argv[1], sys.argv[2]
 try:
-    data = json.load(open(sys.argv[1], encoding="utf-8"))
-    if data.get("command") == sys.argv[2] and isinstance(data.get("exit"), int):
+    data = json.load(open(path, encoding="utf-8"))
+    if (not wanted or data.get("command") == wanted) and isinstance(
+        data.get("exit"), int
+    ):
         print(data["exit"])
 except Exception:
     pass
 PYCODE
+) || return 1
+  [ -n "$out" ] || return 1
+  echo "$out"
 }
 
-running_pid() {
-  [ -f "$pid_file" ] || return 1
-  pid=$(cat "$pid_file" 2>/dev/null || true)
-  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-  kill -0 "$pid" 2>/dev/null || return 1
-  echo "$pid"
+# Артефакт ТЕКУЩЕЙ команды — кэш ответа. «Прогон на это дерево уже был»
+# спрашивает complete_artifact ниже: там команда не важна.
+artifact_exit() {
+  artifact_exit_of "$artifact" "$cmd"
+}
+
+# ── Замок одного прогона (A75) ────────────────────────────────────────────
+# Файл замка — источник истины, а не pid внутри него: flock снимается ядром
+# вместе с владельцем, переиспользованный pid выглядел бы живым. Содержимое
+# (pid, tree-sha, cmd, started) нужно только для сообщения человеку.
+lock_held=0
+
+lock_try() {  # 0 — взят, 1 — занят живым прогоном, 2 — файл не открыть
+  # Без `2>/dev/null`: перенаправление stderr у `exec` без команды остаётся
+  # в оболочке навсегда и глушит сообщения об отказе.
+  exec 9>>"$lock_file" || return 2
+  if flock -n 9 2>/dev/null; then
+    lock_held=1
+    return 0
+  fi
+  exec 9>&-
+  return 1
+}
+
+lock_hold() {  # ждёт освобождения замка; 0 — взят, 2 — файл не открыть
+  exec 9>>"$lock_file" || return 2
+  flock 9 2>/dev/null || { exec 9>&-; return 2; }
+  lock_held=1
+  return 0
+}
+
+lock_release() {
+  exec 9>&-
+  lock_held=0
+}
+
+# Отказ «файл замка не открыть» — одно место: текст одинаков во всех режимах.
+lock_open_die() {
+  echo "suite-canonical: cannot open the run lock: $lock_file" >&2
+  exit 2
+}
+
+# Взять замок или выйти 2: политика `--force` — живой прогон не ждём и второй
+# не стартуем.
+lock_force_acquire() {
+  local rc=0 owner
+  lock_try || rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  [ "$rc" -eq 2 ] && lock_open_die
+  owner=$(lock_pid || true)
+  echo "suite-canonical: полный прогон уже идёт, pid ${owner:-?}" >&2
+  exit 2
+}
+
+# Дождаться замка; неоткрываемый файл — та же ошибка 2.
+lock_hold_die() {
+  lock_hold || lock_open_die
+}
+
+lock_write() {  # $1 — pid владельца
+  "$pybin" - "$lock_file" "$1" "$sha" "$cmd" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" <<'PY'
+import json
+import sys
+
+path, pid, sha, cmd, started = sys.argv[1:6]
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(
+        {"pid": int(pid), "tree_sha": sha, "cmd": cmd, "started": started},
+        fh,
+        ensure_ascii=False,
+    )
+    fh.write("\n")
+PY
+}
+
+lock_pid() {  # pid владельца из содержимого; нет/битый файл — пусто
+  [ -f "$lock_file" ] || return 1
+  "$pybin" - "$lock_file" <<'PY'
+import json
+import sys
+
+try:
+    pid = json.load(open(sys.argv[1], encoding="utf-8")).get("pid")
+    if isinstance(pid, int) and pid > 0:
+        print(pid)
+except Exception:
+    pass
+PY
+}
+
+# Артефакт на этот tree-sha (ЛЮБАЯ команда) с непустым exit — прогон на это
+# дерево уже был. Команда не проверяется намеренно: такой прогон — тоже
+# потраченный старт на дереве, и второй `--force` его не отменяет.
+complete_artifact() {
+  local candidate
+  for candidate in "$context"/SUITE-"$sha"-*.json; do
+    if artifact_exit_of "$candidate" >/dev/null; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Готовый прогон на это дерево — отказ 2: путь артефакта и один обход
+# (изменить дерево или удалить артефакт). Текст один на все режимы.
+refuse_complete_artifact() {
+  local done_path
+  if done_path=$(complete_artifact); then
+    echo "suite-canonical: полный прогон на это дерево уже есть: $done_path; перезапуск не нужен, дерево не менялось" >&2
+    exit 2
+  fi
+}
+
+read_runs() {  # стартов этой команды на этот tree-sha; старый артефакт = 1
+  local n
+  n=$(cat "$runs_file" 2>/dev/null || true)
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  if [ "$n" -eq 0 ] && [ -f "$artifact" ]; then
+    n=$("$pybin" - "$artifact" <<'PY'
+import json
+import sys
+
+try:
+    runs = json.load(open(sys.argv[1], encoding="utf-8")).get("runs")
+    print(runs if isinstance(runs, int) and runs > 0 else 1)
+except Exception:
+    print(1)
+PY
+)
+  fi
+  echo "$n"
+}
+
+bump_runs() {  # +1 под замком; печатает новое значение
+  local n
+  n=$(read_runs)
+  n=$((n + 1))
+  printf '%s\n' "$n" > "$runs_file" 2>/dev/null || true
+  echo "$n"
 }
 
 # Один старт отсоединённого прогона: child снимает маркер стадии (A44) и не
 # принадлежит стадии, которая его запустила. Печатает pid — вызывающий пишет
 # его в pid-файл сам, чтобы «уже идёт» было видно следующему вызову.
+# Замок передаётся наследованием (fd 9): parent выходит, а дочерний прогон
+# держит файл до конца — второй старт на том же дереве не пройдёт.
 start_detached() {
   local child_force=""
   [ "$force" -eq 1 ] && child_force="--force"
-  env -u AWF_STAGE_ANCHOR setsid nohup "$0" $child_force --project "$project" >"$run_log" 2>&1 </dev/null &
+  AWF_SUITE_LOCK_ACQUIRED=1 \
+    env -u AWF_STAGE_ANCHOR setsid nohup "$0" $child_force --project "$project" \
+    >"$run_log" 2>&1 </dev/null &
   echo "$!"
 }
 
@@ -226,30 +409,69 @@ print_and_exit() {
   exit "$2"
 }
 
+# Ожидание `--wait`: секунды с начала, отказ 124 и итог «done». Текст и
+# арифметика — в одном месте: у `--wait` два цикла (ждём чужой замок, ждём
+# свой артефакт), и разъехавшиеся формулировки читались бы как разные исходы.
+wait_elapsed() {
+  echo $(( $(date +%s) - wait_start_s ))
+}
+
+wait_timeout_die() {
+  echo "suite-canonical: wait timeout after $(wait_elapsed)s (tree-sha $sha); the run may still be going" >&2
+  exit 124
+}
+
+wait_done() {  # $1 — код прогона
+  print_and_exit "suite-canonical: done (tree-sha $sha) after $(wait_elapsed)s — $artifact" "$1"
+}
+
 # TODO-0316: status mode answers without touching the suite — a worker polls
 # it between short commands instead of blocking on a 12-minute run.
 if [ "$mode" = status ]; then
+  runs=$(read_runs)
   if rc=$(artifact_exit); then
-    print_and_exit "suite-canonical: done (tree-sha $sha) — $artifact" "$rc"
+    print_and_exit "suite-canonical: done (tree-sha $sha, runs $runs) — $artifact" "$rc"
   fi
-  if pid=$(running_pid); then
-    echo "suite-canonical: running (pid $pid, tree-sha $sha); poll again"
+  lock_rc=0
+  lock_try || lock_rc=$?
+  if [ "$lock_rc" -eq 1 ]; then
+    pid=$(lock_pid || true)
+    echo "suite-canonical: running (pid ${pid:-?}, tree-sha $sha, runs $runs); poll again"
     exit 3
   fi
-  echo "suite-canonical: not started (tree-sha $sha) — run --background"
+  if [ "$lock_rc" -ne 0 ]; then
+    lock_open_die
+  fi
+  lock_release
+  echo "suite-canonical: not started (tree-sha $sha, runs $runs) — run --background"
   exit 4
 fi
 
 if [ "$mode" = background ]; then
-  if rc=$(artifact_exit); then
+  if [ "$force" -ne 1 ] && rc=$(artifact_exit); then
     print_and_exit "suite-canonical: cached (tree-sha $sha, same command) — $artifact" "$rc"
   fi
-  if pid=$(running_pid); then
-    echo "suite-canonical: already running (pid $pid, tree-sha $sha)"
-    exit 3
+  if [ "$force" -eq 1 ]; then
+    lock_force_acquire
+  else
+    lock_rc=0
+    lock_try || lock_rc=$?
+    if [ "$lock_rc" -eq 1 ]; then
+      pid=$(lock_pid || true)
+      echo "suite-canonical: already running (pid ${pid:-?}, tree-sha $sha)"
+      exit 3
+    fi
+    if [ "$lock_rc" -ne 0 ]; then
+      lock_open_die
+    fi
+  fi
+  # A75: --force на дерево, где прогон уже был, — отказ, а не дубль.
+  if [ "$force" -eq 1 ]; then
+    refuse_complete_artifact
   fi
   pid=$(start_detached)
   echo "$pid" > "$pid_file"
+  lock_write "$pid"
   echo "suite-canonical: started (pid $pid, tree-sha $sha); follow with --wait"
   exit 3
 fi
@@ -259,69 +481,126 @@ fi
 # no run in flight — start it detached and wait for the artifact. The exit
 # code is the suite's own; 124 is the wait timeout, never a suite verdict.
 if [ "$mode" = wait ]; then
-  # `--force` means rerun: a cached artifact must not answer the wait, otherwise
-  # the caller reads the old code as if the rerun had produced it.
-  if [ "$force" -ne 1 ] && rc=$(artifact_exit); then
+  # A75: `--force` на неизменном дереве с готовым артефактом — отказ, а не
+  # дубль. Без `--force` готовый артефакт отвечает сразу (та же кэш-правило).
+  if [ "$force" -eq 1 ]; then
+    refuse_complete_artifact
+    # Перезапуск поверх живого прогона — тоже отказ: иначе `--force`
+    # останется вторым способом получить два прогона на дереве.
+    lock_force_acquire
+  elif rc=$(artifact_exit); then
     print_and_exit "suite-canonical: cached (tree-sha $sha, same command) — $artifact" "$rc"
   fi
   wait_start_s=$(date +%s)
-  if pid=$(running_pid); then
-    echo "suite-canonical: already running (pid $pid, tree-sha $sha); waiting"
-  else
-    [ "$force" -eq 1 ] && rm -f "$artifact"
-    pid=$(start_detached)
-    echo "$pid" > "$pid_file"
-    echo "suite-canonical: started (pid $pid, tree-sha $sha); waiting"
+
+  # Замок решает, стартовать прогон или ждать чужой: pid-файл этого не
+  # гарантирует — pid переиспользуется.
+  if [ "$lock_held" -ne 1 ]; then
+    lock_rc=0
+    lock_try || lock_rc=$?
+    if [ "$lock_rc" -eq 2 ]; then
+      lock_open_die
+    fi
+    if [ "$lock_rc" -eq 1 ]; then
+      pid=$(lock_pid || true)
+      echo "suite-canonical: already running (pid ${pid:-?}, tree-sha $sha); waiting"
+      while :; do
+        lock_rc=0
+        lock_try || lock_rc=$?
+        [ "$lock_rc" -eq 0 ] && break
+        if [ "$lock_rc" -ne 1 ]; then
+          lock_open_die
+        fi
+        if [ "$(wait_elapsed)" -ge "$wait_timeout" ]; then
+          wait_timeout_die
+        fi
+        sleep "$wait_interval"
+      done
+      # Замок свободен: владелец успел дописать артефакт или умер, не дописав.
+      if rc=$(artifact_exit); then
+        wait_done "$rc"
+      fi
+    fi
   fi
+  # Замок у нас, артефакта на текущую команду нет — стартуем и ждём.
+  pid=$(start_detached)
+  echo "$pid" > "$pid_file"
+  lock_write "$pid"
+  lock_release
+  echo "suite-canonical: started (pid $pid, tree-sha $sha); waiting"
   while :; do
     if rc=$(artifact_exit); then
-      waited=$(( $(date +%s) - wait_start_s ))
-      print_and_exit "suite-canonical: done (tree-sha $sha) after ${waited}s — $artifact" "$rc"
+      wait_done "$rc"
     fi
-    waited=$(( $(date +%s) - wait_start_s ))
-    if [ "$waited" -ge "$wait_timeout" ]; then
-      echo "suite-canonical: wait timeout after ${waited}s (tree-sha $sha); the run may still be going" >&2
-      exit 124
+    if [ "$(wait_elapsed)" -ge "$wait_timeout" ]; then
+      wait_timeout_die
     fi
-    if running_pid >/dev/null; then
+    # Живость прогона решает замок, а не pid-файл: pid переиспользуется, и
+    # чужой процесс с тем же pid держал бы ожидание до таймаута. Дочерний
+    # прогон держит замок от fork до выхода (наследованный fd 9).
+    lock_rc=0
+    lock_try || lock_rc=$?
+    if [ "$lock_rc" -eq 2 ]; then
+      lock_open_die
+    fi
+    if [ "$lock_rc" -eq 1 ]; then
       sleep "$wait_interval"
       continue
     fi
-    # The child removes its pid file on exit after writing the artifact, so a
-    # verdict may have landed between the two checks; no artifact means it died
-    # before recording one.
+    # Замок свободен: прогон закончился. Артефакт мог лечь между двумя
+    # проверками — поэтому решение принимает повторное чтение артефакта.
     if rc=$(artifact_exit); then
-      waited=$(( $(date +%s) - wait_start_s ))
-      print_and_exit "suite-canonical: done (tree-sha $sha) after ${waited}s — $artifact" "$rc"
+      wait_done "$rc"
     fi
     echo "suite-canonical: run died without an artifact (tree-sha $sha)" >&2
     exit 2
   done
 fi
 
-if [ "$force" -ne 1 ] && [ -f "$artifact" ]; then
-  # The cache is keyed by the tree AND by the command: the same tree with a
-  # different AWF_SUITE_CMD must not serve the other command's result as
-  # canonical (the artifact stores "command" for exactly this check).
-  cached_exit=$("$pybin" - "$artifact" "$cmd" <<'PY'
-import json
-import sys
-
-try:
-    data = json.load(open(sys.argv[1], encoding="utf-8"))
-    if data.get("command") == sys.argv[2] and isinstance(data.get("exit"), int):
-        print(data["exit"])
-except Exception:
-    pass
-PY
-)
-  if [ -n "$cached_exit" ]; then
-    echo "suite-canonical: cached (tree-sha $sha, same command) — $artifact; use --force to rerun"
-    cat "$artifact"
-    exit "$cached_exit"
-  fi
-  echo "suite-canonical: command changed — rerunning (tree-sha $sha)"
+# A75: замок держится от старта до конца прогона. Дочерний процесс получает
+# его наследованием (fd 9) и заново не берёт — новая копия fd отпустила бы
+# родительскую блокировку и открыла окно второму прогону.
+if [ "$lock_held" -ne 1 ] && [ "${AWF_SUITE_LOCK_ACQUIRED:-}" = "1" ] \
+  && flock -n 9 2>/dev/null; then
+  lock_held=1
 fi
+# Наследованный замок уже наш. Переменная не должна уехать во вложенный
+# вызов: там она выдала бы чужой замок за собственный, и второй прогон на
+# дереве стал бы возможен.
+unset AWF_SUITE_LOCK_ACQUIRED
+
+if [ "$force" -ne 1 ]; then
+  if [ -f "$artifact" ]; then
+    # The cache is keyed by the tree AND by the command: the same tree with a
+    # different AWF_SUITE_CMD must not serve the other command's result as
+    # canonical (the artifact stores "command" for exactly this check).
+    if cached_exit=$(artifact_exit); then
+      echo "suite-canonical: cached (tree-sha $sha, same command) — $artifact; delete it or change the tree to rerun"
+      cat "$artifact"
+      exit "$cached_exit"
+    fi
+    echo "suite-canonical: command changed or the artifact is incomplete — rerunning (tree-sha $sha)"
+  fi
+  # A75: ждём чужой прогон, а не стартуем второй. Дождавшись, сначала
+  # смотрим его артефакт: второй прогон на том же дереве не нужен.
+  if [ "$lock_held" -ne 1 ]; then
+    lock_hold_die
+  fi
+  if rc=$(artifact_exit); then
+    print_and_exit "suite-canonical: cached (tree-sha $sha, same command) — $artifact" "$rc"
+  fi
+else
+  # A75: --force не обходит ни живой прогон, ни готовый артефакт.
+  if [ "$lock_held" -ne 1 ]; then
+    lock_force_acquire
+  fi
+  refuse_complete_artifact
+fi
+
+# Здесь замок уже наш на всех исходах выше: не-`--force` дождался
+# (lock_hold_die), `--force` взял или вышел 2. Догоняющей попытки не нужно.
+runs=$(bump_runs)
+lock_write "$$"
 
 log=$(mktemp "${TMPDIR:-/tmp}/awf-suite.XXXXXX") || exit 2
 echo "$$" > "$pid_file"
@@ -330,7 +609,11 @@ trap 'rm -f "$log" "$pid_file"' EXIT
 started_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 start_s=$(date +%s)
 
-bash -o pipefail -c "$cmd" >"$log" 2>&1
+# Полезная нагрузка замок не наследует: `9>&-` закрывает fd 9 только для
+# сьюта. Иначе демон, оставленный тестом, держал бы замок после конца прогона,
+# и следующий вызов читал бы «идёт» у давно мёртвого прогона. Замок держит
+# этот процесс, а не его потомки.
+bash -o pipefail -c "$cmd" 9>&- >"$log" 2>&1
 rc=$?
 
 end_s=$(date +%s)
@@ -353,6 +636,7 @@ SUITE_SHA="$sha" \
 SUITE_RUNNER="$runner" \
 SUITE_RUNNER_SOURCE="$runner_source" \
 SUITE_CMD="$cmd" \
+SUITE_RUNS="$runs" \
 SUITE_STARTED="$started_iso" \
 SUITE_FINISHED="$finished_iso" \
 SUITE_EXIT="$rc" \
@@ -416,6 +700,9 @@ else:
 payload = {
     "sha": os.environ["SUITE_SHA"],
     "command": os.environ["SUITE_CMD"],
+    # A75: сколько раз прогон стартовал на этот tree-sha — вердикт видит
+    # цифру, а не верит «один прогон» на слово.
+    "runs": int(os.environ["SUITE_RUNS"]),
     "started": os.environ["SUITE_STARTED"],
     "finished": os.environ["SUITE_FINISHED"],
     "duration_seconds": int(os.environ["SUITE_DURATION"]),
@@ -436,7 +723,7 @@ tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encodin
 tmp.replace(artifact)
 PY
 
-echo "suite-canonical: exit $rc (tree-sha $sha) — $artifact"
+echo "suite-canonical: exit $rc (tree-sha $sha, runs $runs) — $artifact"
 
 # AUD5: the artifact keeps 20 lines for the counts; the reason a run failed
 # can sit far above them. On a red run the longer tail goes next to it.

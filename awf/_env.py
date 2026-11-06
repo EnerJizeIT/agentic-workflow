@@ -113,6 +113,32 @@ def control_tool_permission_keys() -> list[str]:
     return [f"{MCP_CONTROL_SERVER}_{tool}" for tool in CONTROL_TOOLS]
 
 
+# A67: the queue-editing tools a review stage must never hold. A reviewer's
+# job is to judge the unit, not to dispatch, rewrite or remove it — the
+# verdict is the engine's to act on (findings → on_rejected). Denied by ROLE,
+# not only by stage kind, so a reviewer keeps the restriction wherever the
+# pipeline places it.
+QUEUE_CONTROL_TOOLS: tuple[str, ...] = (
+    "awf_dispatch_todo",
+    "awf_todo_update",
+    "awf_todo_remove",
+)
+
+
+def queue_control_permission_keys() -> list[str]:
+    """Full MCP tool names denied for review roles (A67)."""
+    return [f"{MCP_CONTROL_SERVER}_{tool}" for tool in QUEUE_CONTROL_TOOLS]
+
+
+def _is_review_role(role: str) -> bool:
+    """A67: True when *role* is a reviewer (the single R14 role list)."""
+    if not role:
+        return False
+    from .stage_context_types import REVIEWER_ROLES
+
+    return role in REVIEWER_ROLES
+
+
 # TODO-0242 (P0-3): an execute worker only needs the control surface that
 # the engine itself drives (``agent-workflow-ui``); every other MCP server
 # is dead weight in its context (token cost) and an accidental side channel.
@@ -550,8 +576,22 @@ def awf_subprocess_env(
     as ``AWF_STAGE_ANCHOR`` so the stage-exit reap can recognize the whole
     tree, including children that ``setsid`` out of the worker's group. No
     anchor → the env is unchanged.
+
+    A69 (TODO-0396): opencode derives the session directory from ``PWD``, not
+    from the spawn's cwd — an inherited ``PWD`` put every stage in the
+    directory the engine was started from (usually ``$HOME``). With a
+    project, ``PWD`` and ``OLDPWD`` are that project; without one they are
+    left as inherited (callers that spawn no project keep the old env).
     """
     env = os.environ.copy()
+
+    # A69: PWD is the one key opencode reads for the session directory.
+    # Both keys come from one string: opencode chdir's to PWD and reports
+    # it as the session directory, so PWD and OLDPWD must never drift apart.
+    if project_dir is not None:
+        project = str(project_dir)
+        env["PWD"] = project
+        env["OLDPWD"] = project
 
     # KAUD-5: Start from user's config, then merge our overrides
     user_config: dict = {}
@@ -584,8 +624,12 @@ def awf_subprocess_env(
     # ORCH M7.2: base control prohibitions a stage tools-profile cannot
     # lift — M2.2 control tools (execute stages) + readonly edit.
     locked_deny: tuple[str, ...] = ()
+    # A67: a review role never edits the queue — dispatch/update/remove are
+    # denied by role, whether or not the stage also restricts all controls.
+    if _is_review_role(role):
+        locked_deny = tuple(queue_control_permission_keys())
     if restrict_control_tools:
-        locked_deny = tuple(control_tool_permission_keys())
+        locked_deny = locked_deny + tuple(control_tool_permission_keys())
     if readonly:
         locked_deny = locked_deny + ("edit",)
     base_rules = host_permission_rules(user_config)

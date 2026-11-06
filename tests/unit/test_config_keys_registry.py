@@ -41,8 +41,8 @@ _SRC = Path(__file__).resolve().parents[2] / "awf"
 #: look like config paths.
 _SECTIONS = frozenset({
     "automation", "checklist", "context", "discipline", "engine", "feedback",
-    "limits", "metrics", "mcp", "models", "phases", "project", "retry", "run",
-    "spec", "supervisor", "verification", "wait", "worker",
+    "limits", "metrics", "mcp", "models", "phases", "project", "retry", "review",
+    "run", "spec", "supervisor", "verification", "wait", "worker",
 })
 
 #: Receivers that are the parsed project config (dict).

@@ -39,3 +39,25 @@ def get(config: dict, dotted_key: str, default=None):
         else:
             return default
     return cur  # P3: return actual value (including None), not default
+
+
+#: A67: the rejection threshold for a reviewer's structural findings. The
+#: closed list is ``major`` (default — a major or a blocker rejects) and
+#: ``blocker`` ("collect every finding" mode: only a blocker stops the unit).
+DEFAULT_FINDINGS_THRESHOLD = "major"
+FINDINGS_THRESHOLDS: tuple[str, ...] = (DEFAULT_FINDINGS_THRESHOLD, "blocker")
+
+#: The config path, named once: the registry ratchet scans ``*_KEY`` constants.
+FINDINGS_THRESHOLD_KEY = "review.findings_threshold"
+
+
+def findings_threshold(config: dict) -> str:
+    """Read ``review.findings_threshold``; unknown values fall back to major.
+
+    A typo must not silently switch the mode: the fallback is the default
+    (the stricter of the two), never ``blocker``.
+    """
+    value = get(config, FINDINGS_THRESHOLD_KEY, DEFAULT_FINDINGS_THRESHOLD)
+    if isinstance(value, str) and value.strip().lower() in FINDINGS_THRESHOLDS:
+        return value.strip().lower()
+    return DEFAULT_FINDINGS_THRESHOLD
